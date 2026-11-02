@@ -1,0 +1,160 @@
+name: android-apk
+
+# Android アプリ（frontend-android）の APK を作る。コア（nagi-jni）は cargo-ndk で arm64-v8a 向けにビルドし、
+# 辞書（Mozc OSS 由来）を assets に同梱する。成果物は Actions の artifact と、タグ push 時は GitHub Release。
+#
+# 署名（任意。未登録なら debug 鍵で署名する。debug 鍵の APK は鍵が毎回変わるため上書き更新できない）:
+#   ANDROID_KEYSTORE_BASE64     keystore（.jks）を base64 した文字列
+#   ANDROID_KEYSTORE_PASSWORD   keystore のパスワード
+#   ANDROID_KEY_ALIAS           鍵のエイリアス
+#   ANDROID_KEY_PASSWORD        鍵のパスワード
+#
+# 表示バージョン（versionName）の決まり方:
+#   1. タグ android-vX.Y.Z の push で起動した場合は、そのタグの X.Y.Z
+#   2. 手動実行で version を入力した場合は、その値
+#   3. 手動実行で空欄の場合は、最新の android-v* タグの X.Y.Z（タグが無ければ 0.1.0）
+# versionCode は github.run_number で自動採番する。
+# リリース手順: git tag android-v0.1.0 && git push origin android-v0.1.0
+
+on:
+  push:
+    tags:
+      - "android-v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "表示バージョン（空欄なら最新の android-v* タグ、無ければ 0.1.0）"
+        type: string
+        default: ""
+      llama:
+        description: "LLM 推論（llama.cpp）を有効にしてビルドする"
+        type: boolean
+        default: false
+
+concurrency:
+  group: android-apk
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # android-v* タグを参照するため
+
+      - name: 表示バージョンを決定
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#android-v}"
+          elif [ -n "${INPUT_VERSION}" ]; then
+            v="${INPUT_VERSION}"
+          else
+            latest=$(git tag --list 'android-v*' --sort=-v:refname | head -n 1)
+            v="${latest#android-v}"
+            v="${v:-0.1.0}"
+          fi
+          echo "VERSION_NAME=${v}" >> "$GITHUB_ENV"
+          echo "表示バージョン: ${v} / versionCode: ${{ github.run_number }}"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Rust ツールチェーン（core/rust-toolchain.toml に従う）
+        working-directory: core
+        run: |
+          rustup show
+          rustup target add aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: Android SDK / NDK を用意
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-}"
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "${ANDROID_NDK_HOME}" ]; then
+            "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
+            echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          fi
+
+      - name: cargo-ndk を用意
+        run: cargo install cargo-ndk --locked
+
+      - name: コア（nagi-jni）をビルド
+        working-directory: core
+        run: |
+          features=""
+          if [ "${{ inputs.llama }}" = "true" ]; then features="--features llama"; fi
+          cargo ndk -t arm64-v8a \
+            -o ../frontend-android/app/src/main/jniLibs \
+            build --release -p nagi-jni ${features}
+          ls -la ../frontend-android/app/src/main/jniLibs/arm64-v8a
+
+      - name: 辞書を取得・生成（アプリの assets に含める）
+        working-directory: core
+        run: |
+          cargo xtask fetch-dict
+          cargo xtask build-dict
+
+      - name: 辞書を assets へ配置
+        run: |
+          mkdir -p frontend-android/app/src/main/assets/dict
+          cp data/dict/nagi-dict.bin frontend-android/app/src/main/assets/dict/
+          ls -la frontend-android/app/src/main/assets/dict
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: 署名鍵を配置（Secrets があるときのみ）
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${KEYSTORE_B64}" ]; then
+            printf '%s' "${KEYSTORE_B64}" | base64 -d > "$RUNNER_TEMP/nagi.jks"
+            echo "NAGI_KEYSTORE_PATH=$RUNNER_TEMP/nagi.jks" >> "$GITHUB_ENV"
+            echo "NAGI_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "NAGI_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
+            echo "NAGI_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "release 鍵で署名します"
+          else
+            echo "::warning::署名用 Secrets が未登録のため debug 鍵で署名します（上書き更新はできません）"
+          fi
+
+      - name: APK をビルド
+        working-directory: frontend-android
+        run: |
+          ./gradlew --no-daemon assembleRelease \
+            -PversionName="${VERSION_NAME}" \
+            -PversionCode="${{ github.run_number }}"
+
+      - name: APK の名前を整える
+        run: |
+          mkdir -p dist
+          cp frontend-android/app/build/outputs/apk/release/app-release.apk "dist/nagi-${VERSION_NAME}.apk"
+          sha256sum "dist/nagi-${VERSION_NAME}.apk" | tee "dist/nagi-${VERSION_NAME}.apk.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nagi-android-apk
+          path: dist/*
+          if-no-files-found: error
+
+      - name: GitHub Release に添付（タグ push のとき）
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: true

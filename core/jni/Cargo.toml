@@ -1,0 +1,27 @@
+[package]
+name = "nagi-jni"
+description = "Nagi コアエンジンの JNI ラッパー（Android の InputMethodService から nagi-ffi を呼ぶ）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+# Android は libnagi_jni.so（cdylib）を APK の jniLibs に入れる。rlib はホストでの cargo check / test 用
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nagi-ffi = { path = "../ffi" }
+jni = "0.21"
+
+[features]
+# LLM 推論（zenz）を含む。llama.cpp の C++ ビルド（NDK）が必要
+llama = ["nagi-ffi/llama"]
+
+[lints]
+# JNI 境界は unsafe が必須なため、workspace の forbid を override
+rust.unsafe_code = "allow"
+rust.missing_docs = "warn"
+clippy.all = { level = "warn", priority = -1 }
