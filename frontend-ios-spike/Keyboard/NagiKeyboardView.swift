@@ -1171,7 +1171,7 @@ private struct ToolbarRow: View {
     }
 }
 
-/// 候補の展開ボタン（幅 44pt × 候補バーの高さいっぱい）。SwiftUI の `Button` は離したときの判定が厳しく
+/// 候補の展開ボタン（幅 36pt × 候補バーの高さいっぱい）。SwiftUI の `Button` は離したときの判定が厳しく
 /// （少し指がずれると取り消される）、キーと同じく押した瞬間に受ける `DragGesture(minimumDistance: 0)` で受ける。
 /// 押している間は薄い背景を出し、離した位置がボタンの外に大きく外れていなければ切り替える
 private struct ExpandToggle: View {
@@ -1183,17 +1183,15 @@ private struct ExpandToggle: View {
         Image(systemName: expanded ? "chevron.up" : "chevron.down")
             .font(.system(size: 15))
             .foregroundColor(Color(UIColor.label))
-            .frame(width: 44)
+            .frame(width: 36)
             .frame(maxHeight: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color(UIColor.label).opacity(pressed ? 0.12 : 0))
             )
-            // 押せる範囲は見た目（44pt）より左右に広げる（候補との隙間・画面の端寄りの取りこぼしを減らす）
-            .padding(.horizontal, 6)
             // 当たり判定の層（`StyledKeyFace` と同じ）。キーボード拡張ではホスティングビューの背景が透明なため、
             // 完全な透明の部分はタッチが通り抜け、`contentShape` だけでは矢印の線の上しか反応しない（H-73 追記）。
-            // 見えない程度の不透明度を、広げた範囲を含めた全体に持たせる
+            // 見えない程度の不透明度を、ボタン全体に持たせる
             .background(Color.black.opacity(0.01))
             .contentShape(Rectangle())
             .gesture(
