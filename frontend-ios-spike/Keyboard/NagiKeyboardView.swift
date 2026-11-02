@@ -1191,6 +1191,10 @@ private struct ExpandToggle: View {
             )
             // 押せる範囲は見た目（44pt）より左右に広げる（候補との隙間・画面の端寄りの取りこぼしを減らす）
             .padding(.horizontal, 6)
+            // 当たり判定の層（`StyledKeyFace` と同じ）。キーボード拡張ではホスティングビューの背景が透明なため、
+            // 完全な透明の部分はタッチが通り抜け、`contentShape` だけでは矢印の線の上しか反応しない（H-73 追記）。
+            // 見えない程度の不透明度を、広げた範囲を含めた全体に持たせる
+            .background(Color.black.opacity(0.01))
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
