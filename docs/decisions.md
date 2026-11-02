@@ -1879,3 +1879,15 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **判断**: エンジン側でチャンクの結果を持ち越す最適化（設計書 §4 の「編集されたチャンクのみ再変換」の明示的な実装）は**実装しない**。効果が無いため。遅さの本体は 1 チャンク（〜30 文字）の推論そのもの（この CPU で 40〜200ms。目標「キー入力→ライブ変換反映 p95 < 50ms」を満たさない）で、効くのは (1) 推論の KV キャッシュの接頭辞の再利用（G-32 で未実装。打ち足しではプロンプトの大部分が前回と同じ）、(2) 小さいモデル（xsmall）、(3) デバウンス（既定 228ms。実際にはこの計測ほど頻繁には呼ばれない）。基準機（M1・Metal）では数字が変わるので、実機で同じツールを回してから (1) に着手するか決める
 - **残る懸念**: キャッシュは 512 件で全消去（LRU ではない）。長文を打ち続けると手前のチャンクが消えて一度だけ遅くなりうる。LRU 化は小さい変更なので、実機で問題が見えたら行う
 - **使い方**: `cargo run --release -p nagi-server --features llama --bin nagi-live-bench -- --data-dir ../data [--no-llm] [--profile balanced] [--sentences N] [--lengths 30,60,90,120] [--sync-budget-ms N]`
+
+### H-76. Android M1 の実装方針（JNI・UI・APK ビルド。2026-11-02、ユーザーから判断を一任、要レビュー・要実機確認）
+
+- **FFI**: UniFFI は使わず、iOS と同じ C ABI（`nagi-ffi`）を薄い JNI 層 `core/jni`（`nagi-jni`。`jni` クレート 0.21、cdylib）で包む。プロトコルは JSON-RPC 1 本のまま（H-10 と同じ理由: 型生成の追加依存を避け、iOS と挙動を揃える）。Kotlin のクラスは `com.shiki01.nagi.core.NagiCore`
+- **スレッド**: コアの呼び出しは専用の 1 スレッドで直列化（`nagi_handle_line` と `nagi_poll_notifications` を同時に呼べないため）。非同期通知は `nagi_set_waker` → `Runnable` で受け、同じスレッドで poll する。`revision` は iOS と同じく古いものを捨て、同値は通す
+- **入力経路**: `insert_reading`（ローマ字 1 文字ずつ）と `perform_action`（space / enter / backspace / commit）、`select_candidate`。`process_key`（物理キー）は M1 では使わない。`consumed == false` のときだけ Android 側が既定動作（空白・改行・削除）を行う
+- **表示**: `setComposingText` + Span（下線、注目文節は背景色）。英数モードはコアを通さず直接 `commitText`
+- **学習停止**: パスワード系の `inputType` と `IME_FLAG_NO_PERSONALIZED_LEARNING` を `set_context.secure_input` で通知する
+- **データ**: 辞書は APK の assets に同梱し、起動時に `filesDir/data/dict/` へ展開（mmap のため。アプリ更新時に再展開）。ユーザーデータは `filesDir/user/`
+- **配布**: `android-apk.yml` が cargo-ndk（arm64-v8a のみ）+ Gradle で APK を作り、artifact とタグ時の GitHub Release に載せる。署名は Secrets（`ANDROID_KEYSTORE_BASE64` ほか 3 件）があれば release 鍵、無ければ debug 鍵（この場合は上書き更新不可）。**Secrets の登録は未実施（ユーザー作業）**
+- **未対応（M2 以降）**: LLM（llama.cpp の NDK ビルド。ワークフローの `llama` 入力は用意済みだが未検証）、フリック / 12 キー、物理キーボード、再変換、データ更新（本体アプリでの取得・検証）、APK の自己更新、本物のアイコン
+
