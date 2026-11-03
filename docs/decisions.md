@@ -1889,7 +1889,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **学習停止**: パスワード系の `inputType` と `IME_FLAG_NO_PERSONALIZED_LEARNING` を `set_context.secure_input` で通知する
 - **データ**: 辞書は APK の assets に同梱し、起動時に `filesDir/data/dict/` へ展開（mmap のため。アプリ更新時に再展開）。ユーザーデータは `filesDir/user/`
 - **配布**: `android-apk.yml` が cargo-ndk（arm64-v8a のみ）+ Gradle で APK を作り、artifact とタグ時の GitHub Release に載せる。署名は Secrets（`ANDROID_KEYSTORE_BASE64` ほか 3 件）があれば release 鍵、無ければ debug 鍵（この場合は上書き更新不可）。**Secrets の登録は未実施（ユーザー作業）**
-- **未対応（M2 以降）**: LLM（llama.cpp の NDK ビルド。ワークフローの `llama` 入力は用意済みだが未検証）、フリック / 12 キー、物理キーボード、再変換、データ更新（本体アプリでの取得・検証）、APK の自己更新、本物のアイコン
+- **未対応（M2 以降）**（2026-11-03 の更新で、ここに挙げていたもののうち下記の「M2 以降の実装」で入れたものは対応済み）: スタイル変換（コア側が未実装。`initialize.capabilities.style_conversion` は false 固定で、デスクトップにも無い。コアにスタイル変換が入ってから UI を足す）、物理キーボード・再変換・LLM・データ更新・APK の自己更新は下記で実装（実機未確認）
 
 ### H-77. iOS: ダーク外観の通常キーを灰色にし、フリック先の文字をキーに表示する（設定 `flick.hints`）（2026-11-03、実機で「キーが真っ黒・フリックのラベルが見えない」との報告を受けて、要実機確認）
 
@@ -1897,3 +1897,17 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **フリック先の文字**: これまでフリックキーには中央の文字だけを描いていた。上下左右にフリック先の文字を 9pt・`secondaryLabel` で重ねる（`FlickHints`。当たり判定を広げた分は差し引く）。設定 `flick.hints`（既定オン。ユーザー指示「設定で切り替えられるように」）でオフにできる
 - **未確認**: 実機での見え方（ライト/ダーク・キーの大きさ・レイアウトの背景画像の上）、Swift のビルド（CI）
 - **CI の確認結果（2026-11-03）**: `android-apk`（llama 無し）成功。`llama=true` は `cargo ndk` の既定 API 21 では llama.cpp の `posix_madvise` が未宣言でビルド失敗 → `--platform 26`（minSdk と同じ）に直して成功（run 3）。ただし llama 入りの APK が端末で動くか（メモリ・速度）は未確認。Kotlin だけを素早く確認する `android-check.yml`（`frontend-android/**` の push で `compileReleaseKotlin` + unit test）を追加し、成功
+
+### H-77. Android の M2 以降の実装（フリック・文節操作・設定・辞書・LLM・更新。2026-11-03、ユーザー指示で M1 の範囲外としていた項目も完了条件に含めた、要レビュー・要実機確認）
+
+- **入力 UI**: 12 キーかな（`get_key_table` の表を使用。取れなければ定数表）、タップ/フリック（`insert_reading` の `key12` + `flick` の角度・距離）、トグル入力（`KeyboardPrefs.toggleInput`）、゛゜小（`variant`）、QWERTY との切替、数字・記号。候補バーに文節列（タップで注目移動）、全候補の展開、文節・範囲操作のツールバー（`move_focus` / `resize_segment` / `extend_selection` / カタカナ化等）。iOS の候補バーでは文節のタップは未実装だが、Android は設計書 §5.1 に沿って実装した
+- **物理キーボード**: `onKeyDown` を `process_key`（XKB keysym）へ。応答が非同期のため、コアに送るキーは一旦消費し、`consumed == false` で返ったら OS 既定を再現する（メインスレッドで待つと ANR の恐れがあるため）
+- **再変換**: 選択範囲を `reconvert` に渡し、`setComposingText` で置換。`process_key` の `reconvert_selection` も同じ経路
+- **設定**: コアの `get_settings` / `update_settings` から汎用フォームを生成（desktop 専用は除外）。Android 固有の設定は `KeyboardPrefs`（SharedPreferences）
+- **ユーザー辞書・学習**: `nagi-user.tsv` 1 ファイルの編集、Mozc TSV のインポート/エクスポート、スニペット、学習データ削除
+- **LLM**: モデルの置き場は `filesDir/data/models/`。`.gguf` のインポートと small/xsmall のダウンロード（SHA-256 検証）、`conversion.model` への絶対パス設定、変更後のエンジン再起動。モデルがあるときだけ `--no-llm` を外す。llama 入りのビルドを既定にした（モデルが無ければ読まれないので辞書のみで動く）
+- **更新**: 本体 APK は取得 → SHA-256 → ed25519（`nagi-jni` の `nativeVerifyEd25519File`。APK をヒープに載せない）→ `PackageInstaller`。データ資産（辞書）はマニフェストの `data_assets`（互換範囲つき）で差し替え、失敗時は旧データのまま。アプリ更新で同梱辞書へ巻き戻さない。署名鍵は `NAGI_UPDATE_SIGNING_KEY`（未登録なら署名とマニフェスト生成をスキップ）。手順は `docs/android-release.md`
+- **アイコン**: アダプティブアイコン（仮のデザイン。本物のデザインは未定）
+- **スタイル変換は未実装**: コアに機能が無い（デスクトップ Phase 4 の項目）。zenz は仮名漢字変換モデルで、指示に従う文体変換には別のモデルが要る。コア側の設計が先
+- **ユーザー作業（未実施）**: Secrets の登録（`ANDROID_KEYSTORE_*`、`NAGI_UPDATE_SIGNING_KEY`）、`latest.json` を `nagi.shiki-01.com/updates/android/` に置くこと、実機での確認
+

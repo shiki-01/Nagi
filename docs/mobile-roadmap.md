@@ -16,9 +16,9 @@ v0.1 draft（2026-09-30）。`docs/mobile-design.md`（設計）と `docs/decisi
 | D-6 予測変換の要件 | 一部実装済み。要件は `docs/ime-design-doc.md` §4.11、`docs/mobile-design.md` §4.2・§5.2 に追記。入力中の候補（12 件・部分変換。H-14）と確定直後の次語予測（`predict.next_word`。LLM なしのバイグラム。H-19）は実装済み。次語予測は実機確認済み（`docs/ios-device-checklist.md` §2、2026-10-22）。Tab の前方一致の予測（G-23）は iOS に Tab キーが無いため iOS では使われない。未決: LLM による次語、英字の予測、次語の文脈（直前 1 語のみ） |
 | M0 実機での技術検証（iOS） | **ほぼ完了**（拡張の上限 約 177MB、xsmall・small とも拡張内で動作、応答時間は同期待ち 30ms + 非同期の差し替えで目標内、C ABI の非同期通知を確認。H-6〜H-10）。SideStore 検証は不要。Android は未着手 |
 | M1 Android MVP | **着手（2026-11-02）**: JNI 層 `core/jni`（`nagi-jni`、`libnagi_jni.so`）、`frontend-android/`（Kotlin。`InputMethodService` の QWERTY ローマ字・候補バー・設定画面。コアは minimal = 辞書 + Viterbi、LLM は未対応）、APK を作る `android-apk.yml`（手動実行 / タグ `android-vX.Y.Z`）。Kotlin はローカルでコンパイルできないため CI の結果で確認する。実機未確認。決定は H-76 |
-| M2 フリック・学習・範囲操作 | フリックは iOS で実装済み。学習・ユーザー辞書はコアに有り（モバイルでの共有・同時アクセスは D-5 とともに未着手）。範囲操作の UI は未着手 |
+| M2 フリック・学習・範囲操作 | Android は H-77 で実装（フリック・文節操作・ユーザー辞書・学習、実機未確認）。以下は iOS の状況: フリックは iOS で実装済み。学習・ユーザー辞書はコアに有り（モバイルでの共有・同時アクセスは D-5 とともに未着手）。範囲操作の UI は未着手 |
 | M3 iOS | **進行中**: TestFlight で実機を使える段階。実装済み（実機未確認の項目あり。`docs/ios-device-checklist.md`）: かな 12 キー・フリック・変換・候補・部分変換・英字、データ駆動レイアウト（`docs/ios-keyboard-layout.md`。toggle・長押し・shortcut・片手モード）、設定タブ（シンプル/詳細。`docs/ios-settings.md`）、レイアウト管理（取り込み・割当・`nagi://layout`）、初回案内・データ・About、診断ログ。サイト（`web/`）にレイアウト編集 GUI。ユーザー辞書の登録・編集 UI。既定モデルは small（未選択時は端末の予算で自動選択。H-22(c)）。2026-10-15〜16 の追加（H-27〜H-33）: 確定方式は `insert` が既定（H-28）、候補を選ぶと次の文節へ進み候補バーで注目文節を強調（H-29）、フリック・長押しの取り消し（H-30・H-31）、英字 12 キーのトグル入力（H-31）、触覚・クリック音の互換モード（`keyboard.sound` は `off` / `compat`、既定 `compat`。H-30・H-31）、入力欄の種類によるレイアウト自動選択と改行キーの表示（`keyboard.layout_by_field`、既定 true。H-32）。「キーボードが切り替わる」は iOS のキーボード選択が原因で Nagi 側では直せない（H-33。H-27 の LLM 二重化の仮説は撤回）。部分変換の不具合 U-1 は解消済み（確定方式 `insert`。H-28・H-31）。残り: 実機確認、本物のアイコン・プライバシーポリシー・Beta App Review、堅牢性（メモリ警告・電源の実機確認、他機種）、設定のコア側新規項目（`docs/ios-settings.md` §4 段階4）、見た目の調整。タブは 5 つに整理済み（ホーム / 入力テスト / 設定 / レイアウト / About。2026-10-22 に実機で確認済み・問題なし） |
-| M4 スタイル変換等 | 未着手 |
+| M4 スタイル変換等 | Android の設定 GUI は H-77 で実装。スタイル変換はコア側が未実装のため未着手 |
 
 ## 1. 着手順の方針
 
