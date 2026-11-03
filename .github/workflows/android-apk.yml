@@ -37,10 +37,15 @@ on:
         description: "既存の GitHub Release（例 android-v0.1.0）にこのビルドの APK と latest.json を添付する（空欄なら添付しない）"
         type: string
         default: ""
+      prerelease:
+        description: "release_tag を指定したとき、prerelease のままにする（true なら公開せず、サイトの更新確認にも出ない）"
+        type: boolean
+        default: false
 
 # Release への添付（softprops/action-gh-release）に必要
 permissions:
   contents: write
+  actions: write # リリース後に web ワークフロー（サイトの latest.json 更新）を起動する
 
 concurrency:
   group: android-apk
@@ -223,4 +228,13 @@ jobs:
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/*
-          prerelease: true
+          # タグ push は公開リリース。手動実行は prerelease 入力に従う（true なら実機で確認するまで公開しない）
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
+
+      # prerelease でないリリースは、web ワークフローが latest.json を取り込んでサイトに公開する。
+      # 起動しておけば、アプリの更新確認（nagi.shiki-01.com/updates/android/latest.json）まで自動でつながる
+      - name: サイトの latest.json を更新（web ワークフローを起動）
+        if: (github.ref_type == 'tag' || inputs.release_tag != '') && !(github.event_name == 'workflow_dispatch' && inputs.prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run web.yml --ref main
