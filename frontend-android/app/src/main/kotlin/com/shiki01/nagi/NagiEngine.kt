@@ -26,6 +26,7 @@ internal class NagiEngine(context: Context) {
     private var handle = 0L
     private var failed = false
     private var nextId = 1
+    private var rpcMethod = "" // 診断ログ用: 直近に送った要求のメソッド名
 
     /** 起動時の診断情報（プロファイル等）。起動後に読める */
     @Volatile
@@ -232,6 +233,7 @@ internal class NagiEngine(context: Context) {
     private fun ensureStarted(): Boolean {
         if (handle != 0L) return true
         if (failed || retired) return false
+        val startedAt = System.nanoTime()
         try {
             NagiCore.loadError?.let { throw IllegalStateException("ネイティブライブラリを読み込めません: $it") }
             DataInstaller.ensure(app)
@@ -243,6 +245,7 @@ internal class NagiEngine(context: Context) {
             )
             if (h == 0L) {
                 startError = "コアの初期化に失敗しました（nativeNew が 0 を返しました）"
+                DiagLog.event(app, "core", "起動失敗: $startError")
                 failed = true
                 return false
             }
@@ -260,6 +263,7 @@ internal class NagiEngine(context: Context) {
             val (res, _) = rpc("initialize", init)
             if (res == null) {
                 startError = "コアの initialize に失敗しました"
+                DiagLog.event(app, "core", "起動失敗: $startError")
                 NagiCore.nativeFree(handle)
                 handle = 0L
                 failed = true
@@ -270,10 +274,12 @@ internal class NagiEngine(context: Context) {
             keyTable = KeyTables.parse(rpc("get_key_table", JSONObject()).first)
             // initialize の後に登録する（前だと通知が積まれたままになる）
             NagiCore.nativeSetWaker(handle, Runnable { exec.execute { drain() } })
+            DiagLog.event(app, "core", "起動成功 ${(System.nanoTime() - startedAt) / 1_000_000} ms / $startInfo")
             return true
         } catch (e: Throwable) {
             Log.e(TAG, "コアの起動に失敗", e)
             startError = e.message ?: e.toString()
+            DiagLog.event(app, "core", "起動失敗: $startError")
             failed = true
             return false
         }
@@ -294,7 +300,10 @@ internal class NagiEngine(context: Context) {
             .put("method", method)
             .put("params", params)
             .toString()
+        rpcMethod = method
+        val t0 = System.nanoTime()
         val out = NagiCore.nativeHandleLine(handle, line)
+        if (method != "initialize") LatencyLog.record((System.nanoTime() - t0) / 1_000_000.0)
         return parseLines(out, id)
     }
 
@@ -329,7 +338,10 @@ internal class NagiEngine(context: Context) {
             if (o.has("id") && !o.isNull("id")) {
                 if (o.optInt("id", -2) == expectedId) {
                     result = o.optJSONObject("result")
-                    if (result == null) Log.w(TAG, "エラー応答: ${o.optJSONObject("error")?.optString("message")}")
+                    if (result == null) {
+                        Log.w(TAG, "エラー応答: ${o.optJSONObject("error")?.optString("message")}")
+                        DiagLog.event(app, "rpc-error", "method=$rpcMethod code=${o.optJSONObject("error")?.optInt("code")}")
+                    }
                 }
             } else {
                 val method = o.optString("method", "")
@@ -367,6 +379,7 @@ internal object NagiRuntime {
      */
     fun restart(context: Context): NagiEngine = synchronized(this) {
         val old = engine
+        DiagLog.event(context, "core", "restart")
         val fresh = NagiEngine(context)
         if (old != null) {
             fresh.onNotification = old.onNotification

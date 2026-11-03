@@ -59,6 +59,30 @@
             android:exported="false"
             android:label="アップデート" />
 
+        <!-- このアプリについて・使い始めの手順・開発者・データの使用量（画面系の機能） -->
+        <activity
+            android:name=".AboutActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="このアプリについて" />
+        <activity
+            android:name=".OnboardingActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="使い始めの手順"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".DeveloperActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="開発者"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".DataUsageActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="データの使用量" />
+
         <service
             android:name=".NagiImeService"
             android:exported="true"

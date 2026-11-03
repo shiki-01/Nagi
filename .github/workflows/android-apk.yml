@@ -160,6 +160,12 @@ jobs:
           cp data/dict/nagi-dict.bin frontend-android/app/src/main/assets/dict/
           ls -la frontend-android/app/src/main/assets/dict
 
+      - name: NOTICE を assets へ配置
+        run: |
+          # About 画面のライセンス全文（NOTICE）の表示用
+          mkdir -p frontend-android/app/src/main/assets
+          cp NOTICE frontend-android/app/src/main/assets/NOTICE.txt
+
       - name: 更新の検証用公開鍵を assets へ配置
         run: |
           # アプリは assets/update-public-key.txt で更新（APK・データ資産）の ed25519 署名を検証する

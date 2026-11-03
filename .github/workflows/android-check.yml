@@ -28,6 +28,10 @@ jobs:
         run: |
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - name: NOTICE を assets へ配置
+        run: |
+          mkdir -p frontend-android/app/src/main/assets
+          cp NOTICE frontend-android/app/src/main/assets/NOTICE.txt
       - uses: gradle/actions/setup-gradle@v4
       - name: Kotlin のコンパイルと lint 相当
         working-directory: frontend-android

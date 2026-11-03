@@ -1,18 +1,27 @@
 package com.shiki01.nagi
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.LinearLayout
 import com.shiki01.nagi.core.NagiCore
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** 本体アプリのホーム。有効化の案内・状態表示・入力テストと、各設定画面への入口 */
 class SettingsActivity : Activity() {
     private lateinit var updateBanner: UiBanner
+    private lateinit var noticeBanner: UiBanner
+    private lateinit var memoryRow: UiRow
+    private lateinit var devSection: LinearLayout
+    private var noticeText: String? = null
     private lateinit var coreRow: UiRow
     private lateinit var dictRow: UiRow
     private lateinit var modelRow: UiRow
@@ -22,6 +31,12 @@ class SettingsActivity : Activity() {
         super.onCreate(savedInstanceState)
         val parts = screenParts("Nagi")
         val root = parts.content
+
+        // 更新後の案内（版が変わった最初の 1 回だけ）
+        noticeBanner = banner("", Tone.SUCCESS)
+        noticeBanner.visibility = View.GONE
+        root.addView(noticeBanner)
+        showUpdateNotice(savedInstanceState)
 
         // 新しい版のお知らせ（自動確認で見つかったときだけ表示）
         updateBanner = banner("", Tone.INFO)
@@ -34,7 +49,8 @@ class SettingsActivity : Activity() {
         dictRow = statusRow("辞書", "確認中", Tone.NEUTRAL)
         modelRow = statusRow("変換モデル", "確認中", Tone.NEUTRAL)
         keyboardRow = statusRow("キーボード", "確認中", Tone.NEUTRAL)
-        root.addSection("状態", card(coreRow, dictRow, modelRow, keyboardRow))
+        memoryRow = infoRow("メモリ予算", "")
+        root.addSection("状態", card(coreRow, dictRow, modelRow, keyboardRow, memoryRow))
 
         // はじめる
         val test: EditText = inputField("ここで入力を試す")
@@ -50,6 +66,7 @@ class SettingsActivity : Activity() {
                     (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
                 },
                 cardBody(test),
+                navRow("使い始めの手順", "有効化から入力テストまで") { openScreen(OnboardingActivity::class.java) },
             ),
         )
 
@@ -62,6 +79,7 @@ class SettingsActivity : Activity() {
                 navRow("ユーザー辞書", "単語とスニペットの登録") { openScreen(UserDictActivity::class.java) },
                 navRow("変換モデル", "ダウンロード・取り込み・選択") { openScreen(ModelActivity::class.java) },
                 navRow("英語・カタカナ語データ", "任意の追加データ") { openScreen(OptionalDataActivity::class.java) },
+                navRow("データの使用量", "辞書・モデル・学習データの容量") { openScreen(DataUsageActivity::class.java) },
             ),
         )
 
@@ -71,6 +89,20 @@ class SettingsActivity : Activity() {
             card(navRow("アップデート", "新しい版の確認とインストール", versionName()) { openUpdate() }),
         )
 
+        // 情報
+        root.addSection(
+            "情報",
+            card(navRow("このアプリについて", "バージョン・プライバシー・ライセンス") { openScreen(AboutActivity::class.java) }),
+        )
+        // 開発者モードがオンのときだけ出す（onResume で表示を切り替える）
+        devSection = LinearLayout(this)
+        devSection.orientation = LinearLayout.VERTICAL
+        devSection.addSection(
+            "開発者",
+            card(navRow("開発者", "診断ログ・応答時間・メモリ") { openScreen(DeveloperActivity::class.java) }),
+        )
+        root.addView(devSection)
+
         // データ管理
         root.addSection(
             "データ管理",
@@ -78,10 +110,40 @@ class SettingsActivity : Activity() {
         )
 
         setContentView(parts.root)
+
+        // 初回だけ使い始めの手順を自動で開く（画面の作り直しでは開かない）
+        if (savedInstanceState == null && !AppPrefs.onboardingDone(this)) {
+            openScreen(OnboardingActivity::class.java)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        noticeText?.let { outState.putString(STATE_NOTICE, it) }
+    }
+
+    /** 版が変わっていれば成功バナーを出し、見た版を記録する。画面の作り直しでは同じ文言を出し直す */
+    private fun showUpdateNotice(saved: Bundle?) {
+        val current = versionName()
+        var text = saved?.getString(STATE_NOTICE)
+        if (saved == null) {
+            text = UpdateNotice.text(AppPrefs.lastSeenVersion(this), current)
+            AppPrefs.setLastSeenVersion(this, current)
+            AppPrefs.setLastSeenUpdateTime(this, installTime())
+        }
+        noticeText = text
+        if (text != null) noticeBanner.show(text, Tone.SUCCESS)
+    }
+
+    private fun installTime(): Long = try {
+        packageManager.getPackageInfo(packageName, 0).lastUpdateTime
+    } catch (e: Exception) {
+        0L
     }
 
     override fun onResume() {
         super.onResume()
+        devSection.visibility = if (AppPrefs.developerMode(this)) View.VISIBLE else View.GONE
         refreshStatus()
         checkUpdateIfDue()
     }
@@ -119,24 +181,37 @@ class SettingsActivity : Activity() {
     }
 
     private fun refreshStatus() {
-        if (DataInstaller.dictFile(this).exists()) {
+        val dict = DataInstaller.dictFile(this)
+        if (dict.exists()) {
             dictRow.setDot(toneColor(Tone.SUCCESS))
             dictRow.setValue("あり")
-            dictRow.setSubtitle(null)
+            val at = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.JAPAN).format(Date(dict.lastModified()))
+            dictRow.setSubtitle("${formatBytes(dict.length())} / 取得（展開）$at")
         } else {
             dictRow.setDot(toneColor(Tone.WARNING))
             dictRow.setValue("なし")
             dictRow.setSubtitle("読みのまま変換します")
         }
-        if (ModelStore.hasModel(this)) {
+        val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        val mi = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(mi)
+        val budgetMb = ModelRecommendation.budgetMbFromAvail(mi.availMem)
+        val catalog = ModelRecommendation.CATALOG.map { ModelSpec(it.fileName, it.sizeBytes) }
+        val recommend = ModelRecommendation.summary(budgetMb, catalog)
+        val models = ModelStore.list(this)
+        if (models.isNotEmpty()) {
             modelRow.setDot(toneColor(Tone.SUCCESS))
             modelRow.setValue("あり")
-            modelRow.setSubtitle(null)
+            modelRow.setSubtitle(
+                models.joinToString(" / ") { "${ModelRecommendation.label(it.name)} ${formatBytes(it.sizeBytes)}" },
+            )
         } else {
             modelRow.setDot(toneColor(Tone.WARNING))
             modelRow.setValue("なし")
-            modelRow.setSubtitle("辞書のみで動作します")
+            modelRow.setSubtitle("辞書のみで動作します。$recommend")
         }
+        memoryRow.setValue("$budgetMb MB")
+        memoryRow.setSubtitle(recommend.ifEmpty { null })
         val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         val enabled = imm.enabledInputMethodList.any { it.packageName == packageName }
         keyboardRow.setDot(toneColor(if (enabled) Tone.SUCCESS else Tone.WARNING))
@@ -158,6 +233,10 @@ class SettingsActivity : Activity() {
                 )
             }
         }
+    }
+
+    companion object {
+        private const val STATE_NOTICE = "update_notice"
     }
 
     private fun versionName(): String = try {

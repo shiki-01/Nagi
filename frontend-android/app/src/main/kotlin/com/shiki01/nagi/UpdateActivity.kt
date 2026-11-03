@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -20,6 +21,7 @@ class UpdateActivity : Activity() {
     private lateinit var notesButton: UiButton
     private lateinit var checkButton: UiButton
     private lateinit var installButton: UiButton
+    private lateinit var installNote: TextView
     private lateinit var progress: UiProgress
     private lateinit var assetsBox: LinearLayout
     private lateinit var messageBanner: UiBanner
@@ -52,6 +54,9 @@ class UpdateActivity : Activity() {
         val blp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
         blp.topMargin = dp(16)
         root.addView(installButton, blp)
+        // Android は自分自身の更新でプロセスを終了するため、先に伝えておく
+        installNote = note("インストールが終わると、アプリがいったん閉じます。開き直してください")
+        root.addView(installNote)
         root.addView(checkButton, LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).also { it.topMargin = dp(8) })
         root.addView(notesButton, LinearLayout.LayoutParams(LP_MATCH, LP_WRAP).also { it.topMargin = dp(4) })
 
@@ -241,6 +246,7 @@ class UpdateActivity : Activity() {
         checkButton.isEnabled = !busy
         installButton.visibility = if (newer && m?.downloadUrl != null) View.VISIBLE else View.GONE
         installButton.isEnabled = !busy
+        installNote.visibility = installButton.visibility
 
         assetsBox.removeAllViews()
         val pending = if (m != null) DataUpdater.pending(this, m) else emptyList()

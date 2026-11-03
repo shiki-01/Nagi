@@ -4,5 +4,6 @@ local.properties
 app/build/
 app/src/main/jniLibs/
 app/src/main/assets/dict/
+app/src/main/assets/NOTICE.txt
 *.keystore
 *.jks
