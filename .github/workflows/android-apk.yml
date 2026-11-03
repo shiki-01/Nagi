@@ -33,6 +33,14 @@ on:
         description: "LLM 推論（llama.cpp）を有効にしてビルドする（タグ push のときは常に有効）"
         type: boolean
         default: true
+      release_tag:
+        description: "既存の GitHub Release（例 android-v0.1.0）にこのビルドの APK と latest.json を添付する（空欄なら添付しない）"
+        type: string
+        default: ""
+
+# Release への添付（softprops/action-gh-release）に必要
+permissions:
+  contents: write
 
 concurrency:
   group: android-apk
@@ -209,9 +217,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: GitHub Release に添付（タグ push のとき）
-        if: github.ref_type == 'tag'
+      - name: GitHub Release に添付（タグ push のとき、または手動実行で release_tag を指定したとき）
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/*
           prerelease: true
