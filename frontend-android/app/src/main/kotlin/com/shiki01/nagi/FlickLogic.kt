@@ -31,6 +31,15 @@ internal object FlickLogic {
     const val CANCEL_FACTOR = 2f
 
     /**
+     * 実際に使う判定距離（dp）。設定の距離 [thresholdDp] を感度の倍率 [sensitivity]（0.5〜2.0）で割る
+     * （倍率が大きいほど短い移動で反応する）。範囲外・不正な倍率は丸める
+     */
+    fun effectiveThresholdDp(thresholdDp: Float, sensitivity: Float): Float {
+        val s = if (sensitivity.isNaN() || sensitivity <= 0f) 1f else sensitivity.coerceIn(0.5f, 2.0f)
+        return thresholdDp / s
+    }
+
+    /**
      * 押した位置からの移動量（[dx], [dy]。画面座標で下が +）を判定する。
      * 縦横とも [thresholdPx] 未満ならタップ、超えたら大きい軸の方向。
      */

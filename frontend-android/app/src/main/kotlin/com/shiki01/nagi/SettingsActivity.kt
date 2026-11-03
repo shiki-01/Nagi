@@ -75,6 +75,7 @@ class SettingsActivity : Activity() {
             "設定",
             card(
                 navRow("入力設定", "レイアウト・フリック・見た目") { openScreen(KeyboardInputSettingsActivity::class.java) },
+                navRow("キーボードのレイアウト", "割り当て・取り込み・書き出し") { openScreen(LayoutManagerActivity::class.java) },
                 navRow("変換の設定", "変換・予測・学習・表記") { openScreen(SettingsFormActivity::class.java) },
                 navRow("ユーザー辞書", "単語とスニペットの登録") { openScreen(UserDictActivity::class.java) },
                 navRow("変換モデル", "ダウンロード・取り込み・選択") { openScreen(ModelActivity::class.java) },

@@ -12,9 +12,10 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.ViewCompat
 
-/** キーボードの配色。設定のテーマ（system / light / dark）で決まる */
-internal class KeyboardColors(val dark: Boolean) {
+/** キーボードの配色。設定のテーマ（system / light / dark）とアクセントカラーで決まる */
+internal class KeyboardColors(val dark: Boolean, accentColor: AccentColor = AccentColor.BLUE) {
     val bg = if (dark) Color.rgb(32, 33, 36) else Color.rgb(232, 234, 237)
     val keyBg = if (dark) Color.rgb(66, 68, 72) else Color.WHITE
     val funcBg = if (dark) Color.rgb(48, 50, 54) else Color.rgb(207, 211, 216)
@@ -22,7 +23,10 @@ internal class KeyboardColors(val dark: Boolean) {
     val fg = if (dark) Color.WHITE else Color.BLACK
     val candBg = if (dark) Color.rgb(44, 46, 50) else Color.rgb(246, 247, 248)
     val segBg = if (dark) Color.rgb(38, 40, 44) else Color.rgb(238, 240, 243)
-    val accent = Color.rgb(59, 130, 246)
+    val accent = accentColor.argb(dark)
+
+    /** 選択中の候補・変換中の強調の背景（アクセントを薄くしたもの） */
+    val accentSoft = AccentColor.withAlpha(accent, if (dark) 0x66 else 0x40)
     val subFg = if (dark) Color.rgb(170, 174, 180) else Color.rgb(100, 104, 110)
 
     companion object {
@@ -34,7 +38,7 @@ internal class KeyboardColors(val dark: Boolean) {
                 "light" -> false
                 else -> night
             }
-            return KeyboardColors(dark)
+            return KeyboardColors(dark, KeyboardPrefs.accent(ctx))
         }
     }
 }
@@ -72,6 +76,7 @@ internal object CandidateGrid {
         panel.orientation = LinearLayout.VERTICAL
         panel.setBackgroundColor(colors.candBg)
         panel.isClickable = true // 下のキーにタッチを流さない
+        ViewCompat.setAccessibilityPaneTitle(panel, "全候補の一覧")
 
         val head = TextView(context)
         head.text = "▴ 閉じる"
@@ -79,6 +84,7 @@ internal object CandidateGrid {
         head.setTextColor(colors.subFg)
         head.gravity = Gravity.CENTER_VERTICAL or Gravity.END
         head.setPadding(0, 0, context.dpToPx(16f), 0)
+        head.contentDescription = "全候補の一覧を閉じる"
         head.setOnClickListener { onClose() }
         panel.addView(head, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, context.dpToPx(44f)))
 
@@ -97,8 +103,9 @@ internal object CandidateGrid {
                 cell.maxLines = 1
                 cell.ellipsize = TextUtils.TruncateAt.END
                 cell.setPadding(context.dpToPx(6f), 0, context.dpToPx(6f), 0)
-                if (iv.index == selected) cell.background = roundRect(colors.pressedBg, context.dpToPx(6f).toFloat())
+                if (iv.index == selected) cell.background = roundRect(colors.accentSoft, context.dpToPx(6f).toFloat())
                 val idx = iv.index
+                cell.contentDescription = KeyDescriptions.candidate(iv.value, idx, items.size, idx == selected)
                 cell.setOnClickListener { onPick(idx) }
                 row.addView(cell, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
             }
@@ -140,7 +147,8 @@ internal class CandidateStrip(context: Context, private val onPick: (Int) -> Uni
             t.setTextColor(colors.fg)
             t.gravity = Gravity.CENTER
             t.setPadding(context.dpToPx(14f), 0, context.dpToPx(14f), 0)
-            if (i == selected) t.background = roundRect(colors.pressedBg, context.dpToPx(6f).toFloat())
+            if (i == selected) t.background = roundRect(colors.accentSoft, context.dpToPx(6f).toFloat())
+            t.contentDescription = KeyDescriptions.candidate(s, i, items.size, i == selected)
             t.setOnClickListener { onPick(i) }
             bar.addView(t, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
         }

@@ -17,6 +17,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import kotlin.math.abs
+import kotlin.math.min
 
 /**
  * Nagi の IME サービス。入力・変換のロジックはすべてコア（Rust）にあり、ここは
@@ -37,6 +38,9 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     /** 注目文節の番号。変換中でなければ -1 */
     private var focusIndex = -1
     private var lastPreedit: Preedit? = null
+
+    /** 変換中の強調に使うアクセント色（設定 `accent`。キーボードを表示するたびに読み直す） */
+    private var accentArgb: Int = KeyboardColors(false).accent
 
     /** 12 キーの表（コアから取れるまではフォールバック表） */
     private var keyTable: List<KanaKeyDef> = KeyTables.FALLBACK
@@ -89,8 +93,9 @@ class NagiImeService : InputMethodService(), KeyboardListener {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        // 設定画面で変えた値（配置・高さ・テーマ等）を反映する
+        // 設定画面で変えた値（配置・高さ・テーマ・アクセント等）を反映する
         keyboard?.reloadPrefs()
+        accentArgb = KeyboardColors.resolve(this).accent
         // 同じ入力欄への再表示（restarting）では、利用者が選んだレイアウトを変えない
         if (!restarting) applyFieldLayout(info)
     }
@@ -358,10 +363,53 @@ class NagiImeService : InputMethodService(), KeyboardListener {
 
     override fun onDeleteWord() {
         if (composing) return
+        deleteWordInHost()
+    }
+
+    /** カーソル手前の単語を入力欄から消す。パスワード欄などでは周辺の文字を読まない（何もしない） */
+    private fun deleteWordInHost() {
+        if (secure) return
         val ic = currentInputConnection ?: return
-        val before = ic.getTextBeforeCursor(64, 0) ?: return
-        val n = TextOps.wordDeleteLength(before)
+        val before = ic.getTextBeforeCursor(WORD_CONTEXT_UNITS, 0) ?: return
+        val n = WordBoundary.deleteLength(before)
         if (n > 0) ic.deleteSurroundingText(n, 0)
+    }
+
+    override fun onBackspaceWord() {
+        when {
+            // 変換中は注目文節の扱いが絡むので何もしない（押した瞬間の 1 回の backspace は済んでいる）
+            focusIndex >= 0 -> Unit
+            // 入力中: コアの backspace を単語の長さぶん続けて送る
+            kana && composing -> {
+                val p = lastPreedit ?: return
+                val upTo = p.cursor.coerceIn(0, p.text.length)
+                val n = WordBoundary.deleteCount(p.text.substring(0, upTo))
+                if (n > 0) {
+                    engine.actionRepeat("backspace", null, n) { r -> apply(r) { repeat(n) { sendDelete() } } }
+                }
+            }
+            else -> deleteWordInHost()
+        }
+    }
+
+    override fun onSpaceSwipe(steps: Int) {
+        if (steps == 0) return
+        val left = steps < 0
+        val dir = if (left) "left" else "right"
+        val code = if (left) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+        val n = abs(steps)
+        when {
+            !kana -> moveHostCursor(code, n)
+            // 変換中は注目文節、入力中は入力中の文字列内のカーソル（← → と同じ操作）
+            focusIndex >= 0 -> engine.actionRepeat("move_focus", dir, min(n, CORE_CURSOR_MAX)) { r -> apply(r, null) }
+            composing -> engine.actionRepeat("move_cursor", dir, min(n, CORE_CURSOR_MAX)) { r -> apply(r, null) }
+            else -> moveHostCursor(code, n)
+        }
+    }
+
+    /** 入力欄のカーソルを [n] 文字動かす（方向キーを送る。エディタの種類によらず動く） */
+    private fun moveHostCursor(code: Int, n: Int) {
+        repeat(min(n, HOST_CURSOR_MAX)) { sendDownUpKeyEvents(code) }
     }
 
     override fun onCycleText(text: String, previous: String?, viaCore: Boolean) {
@@ -498,7 +546,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         if (p.selectionStart in 0 until p.selectionEnd && p.selectionEnd <= p.text.length) {
             // 複数文節の選択範囲
             s.setSpan(
-                BackgroundColorSpan(0x333B82F6),
+                BackgroundColorSpan(AccentColor.withAlpha(accentArgb, 0x33)),
                 p.selectionStart,
                 p.selectionEnd,
                 Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
@@ -506,7 +554,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         }
         if (p.focusStart in 0 until p.focusEnd && p.focusEnd <= p.text.length) {
             s.setSpan(
-                BackgroundColorSpan(0x553B82F6),
+                BackgroundColorSpan(AccentColor.withAlpha(accentArgb, 0x55)),
                 p.focusStart,
                 p.focusEnd,
                 Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
@@ -590,5 +638,14 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     companion object {
         /** `EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING`（API 26+）と同じ値 */
         private const val NO_PERSONALIZED_LEARNING = 0x1000000
+
+        /** 単語削除のためにカーソル手前から読む長さ（UTF-16 コード単位。最大 50 文字ぶんの書記素に足りる長さ） */
+        private const val WORD_CONTEXT_UNITS = 160
+
+        /** スペースのスワイプ 1 回の通知で、コアのカーソル（文節）を動かす最大回数（iOS と同じ 20） */
+        private const val CORE_CURSOR_MAX = 20
+
+        /** スペースのスワイプ 1 回の通知で、入力欄のカーソルを動かす最大の文字数 */
+        private const val HOST_CURSOR_MAX = 64
     }
 }

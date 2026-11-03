@@ -4,6 +4,132 @@ import android.content.Context
 import android.content.SharedPreferences
 
 /**
+ * 入力の操作感の設定の既定値と範囲（1 か所にまとめる。設定画面の「既定に戻す」・[KeyboardPrefs] の読み出しが共通で使う）。
+ * iOS の `docs/ios-settings.md` の同名の項目に揃えた値（Android 固有の違いは各行のコメント）。
+ */
+internal object KeyboardDefaults {
+    // 入力
+    const val TOGGLE_INPUT = false
+    const val FLICK_THRESHOLD_DP = 14f
+    const val FLICK_THRESHOLD_MIN = 4f
+    const val FLICK_THRESHOLD_MAX = 40f
+    const val FLICK_SENSITIVITY = 1.0f
+    const val FLICK_SENSITIVITY_MIN = 0.5f
+    const val FLICK_SENSITIVITY_MAX = 2.0f
+    const val FLICK_POPUP = true
+    const val FLICK_HINTS = true
+    const val FLICK_LONG_PRESS_MS = 350
+    const val FLICK_LONG_PRESS_MIN = 150
+    const val FLICK_LONG_PRESS_MAX = 1000
+
+    // キー操作
+    const val SPACE_SWIPE = true
+    const val SPACE_SWIPE_STEP_DP = 12f
+    const val SPACE_SWIPE_STEP_MIN = 4f
+    const val SPACE_SWIPE_STEP_MAX = 40f
+    const val BACKSPACE_SWIPE = false
+    const val KEY_REPEAT_DELAY_MS = 400
+    const val KEY_REPEAT_DELAY_MIN = 200
+    const val KEY_REPEAT_DELAY_MAX = 1000
+
+    /** iOS は 80。Android は従来の固定値（60）を既定にする */
+    const val KEY_REPEAT_MS = 60
+    const val KEY_REPEAT_MIN = 30
+    const val KEY_REPEAT_MAX = 300
+
+    // 見た目
+    const val THEME = "system"
+    const val ACCENT = "blue"
+    const val KEY_SPACING_DP = 4f
+    const val KEY_SPACING_MIN = 0f
+    const val KEY_SPACING_MAX = 8f
+    const val KEY_CORNER_DP = 6f
+    const val KEY_CORNER_MIN = 0f
+    const val KEY_CORNER_MAX = 16f
+
+    // フィードバック
+    const val HAPTIC_LEVEL = "light"
+    const val KEY_SOUND = false
+
+    // アップデート
+    const val AUTO_CHECK_UPDATES = true
+
+    // 片手・高さ
+    const val ONE_HANDED = "off"
+    const val ONE_HANDED_WIDTH = 0.8f
+    const val HEIGHT_SCALE = 1.0f
+    const val HEIGHT_SCALE_MIN = 0.8f
+    const val HEIGHT_SCALE_MAX = 1.4f
+    const val HEIGHT_SCALE_LANDSCAPE = 1.0f
+    const val HEIGHT_SCALE_LANDSCAPE_MIN = 0.7f
+    const val HEIGHT_SCALE_LANDSCAPE_MAX = 1.4f
+}
+
+/** [KeyboardPrefs] の保存キー（SharedPreferences の名前）。設定画面の「既定に戻す」もこの名前で消す */
+internal object PrefKeys {
+    const val FLICK_LONG_PRESS_MS = "flick_long_press_ms"
+    const val FLICK_HINTS = "flick_hints"
+    const val TOGGLE_INPUT = "toggle_input"
+    const val FLICK_THRESHOLD_DP = "flick_threshold_dp"
+    const val FLICK_POPUP = "flick_popup"
+    const val HAPTIC_LEVEL = "haptic_level"
+    const val HAPTIC = "haptic"
+    const val HEIGHT_SCALE_LANDSCAPE = "height_scale_landscape"
+    const val HEIGHT_SCALE = "height_scale"
+    const val THEME = "theme"
+    const val KEY_SOUND = "key_sound"
+    const val FLICK_SENSITIVITY = "flick_sensitivity"
+    const val SPACE_SWIPE_STEP_DP = "space_swipe_step_dp"
+    const val SPACE_SWIPE = "space_swipe"
+    const val BACKSPACE_SWIPE = "backspace_swipe"
+    const val KEY_REPEAT_DELAY_MS = "key_repeat_delay_ms"
+    const val KEY_REPEAT_MS = "key_repeat_ms"
+    const val ONE_HANDED_WIDTH = "one_handed_width"
+    const val ONE_HANDED = "one_handed"
+    const val KEY_SPACING_DP = "key_spacing_dp"
+    const val KEY_CORNER_DP = "key_corner_dp"
+    const val ACCENT = "accent"
+    const val AUTO_CHECK_UPDATES = "auto_check_updates"
+}
+
+/**
+ * 設定画面の 1 項目ぶんの保存キー。「既定に戻す」で [KeyboardPrefs.reset] に渡す。
+ * 触覚は旧来の on / off のキーも一緒に消さないと、読み替えで「オフ」に戻ってしまう
+ */
+internal object ResetKeys {
+    val TOGGLE_INPUT = listOf(PrefKeys.TOGGLE_INPUT)
+    val FLICK_THRESHOLD = listOf(PrefKeys.FLICK_THRESHOLD_DP)
+    val FLICK_SENSITIVITY = listOf(PrefKeys.FLICK_SENSITIVITY)
+    val FLICK_POPUP = listOf(PrefKeys.FLICK_POPUP)
+    val FLICK_HINTS = listOf(PrefKeys.FLICK_HINTS)
+    val FLICK_LONG_PRESS = listOf(PrefKeys.FLICK_LONG_PRESS_MS)
+    val SPACE_SWIPE = listOf(PrefKeys.SPACE_SWIPE)
+    val SPACE_SWIPE_STEP = listOf(PrefKeys.SPACE_SWIPE_STEP_DP)
+    val BACKSPACE_SWIPE = listOf(PrefKeys.BACKSPACE_SWIPE)
+    val KEY_REPEAT_DELAY = listOf(PrefKeys.KEY_REPEAT_DELAY_MS)
+    val KEY_REPEAT = listOf(PrefKeys.KEY_REPEAT_MS)
+    val THEME = listOf(PrefKeys.THEME)
+    val ACCENT = listOf(PrefKeys.ACCENT)
+    val KEY_SPACING = listOf(PrefKeys.KEY_SPACING_DP)
+    val KEY_CORNER = listOf(PrefKeys.KEY_CORNER_DP)
+    val HAPTIC = listOf(PrefKeys.HAPTIC_LEVEL, PrefKeys.HAPTIC)
+    val KEY_SOUND = listOf(PrefKeys.KEY_SOUND)
+    val ONE_HANDED = listOf(PrefKeys.ONE_HANDED)
+    val ONE_HANDED_WIDTH = listOf(PrefKeys.ONE_HANDED_WIDTH)
+    val HEIGHT_SCALE = listOf(PrefKeys.HEIGHT_SCALE)
+    val HEIGHT_SCALE_LANDSCAPE = listOf(PrefKeys.HEIGHT_SCALE_LANDSCAPE)
+    val AUTO_CHECK_UPDATES = listOf(PrefKeys.AUTO_CHECK_UPDATES)
+
+    /** この画面で扱う設定すべて（「すべて既定に戻す」）。かな入力のレイアウトの割り当ては別（[KeyboardPrefs.setKanaLayoutId]） */
+    val ALL: List<String> = (
+        TOGGLE_INPUT + FLICK_THRESHOLD + FLICK_SENSITIVITY + FLICK_POPUP +
+            SPACE_SWIPE + SPACE_SWIPE_STEP + BACKSPACE_SWIPE + KEY_REPEAT_DELAY + KEY_REPEAT + THEME + ACCENT +
+            KEY_SPACING + KEY_CORNER + HAPTIC + KEY_SOUND + ONE_HANDED + ONE_HANDED_WIDTH + HEIGHT_SCALE +
+            HEIGHT_SCALE_LANDSCAPE + AUTO_CHECK_UPDATES
+        ).distinct()
+}
+
+/**
  * Android フロント固有の設定（コアの `config.toml` に無いもの。iOS の `ios-settings.json` に相当）。
  * キーボード（入力側）が読み、設定画面が書く。値の範囲は読むときに丸める。
  */
@@ -85,14 +211,15 @@ internal object KeyboardPrefs {
     fun setLayoutByField(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("layout_by_field", v).apply()
 
     /** 長押しと判定する時間（ミリ秒、150〜1000）。iOS の `flick.long_press_ms` */
-    fun flickLongPressMs(ctx: Context): Int = sp(ctx).getInt("flick_long_press_ms", 350).coerceIn(150, 1000)
+    fun flickLongPressMs(ctx: Context): Int = sp(ctx).getInt(PrefKeys.FLICK_LONG_PRESS_MS, KeyboardDefaults.FLICK_LONG_PRESS_MS)
+        .coerceIn(KeyboardDefaults.FLICK_LONG_PRESS_MIN, KeyboardDefaults.FLICK_LONG_PRESS_MAX)
 
-    fun setFlickLongPressMs(ctx: Context, v: Int) = sp(ctx).edit().putInt("flick_long_press_ms", v).apply()
+    fun setFlickLongPressMs(ctx: Context, v: Int) = sp(ctx).edit().putInt(PrefKeys.FLICK_LONG_PRESS_MS, v).apply()
 
     /** フリック先の文字を、キーの角に小さく表示する。iOS の `flick.hints` */
-    fun flickHints(ctx: Context): Boolean = sp(ctx).getBoolean("flick_hints", true)
+    fun flickHints(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.FLICK_HINTS, KeyboardDefaults.FLICK_HINTS)
 
-    fun setFlickHints(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("flick_hints", v).apply()
+    fun setFlickHints(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.FLICK_HINTS, v).apply()
 
     /** レイアウトの保存・削除・割り当てのたびに増える番号（キーボードが組み立て直すかの判定とキャッシュ破棄に使う） */
     fun layoutsRevision(ctx: Context): Long = sp(ctx).getLong("layouts_rev", 0L)
@@ -103,39 +230,134 @@ internal object KeyboardPrefs {
     }
 
     /** 12 キーでキーを押したときトグル入力（あ→い→う…）にする（false なら tap = 行の先頭） */
-    fun toggleInput(ctx: Context): Boolean = sp(ctx).getBoolean("toggle_input", false)
+    fun toggleInput(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.TOGGLE_INPUT, KeyboardDefaults.TOGGLE_INPUT)
 
-    fun setToggleInput(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("toggle_input", v).apply()
+    fun setToggleInput(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.TOGGLE_INPUT, v).apply()
 
     /** フリックとみなす移動量（dp）。小さいほど敏感 */
-    fun flickThresholdDp(ctx: Context): Float = sp(ctx).getFloat("flick_threshold_dp", 14f).coerceIn(4f, 40f)
+    fun flickThresholdDp(ctx: Context): Float = sp(ctx).getFloat(PrefKeys.FLICK_THRESHOLD_DP, KeyboardDefaults.FLICK_THRESHOLD_DP)
+        .coerceIn(KeyboardDefaults.FLICK_THRESHOLD_MIN, KeyboardDefaults.FLICK_THRESHOLD_MAX)
 
-    fun setFlickThresholdDp(ctx: Context, v: Float) = sp(ctx).edit().putFloat("flick_threshold_dp", v).apply()
+    fun setFlickThresholdDp(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.FLICK_THRESHOLD_DP, v).apply()
 
     /** フリックの押下ポップアップ（中央と上下左右の 5 文字）を出す */
-    fun flickPopup(ctx: Context): Boolean = sp(ctx).getBoolean("flick_popup", true)
+    fun flickPopup(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.FLICK_POPUP, KeyboardDefaults.FLICK_POPUP)
 
-    fun setFlickPopup(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("flick_popup", v).apply()
+    fun setFlickPopup(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.FLICK_POPUP, v).apply()
 
-    /** キー押下時の触覚フィードバック */
-    fun haptic(ctx: Context): Boolean = sp(ctx).getBoolean("haptic", true)
+    /**
+     * キー押下時の触覚の強さ。未設定なら旧来の on / off（"haptic"）から読み替える（on = 弱、off = オフ）
+     */
+    fun hapticLevel(ctx: Context): HapticLevel {
+        HapticLevel.fromJson(sp(ctx).getString(PrefKeys.HAPTIC_LEVEL, null))?.let { return it }
+        return if (sp(ctx).getBoolean(PrefKeys.HAPTIC, true)) HapticLevel.LIGHT else HapticLevel.OFF
+    }
 
-    fun setHaptic(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("haptic", v).apply()
+    fun setHapticLevel(ctx: Context, v: HapticLevel) =
+        sp(ctx).edit().putString(PrefKeys.HAPTIC_LEVEL, v.json).putBoolean(PrefKeys.HAPTIC, v != HapticLevel.OFF).apply()
+
+    /** 触覚が有効か（旧来の呼び方。強さが「オフ」以外） */
+    fun haptic(ctx: Context): Boolean = hapticLevel(ctx) != HapticLevel.OFF
+
+    /** キー入力のクリック音（端末の「タッチ操作音」の設定に従う） */
+    fun keySound(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.KEY_SOUND, KeyboardDefaults.KEY_SOUND)
+
+    fun setKeySound(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.KEY_SOUND, v).apply()
+
+    /** フリック感度の倍率（0.5〜2.0）。判定距離 = しきい値 ÷ 倍率 */
+    fun flickSensitivity(ctx: Context): Float = sp(ctx).getFloat(PrefKeys.FLICK_SENSITIVITY, KeyboardDefaults.FLICK_SENSITIVITY)
+        .coerceIn(KeyboardDefaults.FLICK_SENSITIVITY_MIN, KeyboardDefaults.FLICK_SENSITIVITY_MAX)
+
+    fun setFlickSensitivity(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.FLICK_SENSITIVITY, v).apply()
+
+    /** スペースキーの横スワイプでカーソルを動かす */
+    fun spaceSwipe(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.SPACE_SWIPE, KeyboardDefaults.SPACE_SWIPE)
+
+    fun setSpaceSwipe(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.SPACE_SWIPE, v).apply()
+
+    /** スペースのスワイプで 1 文字動かす距離（dp、4〜40） */
+    fun spaceSwipeStepDp(ctx: Context): Float = sp(ctx).getFloat(PrefKeys.SPACE_SWIPE_STEP_DP, KeyboardDefaults.SPACE_SWIPE_STEP_DP)
+        .coerceIn(KeyboardDefaults.SPACE_SWIPE_STEP_MIN, KeyboardDefaults.SPACE_SWIPE_STEP_MAX)
+
+    fun setSpaceSwipeStepDp(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.SPACE_SWIPE_STEP_DP, v).apply()
+
+    /** ⌫ の左スワイプで手前の単語をまとめて削除する（`touch.backspace_swipe`） */
+    fun backspaceSwipe(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.BACKSPACE_SWIPE, KeyboardDefaults.BACKSPACE_SWIPE)
+
+    fun setBackspaceSwipe(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.BACKSPACE_SWIPE, v).apply()
+
+    /** ⌫ の連打を始めるまでの時間（ミリ秒、200〜1000）。iOS の `touch.key_repeat_delay_ms` */
+    fun keyRepeatDelayMs(ctx: Context): Int = sp(ctx).getInt(PrefKeys.KEY_REPEAT_DELAY_MS, KeyboardDefaults.KEY_REPEAT_DELAY_MS)
+        .coerceIn(KeyboardDefaults.KEY_REPEAT_DELAY_MIN, KeyboardDefaults.KEY_REPEAT_DELAY_MAX)
+
+    fun setKeyRepeatDelayMs(ctx: Context, v: Int) = sp(ctx).edit().putInt(PrefKeys.KEY_REPEAT_DELAY_MS, v).apply()
+
+    /** ⌫ の連打の最初の間隔（ミリ秒、30〜300）。押し続けると加速する。iOS の `touch.key_repeat_ms` */
+    fun keyRepeatMs(ctx: Context): Int = sp(ctx).getInt(PrefKeys.KEY_REPEAT_MS, KeyboardDefaults.KEY_REPEAT_MS)
+        .coerceIn(KeyboardDefaults.KEY_REPEAT_MIN, KeyboardDefaults.KEY_REPEAT_MAX)
+
+    fun setKeyRepeatMs(ctx: Context, v: Int) = sp(ctx).edit().putInt(PrefKeys.KEY_REPEAT_MS, v).apply()
+
+    /** 片手モード: "off" / "left" / "right"（キーボード本体を寄せる側） */
+    fun oneHanded(ctx: Context): OneHanded = OneHanded.fromJson(sp(ctx).getString(PrefKeys.ONE_HANDED, KeyboardDefaults.ONE_HANDED))
+
+    fun setOneHanded(ctx: Context, v: OneHanded) = sp(ctx).edit().putString(PrefKeys.ONE_HANDED, v.json).apply()
+
+    /** 片手モードのときの本体の幅の比（0.6〜0.9） */
+    fun oneHandedWidth(ctx: Context): Float =
+        OneHandedLogic.clampWidth(sp(ctx).getFloat(PrefKeys.ONE_HANDED_WIDTH, KeyboardDefaults.ONE_HANDED_WIDTH))
+
+    fun setOneHandedWidth(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.ONE_HANDED_WIDTH, v).apply()
+
+    /** 横画面でのキーボードの高さの倍率（0.7〜1.4） */
+    fun heightScaleLandscape(ctx: Context): Float =
+        sp(ctx).getFloat(PrefKeys.HEIGHT_SCALE_LANDSCAPE, KeyboardDefaults.HEIGHT_SCALE_LANDSCAPE)
+            .coerceIn(KeyboardDefaults.HEIGHT_SCALE_LANDSCAPE_MIN, KeyboardDefaults.HEIGHT_SCALE_LANDSCAPE_MAX)
+
+    fun setHeightScaleLandscape(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.HEIGHT_SCALE_LANDSCAPE, v).apply()
+
+    /** キーの間隔（dp、0〜8） */
+    fun keySpacingDp(ctx: Context): Float = sp(ctx).getFloat(PrefKeys.KEY_SPACING_DP, KeyboardDefaults.KEY_SPACING_DP)
+        .coerceIn(KeyboardDefaults.KEY_SPACING_MIN, KeyboardDefaults.KEY_SPACING_MAX)
+
+    fun setKeySpacingDp(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.KEY_SPACING_DP, v).apply()
+
+    /** キーの角丸（dp、0〜16） */
+    fun keyCornerDp(ctx: Context): Float = sp(ctx).getFloat(PrefKeys.KEY_CORNER_DP, KeyboardDefaults.KEY_CORNER_DP)
+        .coerceIn(KeyboardDefaults.KEY_CORNER_MIN, KeyboardDefaults.KEY_CORNER_MAX)
+
+    fun setKeyCornerDp(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.KEY_CORNER_DP, v).apply()
+
+    /** アクセントカラー（blue / green / orange / pink / gray）。ホームのアクセントとは別 */
+    fun accent(ctx: Context): AccentColor = AccentColor.fromJson(sp(ctx).getString(PrefKeys.ACCENT, KeyboardDefaults.ACCENT))
+
+    fun setAccent(ctx: Context, v: AccentColor) = sp(ctx).edit().putString(PrefKeys.ACCENT, v.json).apply()
+
+    /**
+     * 指定した設定を保存から消して既定に戻す（設定画面の「既定に戻す」）。[ResetKeys] のリストを渡す。
+     * 触覚の旧来のキー（"haptic"）も一緒に消す
+     */
+    fun reset(ctx: Context, keys: List<String>) {
+        val e = sp(ctx).edit()
+        for (k in keys) e.remove(k)
+        e.apply()
+    }
 
     /** キーボードの高さの倍率（0.8〜1.4） */
-    fun heightScale(ctx: Context): Float = sp(ctx).getFloat("height_scale", 1.0f).coerceIn(0.8f, 1.4f)
+    fun heightScale(ctx: Context): Float = sp(ctx).getFloat(PrefKeys.HEIGHT_SCALE, KeyboardDefaults.HEIGHT_SCALE)
+        .coerceIn(KeyboardDefaults.HEIGHT_SCALE_MIN, KeyboardDefaults.HEIGHT_SCALE_MAX)
 
-    fun setHeightScale(ctx: Context, v: Float) = sp(ctx).edit().putFloat("height_scale", v).apply()
+    fun setHeightScale(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.HEIGHT_SCALE, v).apply()
 
     /** テーマ: "system" / "light" / "dark" */
-    fun theme(ctx: Context): String = sp(ctx).getString("theme", "system") ?: "system"
+    fun theme(ctx: Context): String = sp(ctx).getString(PrefKeys.THEME, KeyboardDefaults.THEME) ?: KeyboardDefaults.THEME
 
-    fun setTheme(ctx: Context, v: String) = sp(ctx).edit().putString("theme", v).apply()
+    fun setTheme(ctx: Context, v: String) = sp(ctx).edit().putString(PrefKeys.THEME, v).apply()
 
     /** アップデートの自動確認（本体アプリを開いたとき。24 時間に 1 回まで） */
-    fun autoCheckUpdates(ctx: Context): Boolean = sp(ctx).getBoolean("auto_check_updates", true)
+    fun autoCheckUpdates(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.AUTO_CHECK_UPDATES, KeyboardDefaults.AUTO_CHECK_UPDATES)
 
-    fun setAutoCheckUpdates(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("auto_check_updates", v).apply()
+    fun setAutoCheckUpdates(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.AUTO_CHECK_UPDATES, v).apply()
 
     /** 最後にアップデートを確認した時刻（epoch ミリ秒） */
     fun lastUpdateCheck(ctx: Context): Long = sp(ctx).getLong("last_update_check", 0L)

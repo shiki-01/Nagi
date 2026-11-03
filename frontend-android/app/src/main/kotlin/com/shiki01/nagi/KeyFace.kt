@@ -21,7 +21,12 @@ internal class FlickHints(val left: String, val up: String, val right: String, v
  * JSON レイアウトの 1 キー。メインの文字は TextView として描き、フリック先のヒント（[hints]）と
  * 長押し項目の先頭（[cornerLabel]。右上）を小さく重ねて描く。
  */
-internal class KeyFace(context: Context, private val colors: KeyboardColors) : TextView(context) {
+internal class KeyFace(
+    context: Context,
+    private val colors: KeyboardColors,
+    /** 背景の角丸（px。設定 `key_corner_dp`） */
+    private val radius: Float = context.dpToPx(6f).toFloat(),
+) : TextView(context) {
     /** 押していないときの背景色 */
     var normalColor: Int = colors.keyBg
 
@@ -31,7 +36,6 @@ internal class KeyFace(context: Context, private val colors: KeyboardColors) : T
     var cornerLabel: String? = null
 
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val radius = context.dpToPx(6f).toFloat()
     private val pad = context.dpToPx(4f).toFloat()
 
     init {

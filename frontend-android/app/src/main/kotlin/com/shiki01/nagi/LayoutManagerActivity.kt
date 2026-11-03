@@ -1,0 +1,660 @@
+package com.shiki01.nagi
+
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.view.Gravity
+import android.view.View
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.util.concurrent.Executors
+
+/** 画面の表示に必要な情報（バックグラウンドで集めてメインスレッドで描く） */
+internal data class LayoutScreenState(
+    val presets: List<LayoutInfo>,
+    val users: List<LayoutInfo>,
+    val kana: String,
+    val alpha: String,
+    val byField: Boolean,
+    val fieldAssigned: Map<FieldKind, String>,
+)
+
+/** 詳細ダイアログ用に読んだ JSON とその解釈 */
+internal class LayoutDetailData(val raw: String?, val layout: LayoutModel?)
+
+/** ファイルの読み取り結果 */
+internal sealed class FileReadResult {
+    class Text(val text: String) : FileReadResult()
+
+    class Fail(val reason: String) : FileReadResult()
+}
+
+/** 複製の結果 */
+internal sealed class DuplicateResult {
+    class Ok(val id: String, val name: String) : DuplicateResult()
+
+    class Fail(val reason: String) : DuplicateResult()
+}
+
+/**
+ * キーボードレイアウトの管理画面。「割り当て」「同梱のレイアウト」「自分のレイアウト」の 3 カード。
+ * 取り込み（ファイル・貼り付け・リンク）、`nagi://layout` の受け取り（確認ダイアログ必須）、書き出し、削除ができる。
+ * ファイルを読み書きする [LayoutStore] / [LayoutImporter] はバックグラウンドで呼び、UI はメインスレッドで更新する。
+ */
+class LayoutManagerActivity : Activity() {
+    private val main = Handler(Looper.getMainLooper())
+    private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "nagi-layout").apply { isDaemon = true } }
+
+    private lateinit var scroll: ScrollView
+    private lateinit var errorBanner: UiBanner
+    private lateinit var assignBox: LinearLayout
+    private lateinit var presetBox: LinearLayout
+    private lateinit var userBox: LinearLayout
+
+    private var state: LayoutScreenState? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val fab = FabView(this, "レイアウトを取り込む") { showImportMenu() }
+        val parts = screenParts("キーボードのレイアウト", fab)
+        scroll = parts.scroll
+        val root = parts.content
+
+        errorBanner = banner("", Tone.ERROR)
+        errorBanner.visibility = View.GONE
+        root.addView(errorBanner)
+        assignBox = verticalBox()
+        presetBox = verticalBox()
+        userBox = verticalBox()
+        root.addView(assignBox)
+        root.addView(presetBox)
+        root.addView(userBox)
+        setContentView(parts.root)
+
+        // 外部（ブラウザ等）から開かれたときだけ。画面の作り直しでは確認を出し直さない
+        if (savedInstanceState == null) handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        reload()
+    }
+
+    private fun verticalBox(): LinearLayout {
+        val b = LinearLayout(this)
+        b.orientation = LinearLayout.VERTICAL
+        return b
+    }
+
+    // ---- バックグラウンド実行 ----
+
+    /** [work] をバックグラウンドで実行し、結果を [done] にメインスレッドで渡す */
+    private fun <T> background(work: () -> T, done: (T) -> Unit) {
+        io.execute {
+            val result = try {
+                Result.success(work())
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            main.post {
+                if (isDestroyed) return@post
+                val value = result.getOrNull()
+                if (result.isSuccess && value != null) {
+                    done(value)
+                } else if (result.isFailure) {
+                    toast("処理に失敗しました: ${result.exceptionOrNull()?.message ?: "不明なエラー"}")
+                }
+            }
+        }
+    }
+
+    private fun showError(message: String) {
+        errorBanner.show(message, Tone.ERROR)
+        scroll.smoothScrollTo(0, 0)
+    }
+
+    // ---- 一覧の読み込みと描画 ----
+
+    private fun reload() {
+        background({
+            LayoutScreenState(
+                presets = LayoutStore.listPresets(this),
+                users = LayoutStore.listUser(this),
+                kana = LayoutStore.assigned(this, AssignSlot.KANA),
+                alpha = LayoutStore.assigned(this, AssignSlot.ALPHA),
+                byField = KeyboardPrefs.layoutByField(this),
+                fieldAssigned = KeyboardPrefs.fieldAssignments(this),
+            )
+        }) { s ->
+            state = s
+            renderAssign(s)
+            renderPresets(s)
+            renderUsers(s)
+        }
+    }
+
+    private fun renderAssign(s: LayoutScreenState) {
+        assignBox.removeAllViews()
+        val eff = LayoutChoices.effective(s.presets, s.users)
+        val names = LayoutChoices.names(eff)
+        val c = card()
+        c.add(
+            selectRow(
+                "かな入力のレイアウト",
+                null,
+                LayoutChoices.slotOptions(AssignSlot.KANA, eff, s.kana),
+                s.kana,
+            ) { id -> assign(AssignSlot.KANA, id) },
+        )
+        c.add(
+            selectRow(
+                "英字入力のレイアウト",
+                null,
+                LayoutChoices.slotOptions(AssignSlot.ALPHA, eff, s.alpha),
+                s.alpha,
+            ) { id -> assign(AssignSlot.ALPHA, id) },
+        )
+        c.add(
+            switchRow(
+                "入力欄の種類で自動的に切り替える",
+                "メール・URL・数字などの欄で、合うレイアウトに切り替えます",
+                s.byField,
+            ) { v ->
+                KeyboardPrefs.setLayoutByField(this, v)
+                KeyboardPrefs.bumpLayoutsRevision(this)
+                reload()
+            },
+        )
+        if (s.byField) {
+            for (kind in FieldKind.values()) {
+                c.add(
+                    selectRow(
+                        kind.label,
+                        LayoutChoices.fieldSubtitle(kind, s.fieldAssigned, names),
+                        LayoutChoices.fieldOptions(kind, eff),
+                        LayoutChoices.fieldSelected(s.fieldAssigned[kind]),
+                    ) { v -> assignField(kind, LayoutChoices.fieldValueToStore(v)) },
+                )
+            }
+        }
+        c.add(
+            actionRow("すべて既定に戻す", "かな・英字・入力欄ごとの割り当てを初期状態にします", danger = true) { confirmResetAssignments() },
+        )
+        assignBox.addSection("割り当て", c)
+    }
+
+    private fun renderPresets(s: LayoutScreenState) {
+        presetBox.removeAllViews()
+        val c = card()
+        if (s.presets.isEmpty()) {
+            c.add(cardBody(emptyState("同梱のレイアウトが見つかりません")))
+        }
+        for (info in s.presets) {
+            c.add(navRow(info.name, LayoutTexts.summary(info), "${info.keyCount} キー") { showDetail(info) })
+        }
+        presetBox.addSection("同梱のレイアウト", c, "タップでプレビューと複製ができます")
+    }
+
+    private fun renderUsers(s: LayoutScreenState) {
+        userBox.removeAllViews()
+        val c = card()
+        if (s.users.isEmpty()) {
+            val button = tonalButton("web のエディタを開く") { openEditor() }
+            c.add(
+                cardBody(
+                    emptyState(
+                        "自分のレイアウトはまだありません",
+                        "web のエディタで作って取り込めます。右下の＋から、ファイル・貼り付け・リンクで取り込みます",
+                    ),
+                    button,
+                ),
+            )
+        } else {
+            for (info in s.users) c.add(userEntry(info))
+            c.add(actionRow("web のエディタを開く", "レイアウトを作る・編集する") { openEditor() })
+        }
+        userBox.addSection("自分のレイアウト", c)
+    }
+
+    /** 自分のレイアウト 1 件の行。不正なら理由を赤いバナーで下に付ける */
+    private fun userEntry(info: LayoutInfo): View {
+        val row = UiRow(this)
+        row.titleView.text = info.name
+        row.setSubtitle(LayoutTexts.summary(info))
+        if (!info.valid) {
+            row.setTrailing(badge("無効", Tone.ERROR))
+        } else if (info.overridesPreset) {
+            row.setTrailing(badge("同梱を上書き中", Tone.WARNING))
+        }
+        row.setChevron()
+        row.onTap { showDetail(info) }
+        val reason = info.error ?: return row
+        val box = verticalBox()
+        box.addView(row)
+        val b = banner(reason, Tone.ERROR)
+        val lp = b.layoutParams as LinearLayout.LayoutParams
+        lp.marginStart = dp(UiSize.ROW_PAD_DP)
+        lp.marginEnd = dp(UiSize.ROW_PAD_DP)
+        lp.topMargin = 0
+        b.layoutParams = lp
+        box.addView(b)
+        return box
+    }
+
+    // ---- 割り当て ----
+
+    private fun assign(slot: AssignSlot, id: String) {
+        background({ LayoutStore.assign(this, slot, id) }) { ok ->
+            if (!ok) toast("このレイアウトは使えません")
+            reload()
+        }
+    }
+
+    private fun assignField(kind: FieldKind, value: String?) {
+        background({ LayoutStore.assignField(this, kind, value) }) { ok ->
+            if (!ok) toast("このレイアウトは使えません")
+            reload()
+        }
+    }
+
+    private fun confirmResetAssignments() {
+        confirmDialog(
+            "すべて既定に戻す",
+            "かな・英字・入力欄ごとのレイアウトの割り当てを、初期状態に戻します。レイアウトのファイルは消えません。",
+            "戻す",
+            destructive = true,
+        ) {
+            background({ LayoutStore.resetAssignments(this) }) {
+                toast("既定に戻しました")
+                reload()
+            }
+        }
+    }
+
+    // ---- 詳細 ----
+
+    private fun showDetail(info: LayoutInfo) {
+        background({ readDetail(info) }) { d -> openDetailDialog(info, d) }
+    }
+
+    private fun readDetail(info: LayoutInfo): LayoutDetailData {
+        // 同梱の行は、ユーザーが同じ id で上書いていても同梱のほうを見せる
+        val raw = if (info.source == LayoutSource.PRESET) readPresetRaw(info.id) else LayoutStore.readRaw(this, info.id)
+        val layout = raw?.let { LayoutParser.parseOrNull(it) }
+        return LayoutDetailData(raw, layout)
+    }
+
+    private fun readPresetRaw(id: String): String? = try {
+        assets.open("presets/$id.json").bufferedReader(Charsets.UTF_8).use { it.readText() }
+    } catch (e: IOException) {
+        null
+    }
+
+    private fun openDetailDialog(info: LayoutInfo, d: LayoutDetailData) {
+        val user = info.source == LayoutSource.USER
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(20), dp(20), dp(20), dp(8))
+        col.addView(textOf(info.name, 20f, cText, bold = true))
+        col.addView(note(LayoutTexts.summary(info)))
+
+        d.layout?.let { layout ->
+            val preview = PreviewView(this)
+            preview.setLayout(layout)
+            val lp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+            lp.topMargin = dp(12)
+            lp.bottomMargin = dp(8)
+            col.addView(preview, lp)
+        }
+        info.error?.let { col.addView(banner(it, Tone.ERROR)) }
+
+        var dialog: AlertDialog? = null
+        fun act(block: () -> Unit): () -> Unit = {
+            dialog?.dismiss()
+            block()
+        }
+
+        val actions = card()
+        val raw = d.raw
+        val s = state
+        if (!user) {
+            if (raw != null) {
+                actions.add(
+                    actionRow("複製して自分のレイアウトに追加", "id を変えて保存します。編集用の取り出しに使えます", onClick = act { duplicate(info, raw) }),
+                )
+            }
+        } else if (d.layout != null) {
+            val slots = LayoutTexts.slotsFor(d.layout.mode)
+            for (slot in slots) {
+                val assignedId = if (slot == AssignSlot.KANA) s?.kana else s?.alpha
+                val current = assignedId == info.id
+                actions.add(
+                    if (current) {
+                        actionRow(LayoutTexts.slotLabel(slot) + "（使用中）", "既定に戻す", onClick = act { unassign(slot) })
+                    } else {
+                        actionRow(LayoutTexts.slotLabel(slot), "このレイアウトを割り当てる", onClick = act { assign(slot, info.id) })
+                    },
+                )
+            }
+            if (slots.isEmpty()) {
+                actions.add(
+                    infoRow(
+                        "割り当てはありません",
+                        null,
+                        "数字・記号・絵文字のレイアウトは、他のレイアウトの layout キーや、入力欄の種類別の割り当てから使います",
+                    ),
+                )
+            }
+            if (raw != null) {
+                actions.add(
+                    actionRow("複製して自分のレイアウトに追加", "id を変えて保存します", onClick = act { duplicate(info, raw) }),
+                )
+            }
+        }
+        if (raw != null) {
+            actions.add(actionRow("JSON をコピー", null, onClick = act { copyJson(raw) }))
+            actions.add(actionRow("JSON を共有", null, onClick = act { shareJson(info, raw) }))
+            if (user && info.valid) {
+                actions.add(actionRow("nagi:// リンクをコピー", "他の端末で開くと取り込めます", onClick = act { copyLink(raw) }))
+            }
+        }
+        if (user) {
+            actions.add(actionRow("削除", null, danger = true, onClick = act { confirmDelete(info) }))
+        }
+        if (actions.childCount > 0) col.addView(actions)
+
+        val sv = ScrollView(this)
+        sv.addView(col)
+        val dlg = AlertDialog.Builder(this).setView(sv).setNegativeButton("閉じる", null).create()
+        dialog = dlg
+        dlg.show()
+    }
+
+    private fun unassign(slot: AssignSlot) {
+        background({ LayoutStore.assign(this, slot, null) }) {
+            toast("既定に戻しました")
+            reload()
+        }
+    }
+
+    private fun confirmDelete(info: LayoutInfo) {
+        confirmDialog(
+            "レイアウトを削除",
+            "「${info.name}」（${info.id}）を削除します。割り当てていた場合は既定に戻ります。元に戻せません。",
+            "削除",
+            destructive = true,
+        ) {
+            background({ LayoutStore.delete(this, info.id) }) { ok ->
+                toast(if (ok) "削除しました" else "削除できませんでした")
+                reload()
+            }
+        }
+    }
+
+    // ---- 複製・書き出し ----
+
+    private fun duplicate(info: LayoutInfo, raw: String) {
+        val baseName = info.name
+        background({
+            val taken = LayoutStore.presetIds(this).toSet() + LayoutStore.userIds(this)
+            val newId = LayoutCopy.freeId(info.id, taken)
+            val newName = LayoutCopy.copyName(baseName)
+            duplicateInto(raw, newId, newName)
+        }) { r ->
+            when (r) {
+                is DuplicateResult.Ok -> {
+                    errorBanner.hide()
+                    toast("「${r.name}」（${r.id}）として保存しました")
+                    reload()
+                }
+                is DuplicateResult.Fail -> showError("複製できませんでした: ${r.reason}")
+            }
+        }
+    }
+
+    private fun duplicateInto(raw: String, newId: String, newName: String): DuplicateResult {
+        val rewritten = LayoutCopy.rewrite(raw, newId, newName) ?: return DuplicateResult.Fail("JSON を読み取れません")
+        return when (val p = LayoutParser.parse(rewritten, null)) {
+            is LayoutParseResult.Err -> DuplicateResult.Fail(p.reason)
+            is LayoutParseResult.Ok ->
+                if (LayoutStore.saveUser(this, p.layout, rewritten)) DuplicateResult.Ok(newId, newName) else DuplicateResult.Fail("保存できませんでした")
+        }
+    }
+
+    private fun copyToClipboard(label: String, text: String): Boolean = try {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText(label, text))
+        true
+    } catch (e: RuntimeException) {
+        false
+    }
+
+    private fun copyJson(raw: String) {
+        toast(if (copyToClipboard("Nagi layout", raw)) "JSON をコピーしました" else "コピーできませんでした（大きすぎる可能性があります）")
+    }
+
+    private fun shareJson(info: LayoutInfo, raw: String) {
+        val send = Intent(Intent.ACTION_SEND)
+        send.type = "text/plain"
+        send.putExtra(Intent.EXTRA_SUBJECT, "${info.id}.json")
+        send.putExtra(Intent.EXTRA_TEXT, raw)
+        try {
+            startActivity(Intent.createChooser(send, "レイアウトを共有"))
+        } catch (e: ActivityNotFoundException) {
+            toast("共有できるアプリがありません")
+        } catch (e: RuntimeException) {
+            toast("共有できませんでした（大きすぎる可能性があります。コピーをお試しください）")
+        }
+    }
+
+    private fun copyLink(raw: String) {
+        background<Pair<String?, String?>>({
+            val json = LayoutCopy.minify(raw)?.takeIf { it.length < raw.length } ?: raw
+            val link = LayoutLink.encode(json)
+            if (LayoutIntake.linkTooLong(link)) {
+                Pair("大きすぎてリンクにできません。JSON のコピーまたは共有をお使いください", null)
+            } else {
+                // 受け取り側と同じ解釈で確かめる（画像つきなどはここで分かる）
+                when (val r = LayoutLink.parse(link)) {
+                    is DeepLinkResult.Err -> Pair("リンクにできません: ${r.reason}", null)
+                    is DeepLinkResult.Ok -> Pair(null, link)
+                }
+            }
+        }) { (problem, link) ->
+            if (link != null) {
+                toast(if (copyToClipboard("Nagi layout link", link)) "リンクをコピーしました" else "コピーできませんでした")
+            } else {
+                messageDialog("リンクにできません", problem ?: "不明なエラー")
+            }
+        }
+    }
+
+    // ---- 取り込み ----
+
+    private fun showImportMenu() {
+        val labels = listOf("ファイルから（.json）", "テキストを貼り付け", "リンクから（nagi://layout）")
+        choiceDialog("レイアウトを取り込む", labels, -1) { i ->
+            when (i) {
+                0 -> pickFile()
+                1 -> showTextInput("JSON を貼り付け", "レイアウトの JSON", 8) { text -> startPasted(text) }
+                2 -> showTextInput("リンクを貼り付け", "nagi://layout?data=...", 3) { text -> startPastedLink(text) }
+                else -> Unit
+            }
+        }
+    }
+
+    private fun showTextInput(title: String, hint: String, lines: Int, onOk: (String) -> Unit) {
+        val field = inputField(hint)
+        field.minLines = lines
+        field.gravity = Gravity.TOP or Gravity.START
+        field.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        val box = LinearLayout(this)
+        box.setPadding(dp(20), dp(8), dp(20), 0)
+        box.addView(field, LinearLayout.LayoutParams(LP_MATCH, LP_WRAP))
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(box)
+            .setPositiveButton("確認") { _, _ -> onOk(field.text.toString()) }
+            .setNegativeButton("キャンセル", null)
+            .show()
+    }
+
+    /** 貼り付けたテキスト。JSON のほか、nagi:// のリンクが貼られたときもリンクとして扱う */
+    private fun startPasted(text: String) {
+        if (text.isBlank()) {
+            showError("テキストが空です")
+        } else if (LayoutIntake.looksLikeLink(text)) {
+            startPastedLink(text)
+        } else {
+            startImport(text, viaLink = false)
+        }
+    }
+
+    private fun startPastedLink(text: String) {
+        when (val r = LayoutIntake.classifyUrl(text)) {
+            is IntakeResult.Accept -> startLink(r.url)
+            is IntakeResult.Reject -> showError(r.reason)
+            IntakeResult.None -> showError("リンクが空です")
+        }
+    }
+
+    private fun pickFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        intent.type = "*/*"
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain", "application/octet-stream"))
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, REQUEST_FILE)
+        } catch (e: ActivityNotFoundException) {
+            toast("ファイルを選ぶアプリが見つかりません")
+        }
+    }
+
+    @Deprecated("Activity Result API を使わない素の Activity のため")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_FILE || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        background({ readLimited(uri) }) { r ->
+            when (r) {
+                is FileReadResult.Text -> startImport(r.text, viaLink = false)
+                is FileReadResult.Fail -> showError(r.reason)
+            }
+        }
+    }
+
+    /** 上限（[LayoutLimits.JSON_BYTES_MAX]）を超えるファイルは途中で読むのをやめて拒否する */
+    private fun readLimited(uri: Uri): FileReadResult {
+        return try {
+            val max = LayoutLimits.JSON_BYTES_MAX
+            val bytes = contentResolver.openInputStream(uri)?.use { s ->
+                val out = ByteArrayOutputStream()
+                val buf = ByteArray(32 * 1024)
+                var total = 0
+                while (true) {
+                    val n = s.read(buf)
+                    if (n < 0) break
+                    total += n
+                    if (total > max) throw IOException(LayoutTexts.tooLarge())
+                    out.write(buf, 0, n)
+                }
+                out.toByteArray()
+            } ?: throw IOException("ファイルを開けません")
+            FileReadResult.Text(String(bytes, Charsets.UTF_8))
+        } catch (e: IOException) {
+            FileReadResult.Fail(e.message ?: "ファイルを読めません")
+        } catch (e: SecurityException) {
+            FileReadResult.Fail("ファイルを読む権限がありません")
+        }
+    }
+
+    /** 外部から開かれた Intent（`nagi://layout`）を受け取る。必ず確認ダイアログを挟む */
+    private fun handleIntent(i: Intent?) {
+        when (val r = LayoutIntake.classify(i?.action == Intent.ACTION_VIEW, i?.dataString)) {
+            IntakeResult.None -> Unit
+            is IntakeResult.Reject -> showError(r.reason)
+            is IntakeResult.Accept -> startLink(r.url)
+        }
+    }
+
+    /** リンクを解釈して（保存はしない）、確認へ進む。同梱と同じ id は拒否する */
+    private fun startLink(url: String) {
+        background({ LayoutImporter.parseDeepLink(url) }) { r ->
+            when (r) {
+                is DeepLinkResult.Err -> showError(r.reason)
+                is DeepLinkResult.Ok -> startImport(r.json, viaLink = true)
+            }
+        }
+    }
+
+    /** 検証（保存しない）→ 確認ダイアログ → 保存 */
+    private fun startImport(json: String, viaLink: Boolean) {
+        background({ LayoutImporter.inspect(this, json, allowPresetId = !viaLink) }) { r ->
+            when (r) {
+                is InspectResult.Err -> showError(r.reason)
+                is InspectResult.Ok -> {
+                    val c = r.candidate
+                    errorBanner.hide()
+                    confirmDialog(
+                        LayoutImportText.confirmTitle(viaLink),
+                        LayoutImportText.confirmMessage(
+                            c.layout.name,
+                            c.layout.id,
+                            c.layout.mode,
+                            c.keyCount,
+                            c.replaces,
+                            c.overridesPreset,
+                            viaLink,
+                        ),
+                        "取り込む",
+                    ) { runImport(c.json, viaLink) }
+                }
+            }
+        }
+    }
+
+    private fun runImport(json: String, viaLink: Boolean) {
+        background({ LayoutImporter.importJson(this, json, allowPresetId = !viaLink) }) { r ->
+            when (r) {
+                is ImportResult.Success -> {
+                    errorBanner.hide()
+                    toast(LayoutImportText.success(r.candidate.layout.name, r.candidate.replaces))
+                    reload()
+                }
+                is ImportResult.Failure -> showError(r.reason)
+            }
+        }
+    }
+
+    private fun openEditor() {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(EDITOR_URL)))
+        } catch (e: ActivityNotFoundException) {
+            toast("ブラウザが見つかりません")
+        }
+    }
+
+    companion object {
+        private const val REQUEST_FILE = 41
+
+        /** web のレイアウトエディタ（`web/src/routes/custom-keyboard`） */
+        private const val EDITOR_URL = "https://nagi.shiki-01.com/custom-keyboard"
+    }
+}

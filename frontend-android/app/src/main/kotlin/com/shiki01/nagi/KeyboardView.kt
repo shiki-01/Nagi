@@ -5,11 +5,11 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
-import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -18,6 +18,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.ViewCompat
 import kotlin.math.hypot
 import kotlin.math.max
 
@@ -80,6 +81,15 @@ internal interface KeyboardListener {
     fun onDeleteWord()
 
     /**
+     * スペースキーの横スワイプによるカーソル移動。[steps] は動かす文字数（右が正、左が負）。
+     * 変換中は注目文節、入力中は入力中の文字列内のカーソル、未入力は入力欄のカーソルを動かす
+     */
+    fun onSpaceSwipe(steps: Int)
+
+    /** ⌫ の左スワイプ。手前の単語をまとめて削除する（入力中はコアの backspace の連続） */
+    fun onBackspaceWord()
+
+    /**
      * ガラケー式（toggle）の 1 打鍵。[previous] があれば直前に出した文字を消してから [text] を入れる。
      * [viaCore] が true ならコアを通す（かな）。false ならアプリへ直接入れる
      */
@@ -105,16 +115,29 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         val layoutsRevision: Long,
         val toggleInput: Boolean,
         val thresholdDp: Float,
+        val sensitivity: Float,
         val popup: Boolean,
         val hints: Boolean,
         val longPressMs: Int,
-        val haptic: Boolean,
+        val haptic: HapticLevel,
+        val keySound: Boolean,
+        /** 今の向きで使う高さの倍率（縦は `height_scale`、横は `height_scale_landscape`） */
         val heightScale: Float,
         val theme: String,
+        val accent: AccentColor,
         val night: Boolean,
+        val spaceSwipe: Boolean,
+        val spaceSwipeStepDp: Float,
+        val backspaceSwipe: Boolean,
+        val repeatDelayMs: Int,
+        val repeatMs: Int,
+        val oneHanded: OneHanded,
+        val oneHandedWidth: Float,
+        val keySpacingDp: Float,
+        val keyCornerDp: Float,
+        /** 「アニメーションをオフ」でないか */
+        val animations: Boolean,
     )
-
-    private enum class ShiftState { OFF, ONCE, CAPS }
 
     /** 直前のトグル入力（同じキーの連打で文字を置き換えるための記録） */
     private class ToggleState(
@@ -127,11 +150,12 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     )
 
     /** 組み立てた JSON キーと、その View */
-    private class KeyBinding(val face: KeyFace, val key: LayoutKey)
+    private class KeyBinding(val face: KeyFace, val key: LayoutKey, val flickDef: KanaKeyDef?)
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private var prefs: Prefs = readPrefs()
     private var colors: KeyboardColors = KeyboardColors.resolve(context)
+    private val audio: AudioManager? = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     /** 明示的に開いているレイアウトの ID（数字・記号など）。null なら かな / 英字 の割り当てに従う */
     private var explicitId: String? = null
@@ -140,7 +164,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private var current: LayoutModel? = null
     private val bindings = ArrayList<KeyBinding>()
     private var shiftState = ShiftState.OFF
-    private var lastShiftTapAt = 0L
+    private var lastShiftTapAt: Long? = null
     private var toggleState: ToggleState? = null
 
     /** 入力欄の指定による改行キーの文字（検索・送信など。null ならレイアウトのまま） */
@@ -148,7 +172,6 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private var kanaMode = true
     private var keyTable: List<KanaKeyDef> = KeyTables.FALLBACK
     private var composing = false
-    private var shift = false
 
     private var candItems: List<String> = emptyList()
     private var candSelected = 0
@@ -266,6 +289,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private fun readPrefs(): Prefs {
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         return Prefs(
             layout = KeyboardPrefs.layout(context),
             kanaId = KeyboardPrefs.kanaLayoutId(context),
@@ -273,13 +297,26 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             layoutsRevision = KeyboardPrefs.layoutsRevision(context),
             toggleInput = KeyboardPrefs.toggleInput(context),
             thresholdDp = KeyboardPrefs.flickThresholdDp(context),
+            sensitivity = KeyboardPrefs.flickSensitivity(context),
             popup = KeyboardPrefs.flickPopup(context),
             hints = KeyboardPrefs.flickHints(context),
             longPressMs = KeyboardPrefs.flickLongPressMs(context),
-            haptic = KeyboardPrefs.haptic(context),
-            heightScale = KeyboardPrefs.heightScale(context),
+            haptic = KeyboardPrefs.hapticLevel(context),
+            keySound = KeyboardPrefs.keySound(context),
+            heightScale = if (landscape) KeyboardPrefs.heightScaleLandscape(context) else KeyboardPrefs.heightScale(context),
             theme = KeyboardPrefs.theme(context),
+            accent = KeyboardPrefs.accent(context),
             night = night,
+            spaceSwipe = KeyboardPrefs.spaceSwipe(context),
+            spaceSwipeStepDp = KeyboardPrefs.spaceSwipeStepDp(context),
+            backspaceSwipe = KeyboardPrefs.backspaceSwipe(context),
+            repeatDelayMs = KeyboardPrefs.keyRepeatDelayMs(context),
+            repeatMs = KeyboardPrefs.keyRepeatMs(context),
+            oneHanded = KeyboardPrefs.oneHanded(context),
+            oneHandedWidth = KeyboardPrefs.oneHandedWidth(context),
+            keySpacingDp = KeyboardPrefs.keySpacingDp(context),
+            keyCornerDp = KeyboardPrefs.keyCornerDp(context),
+            animations = MotionPrefs.animationsEnabled(context),
         )
     }
 
@@ -304,6 +341,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         segScroll.setBackgroundColor(colors.segBg)
         segScroll.addView(segBar, FrameLayout.LayoutParams(WRAP, MATCH))
         segScroll.visibility = View.GONE
+        ViewCompat.setAccessibilityPaneTitle(segScroll, "文節列")
         root.addView(segScroll, lp(MATCH, dp(38)))
 
         // 候補バー + 右端のボタン
@@ -317,9 +355,9 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         candScroll.isHorizontalScrollBarEnabled = false
         candScroll.addView(candBar, FrameLayout.LayoutParams(WRAP, MATCH))
         candRow.addView(candScroll, lp(0, MATCH, 1f))
-        reconvertBtn = barButton("再変換") { listener.onReconvert() }
-        expandBtn = barButton("▾") { toggleGrid() }
-        val layoutBtn = barButton("⇄") { toggleLayout() }
+        reconvertBtn = barButton("再変換", "選択した文字を再変換") { listener.onReconvert() }
+        expandBtn = barButton("▾", "全候補を開く") { toggleGrid() }
+        val layoutBtn = barButton("⇄", "12キーとローマ字入力の切り替え") { toggleLayout() }
         candRow.addView(reconvertBtn, lp(WRAP, MATCH))
         candRow.addView(expandBtn, lp(dp(40), MATCH))
         candRow.addView(layoutBtn, lp(dp(40), MATCH))
@@ -333,14 +371,16 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         toolbarScroll.isHorizontalScrollBarEnabled = false
         toolbarScroll.setBackgroundColor(colors.segBg)
         toolbarScroll.addView(toolbar, FrameLayout.LayoutParams(WRAP, MATCH))
+        ViewCompat.setAccessibilityPaneTitle(toolbarScroll, "文節の操作")
         for (t in TOOLS) {
             val b = TextView(context)
             b.text = t.label
+            b.contentDescription = t.desc
             b.textSize = 13f
             b.setTextColor(colors.fg)
             b.gravity = Gravity.CENTER
             b.setPadding(dp(10), 0, dp(10), 0)
-            b.background = roundRect(colors.funcBg, dp(6).toFloat())
+            b.background = roundRect(colors.funcBg, cornerPx)
             b.setOnClickListener { listener.onToolAction(t.type, t.content) }
             val p = lp(WRAP, MATCH)
             p.setMargins(dp(3), dp(3), dp(3), dp(3))
@@ -354,7 +394,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         keyArea.orientation = LinearLayout.VERTICAL
         root.addView(keyArea, lp(MATCH, WRAP))
 
-        addView(root, FrameLayout.LayoutParams(MATCH, WRAP))
+        addBody(root)
         popup = FlickPopupView(context, colors)
         addView(popup, FrameLayout.LayoutParams(MATCH, MATCH))
         longPopup = LongPressPopupView(context, colors)
@@ -365,6 +405,67 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         renderSegments()
     }
 
+    /**
+     * キーボード本体 [root] を置く。片手モードのときは幅を絞って寄せ、空いた側に「⇄」（反対側へ寄せる）と
+     * 「↔」（通常に戻す）の小さなボタンを縦に並べる
+     */
+    private fun addBody(root: LinearLayout) {
+        val mode = prefs.oneHanded
+        if (mode == OneHanded.OFF) {
+            addView(root, FrameLayout.LayoutParams(MATCH, WRAP))
+            return
+        }
+        val frac = OneHandedLogic.bodyFraction(mode, prefs.oneHandedWidth)
+        val row = LinearLayout(context)
+        row.orientation = LinearLayout.HORIZONTAL
+        val side = oneHandedButtons(mode)
+        // 重みで幅を按分する（本体 : 空き側 = frac : 1 - frac）
+        val bodyLp = LinearLayout.LayoutParams(0, WRAP, frac)
+        val sideLp = LinearLayout.LayoutParams(0, MATCH, 1f - frac)
+        if (mode == OneHanded.LEFT) {
+            row.addView(root, bodyLp)
+            row.addView(side, sideLp)
+        } else {
+            row.addView(side, sideLp)
+            row.addView(root, bodyLp)
+        }
+        addView(row, FrameLayout.LayoutParams(MATCH, WRAP))
+    }
+
+    /** 片手モードで空いた側のボタン列 */
+    private fun oneHandedButtons(mode: OneHanded): View {
+        val col = LinearLayout(context)
+        col.orientation = LinearLayout.VERTICAL
+        col.gravity = Gravity.CENTER
+        fun sideButton(label: String, desc: String, onTap: () -> Unit): TextView {
+            val t = TextView(context)
+            t.text = label
+            t.contentDescription = desc
+            t.textSize = 18f
+            t.gravity = Gravity.CENTER
+            t.setTextColor(colors.fg)
+            t.background = roundRect(colors.funcBg, cornerPx)
+            t.setOnClickListener {
+                buzz(t)
+                onTap()
+            }
+            return t
+        }
+        val flip = sideButton("⇄", "反対側に寄せる") { applyOneHanded(mode.flipped()) }
+        val off = sideButton("↔", "片手モードを解除") { applyOneHanded(OneHanded.OFF) }
+        val lp1 = LinearLayout.LayoutParams(dp(30), dp(36))
+        lp1.bottomMargin = dp(10)
+        col.addView(flip, lp1)
+        col.addView(off, LinearLayout.LayoutParams(dp(30), dp(36)))
+        return col
+    }
+
+    /** 片手モードを保存して組み立て直す（ボタンのタップの最中に View を作り直さないよう、次のループで行う） */
+    private fun applyOneHanded(mode: OneHanded) {
+        KeyboardPrefs.setOneHanded(context, mode)
+        post { reloadPrefs() }
+    }
+
     private fun buildKeyArea() {
         keyArea.removeAllViews()
         letterKeys.clear()
@@ -373,8 +474,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         enterKey = null
         modeKey = null
         shiftKey = null
-        shift = false
         shiftState = ShiftState.OFF
+        lastShiftTapAt = null
         toggleState = null
         if (::longPopup.isInitialized) longPopup.hide()
         val l = resolveLayout()
@@ -455,7 +556,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             row.addView(spacer(key.width.toFloat()))
             return
         }
-        val face = KeyFace(context, colors)
+        val face = KeyFace(context, colors, cornerPx)
         face.normalColor = roleColor(key.role)
         face.setTextColor(if (key.role == KeyRole.ACCENT) Color.WHITE else colors.fg)
         val text = if (a is KeyAction.Flick && key.label == null && flickDef != null) flickDef.center else LayoutLabels.staticLabel(key)
@@ -475,13 +576,38 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         when {
             a is KeyAction.Flick && flickDef != null -> attachFlickKey(face, key, a, flickDef, l)
             isBackspace(a) -> attachRepeatKey(face)
+            isSpace(a) && prefs.spaceSwipe && key.longPress.isEmpty() -> attachSpaceKey(face)
             else -> attachJsonKey(face, key, l)
         }
+        // TalkBack の「ダブルタップで有効にする」は click として届く（通常のタッチは onTouch が処理する）
+        face.setOnClickListener { activateByAccessibility(key, a, flickDef, l) }
+        val binding = KeyBinding(face, key, flickDef)
+        face.contentDescription = describe(binding)
         row.addView(face, keyParams(key.width.toFloat()))
-        bindings.add(KeyBinding(face, key))
+        bindings.add(binding)
+    }
+
+    private fun describe(b: KeyBinding): String =
+        KeyDescriptions.forKey(b.key, b.flickDef, composing, kanaMode, enterOverride, shiftState)
+
+    /** TalkBack などの操作でキーを有効にしたとき。タップと同じ動作を 1 回行う */
+    private fun activateByAccessibility(key: LayoutKey, a: KeyAction, def: KanaKeyDef?, l: LayoutModel) {
+        when {
+            a is KeyAction.Flick && def != null -> {
+                breakToggle()
+                if (a.kanaKey != null) {
+                    listener.onKana(def.key, if (prefs.toggleInput) "toggle" else "tap", null, null)
+                } else if (def.center.isNotEmpty()) {
+                    sendText(def.center, l)
+                }
+            }
+            else -> activate(a, key, l)
+        }
     }
 
     private fun isBackspace(a: KeyAction): Boolean = a is KeyAction.Act && a.name == "backspace"
+
+    private fun isSpace(a: KeyAction): Boolean = a is KeyAction.Act && a.name == "space"
 
     /** フリックキーの文字表。`kana` 指定はコアの表（無ければフォールバック表）、無指定は各方向の文字 */
     private fun flickDefOf(key: LayoutKey, a: KeyAction.Flick): KanaKeyDef? {
@@ -612,27 +738,113 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         }
     }
 
-    /** ⌫: 押している間、一定間隔で繰り返す */
-    private fun attachRepeatKey(face: KeyFace) {
-        val repeat = object : Runnable {
+    /**
+     * ⌫ の連打。押した瞬間に 1 文字消し、押し続けると [RepeatSchedule] に従って加速しながら繰り返し、離すと止まる。
+     * 設定で有効なら、左へ約 40dp スワイプしたときに連打を止めて手前の単語をまとめて消す
+     */
+    private inner class BackspaceRepeater(private val onStep: () -> Unit) {
+        private var interval = 0
+        private var count = 0
+        private val task = object : Runnable {
             override fun run() {
-                listener.onBackspace()
-                uiHandler.postDelayed(this, 60)
+                onStep()
+                count++
+                interval = RepeatSchedule.nextInterval(interval, prefs.repeatMs, count)
+                if (count < RepeatSchedule.MAX_REPEATS) uiHandler.postDelayed(this, interval.toLong())
             }
         }
+
+        fun start() {
+            stop()
+            interval = prefs.repeatMs
+            count = 0
+            uiHandler.postDelayed(task, prefs.repeatDelayMs.toLong())
+        }
+
+        fun stop() {
+            uiHandler.removeCallbacks(task)
+        }
+    }
+
+    /** JSON レイアウトの ⌫ キー */
+    private fun attachRepeatKey(face: KeyFace) {
+        val rep = BackspaceRepeater { listener.onBackspace() }
+        var downX = 0f
+        var downY = 0f
+        var swiped = false
         face.setOnTouchListener { view, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    downX = ev.x
+                    downY = ev.y
+                    swiped = false
                     face.showPressed(true)
-                    buzz(view)
+                    buzz(view, AudioManager.FX_KEYPRESS_DELETE)
                     breakToggle()
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
                     listener.onBackspace()
-                    uiHandler.postDelayed(repeat, 400)
+                    rep.start()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (prefs.backspaceSwipe && !swiped && swipedLeft(ev.x - downX, ev.y - downY)) {
+                        swiped = true
+                        rep.stop()
+                        buzz(view, AudioManager.FX_KEYPRESS_DELETE)
+                        listener.onBackspaceWord()
+                    }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     face.showPressed(false)
-                    uiHandler.removeCallbacks(repeat)
+                    rep.stop()
                 }
+            }
+            true
+        }
+    }
+
+    /** 単語削除とみなす左への移動か（約 40dp 以上左へ、かつ縦より横の動きが大きい） */
+    private fun swipedLeft(dx: Float, dy: Float): Boolean =
+        SwipeLogic.isLeftSwipe(dx, dy, context.dpF(BACKSPACE_SWIPE_DP))
+
+    /**
+     * 空白キーのスワイプ。タップは空白（または変換）。押したまま左右に 1 ステップ以上動かすとカーソル移動に入り、
+     * 動かした距離に比例してカーソルを動かす。カーソル移動に入ったときは、離しても空白を入れない
+     */
+    private fun attachSpaceKey(face: KeyFace) = attachSpace(face) { face.showPressed(it) }
+
+    private fun attachSpace(view: View, setPressed: (Boolean) -> Unit) {
+        var tracker = SpaceSwipeTracker(context.dpF(prefs.spaceSwipeStepDp))
+        var downX = 0f
+        var downY = 0f
+        view.setOnTouchListener { view, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = ev.x
+                    downY = ev.y
+                    tracker = SpaceSwipeTracker(context.dpF(prefs.spaceSwipeStepDp))
+                    setPressed(true)
+                    buzz(view, AudioManager.FX_KEYPRESS_SPACEBAR)
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val wasActive = tracker.isActive
+                    val delta = tracker.update(ev.x - downX)
+                    if (tracker.isActive && !wasActive) {
+                        breakToggle()
+                        buzz(view, AudioManager.FX_KEYPRESS_SPACEBAR)
+                    }
+                    if (delta != 0) listener.onSpaceSwipe(delta)
+                }
+                MotionEvent.ACTION_UP -> {
+                    setPressed(false)
+                    // カーソル移動に入っていたら空白は入れない。ほとんど動いていないとき（単純なタップ）だけ空白
+                    val moved = hypot((ev.x - downX).toDouble(), (ev.y - downY).toDouble())
+                    if (!tracker.isActive && moved < dp(SPACE_TAP_SLOP_DP)) {
+                        breakToggle()
+                        listener.onSpace()
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> setPressed(false)
             }
             true
         }
@@ -747,20 +959,17 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         }
     }
 
+    /** Shift: 1 回で次の 1 文字だけ大文字、0.5 秒以内の 2 回連続で Caps Lock、Caps Lock 中の 1 回で解除 */
     private fun tapShift() {
-        val now = SystemClock.uptimeMillis()
-        val double = now - lastShiftTapAt < DOUBLE_TAP_MS
-        lastShiftTapAt = now
-        shiftState = when (shiftState) {
-            ShiftState.OFF -> ShiftState.ONCE
-            ShiftState.ONCE -> if (double) ShiftState.CAPS else ShiftState.OFF
-            ShiftState.CAPS -> ShiftState.OFF
-        }
+        val r = ShiftLogic.tap(shiftState, lastShiftTapAt, SystemClock.uptimeMillis())
+        shiftState = r.state
+        lastShiftTapAt = r.lastTapAt
         renderLabels()
     }
 
     private fun toggleCaps() {
-        shiftState = if (shiftState == ShiftState.CAPS) ShiftState.OFF else ShiftState.CAPS
+        shiftState = ShiftLogic.toggleCaps(shiftState)
+        lastShiftTapAt = null
         renderLabels()
     }
 
@@ -773,9 +982,14 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
 
     private fun keyParams(weight: Float): LinearLayout.LayoutParams {
         val p = lp(0, MATCH, weight)
-        p.setMargins(dp(2), dp(3), dp(2), dp(3))
+        val h = context.dpToPx(KeyMetrics.horizontalMarginDp(prefs.keySpacingDp))
+        val v = context.dpToPx(KeyMetrics.verticalMarginDp(prefs.keySpacingDp))
+        p.setMargins(h, v, h, v)
         return p
     }
+
+    /** キーの角丸（px。設定 `key_corner_dp`） */
+    private val cornerPx: Float get() = context.dpToPx(prefs.keyCornerDp).toFloat()
 
     private fun spacer(weight: Float): View {
         val v = View(context)
@@ -797,6 +1011,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         addFlick(row, "ka")
         addFlick(row, "sa")
         val bs = funcKey("⌫", null)
+        bs.contentDescription = "削除"
         attachRepeat(bs) { listener.onBackspace() }
         row.addView(bs, keyParams(1f))
 
@@ -805,8 +1020,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         addFlick(row, "ta")
         addFlick(row, "na")
         addFlick(row, "ha")
-        val space = funcKey("空白", { listener.onSpace() })
-        space.textSize = 16f
+        val space = legacySpace(funcKey("空白", null), colors.funcBg)
         spaceKey = space
         row.addView(space, keyParams(1f))
 
@@ -842,6 +1056,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     /** タップ / フリックのキー。押している間はポップアップを出し、離したときに方向を判定して送る */
     private fun flickKey(def: KanaKeyDef, label: String): TextView {
         val t = baseKey(label, colors.keyBg)
+        t.contentDescription = KeyDescriptions.flick(def)
+        t.setOnClickListener { listener.onKana(def.key, if (prefs.toggleInput) "toggle" else "tap", null, null) }
         var downX = 0f
         var downY = 0f
         var keyRect = RectF()
@@ -850,7 +1066,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
                 MotionEvent.ACTION_DOWN -> {
                     downX = ev.x
                     downY = ev.y
-                    view.background = roundRect(colors.pressedBg, dp(6).toFloat())
+                    view.background = roundRect(colors.pressedBg, cornerPx)
                     buzz(view)
                     view.parent?.requestDisallowInterceptTouchEvent(true)
                     keyRect = rectOf(view)
@@ -864,7 +1080,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
                 }
                 MotionEvent.ACTION_UP -> {
                     popup.hide()
-                    view.background = roundRect(colors.keyBg, dp(6).toFloat())
+                    view.background = roundRect(colors.keyBg, cornerPx)
                     val r = judge(ev.x - downX, ev.y - downY, view)
                     if (!r.cancelled) {
                         val flick = r.direction != FlickDirection.TAP
@@ -878,7 +1094,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     popup.hide()
-                    view.background = roundRect(colors.keyBg, dp(6).toFloat())
+                    view.background = roundRect(colors.keyBg, cornerPx)
                 }
             }
             true
@@ -887,7 +1103,17 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     }
 
     private fun judge(dx: Float, dy: Float, v: View): FlickResult =
-        FlickLogic.judge(dx, dy, context.dpToPx(prefs.thresholdDp).toFloat(), v.width.toFloat(), v.height.toFloat())
+        FlickLogic.judge(
+            dx,
+            dy,
+            thresholdPx(),
+            v.width.toFloat(),
+            v.height.toFloat(),
+        )
+
+    /** フリックの判定距離（px）。設定の距離を感度の倍率で割る */
+    private fun thresholdPx(): Float =
+        context.dpF(FlickLogic.effectiveThresholdDp(prefs.thresholdDp, prefs.sensitivity))
 
     /** [v] の位置とサイズ（このビューの座標） */
     private fun rectOf(v: View): RectF {
@@ -913,41 +1139,66 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         row.addView(spacer(0.5f))
 
         row = newRow(h)
-        val sh = funcKey("⇧", { toggleShift() })
+        val sh = funcKey("⇧", { tapShift() })
         shiftKey = sh
         row.addView(sh, keyParams(1.5f))
         for (k in "zxcvbnm") row.addView(letterKey(k.toString()), keyParams(1f))
         val bs = funcKey("⌫", null)
+        bs.contentDescription = "削除"
         attachRepeat(bs) { listener.onBackspace() }
         row.addView(bs, keyParams(1.5f))
 
+        // 下段: ← → は 12 キー画面と同じく、入力中・変換中・未入力でカーソルや注目文節を動かす
         row = newRow(h)
         val mode = funcKey(if (kanaMode) "あ" else "A", { listener.onToggleMode() }, { toggleLayout() })
+        mode.contentDescription = "かなと英字の切り替え"
         modeKey = mode
-        row.addView(mode, keyParams(1.2f))
+        row.addView(mode, keyParams(1.1f))
         val num = funcKey("123", { listener.onOpenNumbers() })
         num.textSize = 14f
-        row.addView(num, keyParams(1.1f))
-        row.addView(punctKey("ー", "-"), keyParams(1f))
-        val space = baseKey("空白", colors.keyBg)
-        space.textSize = 16f
-        attachTap(space, colors.keyBg, null) { listener.onSpace() }
+        num.contentDescription = "数字と記号"
+        row.addView(num, keyParams(1f))
+        row.addView(punctKey("ー", "-"), keyParams(0.9f))
+        val space = legacySpace(baseKey("空白", colors.keyBg), colors.keyBg)
         spaceKey = space
-        row.addView(space, keyParams(3f))
-        row.addView(punctKey("、", ","), keyParams(1f))
-        row.addView(punctKey("。", "."), keyParams(1f))
+        row.addView(space, keyParams(2.4f))
+        row.addView(punctKey("、", ","), keyParams(0.9f))
+        row.addView(punctKey("。", "."), keyParams(0.9f))
+        val left = funcKey("←", { listener.onArrow(true) })
+        left.contentDescription = "カーソルを左へ"
+        row.addView(left, keyParams(0.9f))
+        val right = funcKey("→", { listener.onArrow(false) })
+        right.contentDescription = "カーソルを右へ"
+        row.addView(right, keyParams(0.9f))
         val enter = funcKey("⏎", { listener.onEnter() })
         enterKey = enter
-        row.addView(enter, keyParams(1.2f))
+        row.addView(enter, keyParams(1.1f))
+    }
+
+    /** 組み込み（従来）の空白キー。スワイプが有効なら [attachSpaceKey] で、そうでなければタップだけ */
+    private fun legacySpace(t: TextView, normal: Int): TextView {
+        t.textSize = 16f
+        if (prefs.spaceSwipe) {
+            attachSpace(t) { t.background = roundRect(if (it) colors.pressedBg else normal, cornerPx) }
+            // TalkBack の「ダブルタップで有効にする」
+            t.setOnClickListener { listener.onSpace() }
+        } else {
+            attachTap(t, normal, null) { listener.onSpace() }
+        }
+        return t
     }
 
     private fun letterKey(c: String): TextView {
         val t = baseKey(c, colors.keyBg)
         t.tag = c
         attachTap(t, colors.keyBg, null) {
-            val s = if (shift) c.uppercase() else c
-            listener.onLetter(s)
-            if (shift) toggleShift()
+            val on = shiftState != ShiftState.OFF
+            listener.onLetter(if (on) c.uppercase() else c)
+            // 次の 1 文字だけの Shift はここで戻す。Caps Lock は固定のまま
+            if (shiftState == ShiftState.ONCE) {
+                shiftState = ShiftState.OFF
+                renderLabels()
+            }
         }
         letterKeys.add(t)
         return t
@@ -955,16 +1206,27 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
 
     private fun punctKey(label: String, text: String): TextView {
         val t = baseKey(label, colors.keyBg)
+        t.contentDescription = KeyDescriptions.symbolName(label)
         attachTap(t, colors.keyBg, null) { listener.onLetter(text) }
         return t
     }
 
-    private fun toggleShift() {
-        shift = !shift
-        shiftKey?.text = if (shift) "⇪" else "⇧"
+    /** 組み込み（従来）の QWERTY の Shift 表示: ⇧（オフ・次の 1 文字）/ ⇪（Caps Lock）と、文字キーの大文字 */
+    private fun renderLegacyShift() {
+        val on = shiftState != ShiftState.OFF
+        shiftKey?.let { k ->
+            k.text = if (shiftState == ShiftState.CAPS) "⇪" else "⇧"
+            k.background = roundRect(if (on) colors.pressedBg else colors.funcBg, cornerPx)
+            k.contentDescription = when (shiftState) {
+                ShiftState.OFF -> "シフト"
+                ShiftState.ONCE -> "シフト（次の1文字が大文字）"
+                ShiftState.CAPS -> "シフト（キャプスロック中）"
+            }
+        }
         for (t in letterKeys) {
             val c = t.tag as? String ?: continue
-            t.text = if (shift) c.uppercase() else c
+            t.text = if (on) c.uppercase() else c
+            t.contentDescription = t.text
         }
     }
 
@@ -987,6 +1249,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             row.addView(directKey(c), keyParams(1f))
         }
         val bs = funcKey("⌫", null)
+        bs.contentDescription = "削除"
         attachRepeat(bs) { listener.onBackspace() }
         row.addView(bs, keyParams(1.5f))
 
@@ -994,9 +1257,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         val back = funcKey(if (kanaMode) "あいう" else "ABC", { setKanaMode(kanaMode) })
         back.textSize = 14f
         row.addView(back, keyParams(1.5f))
-        val space = baseKey("空白", colors.keyBg)
-        space.textSize = 16f
-        attachTap(space, colors.keyBg, null) { listener.onSpace() }
+        val space = legacySpace(baseKey("空白", colors.keyBg), colors.keyBg)
         spaceKey = space
         row.addView(space, keyParams(4.5f))
         val enter = funcKey("⏎", { listener.onEnter() })
@@ -1006,6 +1267,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
 
     private fun directKey(text: String): TextView {
         val t = baseKey(text, colors.keyBg)
+        t.contentDescription = KeyDescriptions.symbolName(text)
         attachTap(t, colors.keyBg, null) { listener.onDirectText(text) }
         return t
     }
@@ -1015,6 +1277,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private fun funcKey(label: String, onTap: (() -> Unit)?, onLong: (() -> Unit)? = null): TextView {
         val t = baseKey(label, colors.funcBg)
         t.textSize = 16f
+        t.contentDescription = KeyDescriptions.legacyFace(label)
         if (onTap != null) attachTap(t, colors.funcBg, onLong, onTap)
         return t
     }
@@ -1025,13 +1288,15 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         t.gravity = Gravity.CENTER
         t.textSize = 20f
         t.setTextColor(colors.fg)
-        t.background = roundRect(color, dp(6).toFloat())
+        t.background = roundRect(color, cornerPx)
+        t.contentDescription = KeyDescriptions.legacyFace(label)
         return t
     }
 
-    private fun barButton(label: String, onTap: () -> Unit): TextView {
+    private fun barButton(label: String, desc: String, onTap: () -> Unit): TextView {
         val t = TextView(context)
         t.text = label
+        t.contentDescription = desc
         t.textSize = 14f
         t.setTextColor(colors.subFg)
         t.gravity = Gravity.CENTER
@@ -1040,8 +1305,10 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         return t
     }
 
-    private fun buzz(v: View) {
-        if (prefs.haptic) v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    /** キーを押したときの触覚（強さは設定）とクリック音（設定でオン、種類は [fx]） */
+    private fun buzz(v: View, fx: Int = AudioManager.FX_KEYPRESS_STANDARD) {
+        KeyFeedback.haptic(v, prefs.haptic)
+        if (prefs.keySound) KeyFeedback.click(audio, fx)
     }
 
     /** 離したときに [onTap]、[onLong] があれば長押し（500ms）でそちらを呼ぶ */
@@ -1052,51 +1319,65 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             buzz(v)
             onLong?.invoke()
         }
+        // TalkBack の「ダブルタップで有効にする」は click として届く（通常のタッチは onTouch が処理する）
+        v.setOnClickListener { onTap() }
         v.setOnTouchListener { view, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     longFired = false
-                    view.background = roundRect(colors.pressedBg, dp(6).toFloat())
+                    view.background = roundRect(colors.pressedBg, cornerPx)
                     buzz(view)
                     if (onLong != null) uiHandler.postDelayed(longRun, 500)
                 }
                 MotionEvent.ACTION_UP -> {
                     uiHandler.removeCallbacks(longRun)
-                    view.background = roundRect(normal, dp(6).toFloat())
+                    view.background = roundRect(normal, cornerPx)
                     if (!longFired) onTap()
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     uiHandler.removeCallbacks(longRun)
-                    view.background = roundRect(normal, dp(6).toFloat())
+                    view.background = roundRect(normal, cornerPx)
                 }
             }
             true
         }
     }
 
-    /** 押している間、一定間隔で繰り返す（⌫ 用） */
+    /** 押している間、加速しながら繰り返す（組み込みの ⌫ 用。左スワイプの単語削除も [attachRepeatKey] と同じ） */
     private fun attachRepeat(v: View, action: () -> Unit) {
-        val repeat = object : Runnable {
-            override fun run() {
-                action()
-                uiHandler.postDelayed(this, 60)
-            }
-        }
+        val rep = BackspaceRepeater(action)
+        var downX = 0f
+        var downY = 0f
+        var swiped = false
         v.setOnTouchListener { view, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    view.background = roundRect(colors.pressedBg, dp(6).toFloat())
-                    buzz(view)
+                    downX = ev.x
+                    downY = ev.y
+                    swiped = false
+                    view.background = roundRect(colors.pressedBg, cornerPx)
+                    buzz(view, AudioManager.FX_KEYPRESS_DELETE)
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
                     action()
-                    uiHandler.postDelayed(repeat, 400)
+                    rep.start()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (prefs.backspaceSwipe && !swiped && swipedLeft(ev.x - downX, ev.y - downY)) {
+                        swiped = true
+                        rep.stop()
+                        buzz(view, AudioManager.FX_KEYPRESS_DELETE)
+                        listener.onBackspaceWord()
+                    }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    view.background = roundRect(colors.funcBg, dp(6).toFloat())
-                    uiHandler.removeCallbacks(repeat)
+                    view.background = roundRect(colors.funcBg, cornerPx)
+                    rep.stop()
                 }
             }
             true
         }
+        // TalkBack の「ダブルタップで有効にする」
+        v.setOnClickListener { action() }
     }
 
     // ---- 12 キー ⇄ QWERTY ----
@@ -1129,8 +1410,11 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
 
     private fun renderLabels() {
         spaceKey?.text = if (composing && kanaMode) "変換" else "空白"
+        spaceKey?.contentDescription = KeyDescriptions.space(composing, kanaMode)
         enterKey?.text = if (composing) "確定" else enterOverride ?: enterIdleLabel
+        enterKey?.contentDescription = KeyDescriptions.enter(composing, enterOverride)
         reconvertBtn.visibility = if (composing) View.GONE else View.VISIBLE
+        renderLegacyShift()
         val alpha = current?.mode == LayoutMode.ALPHA
         for (b in bindings) {
             val a = b.key.action
@@ -1148,6 +1432,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
                 a is KeyAction.Text && alpha ->
                     face.text = LayoutLabels.textKeyFace(b.key, a, shiftState != ShiftState.OFF)
             }
+            face.contentDescription = describe(b)
         }
     }
 
@@ -1169,18 +1454,24 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             t.gravity = Gravity.CENTER
             t.setPadding(dp(14), 0, dp(14), 0)
             if (i == candSelected) {
-                t.background = roundRect(colors.pressedBg, dp(6).toFloat())
+                t.background = roundRect(colors.accentSoft, cornerPx)
                 selView = t
             }
+            t.contentDescription = KeyDescriptions.candidate(s, i, candItems.size, i == candSelected)
             t.setOnClickListener { listener.onCandidate(i) }
             candBar.addView(t, lp(WRAP, MATCH))
         }
         candScroll.scrollTo(0, 0)
         val sv = selView
         if (sv != null && candSelected > 0) {
-            candScroll.post { candScroll.scrollTo(max(0, sv.left - dp(48)), 0) }
+            // 「アニメーションをオフ」のときは滑らせずに飛ばす
+            candScroll.post {
+                val x = max(0, sv.left - dp(48))
+                if (prefs.animations) candScroll.smoothScrollTo(x, 0) else candScroll.scrollTo(x, 0)
+            }
         }
         expandBtn.visibility = if (candItems.size > 1) View.VISIBLE else View.GONE
+        expandBtn.contentDescription = if (gridPanel != null) "全候補を閉じる" else "全候補を開く"
     }
 
     private fun renderSegments() {
@@ -1197,9 +1488,10 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             t.textSize = 17f
             t.gravity = Gravity.CENTER
             t.setPadding(dp(12), 0, dp(12), 0)
+            t.contentDescription = KeyDescriptions.segment(s, i, segTexts.size, i == focusIndex)
             if (i == focusIndex) {
                 t.setTextColor(Color.WHITE)
-                t.background = roundRect(colors.accent, dp(6).toFloat())
+                t.background = roundRect(colors.accent, cornerPx)
                 focusView = t
             } else {
                 t.setTextColor(colors.fg)
@@ -1233,21 +1525,28 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             },
             onClose = { closeGrid() },
         )
-        // match_parent だと wrap_content の親が画面いっぱいに伸びるので、いまのキーボードの高さに固定する
-        addView(panel, FrameLayout.LayoutParams(MATCH, max(rootView?.height ?: 0, dp(200))))
+        // match_parent だと wrap_content の親が画面いっぱいに伸びるので、いまのキーボードの高さに固定する。
+        // 片手モードのときは、キーボード本体と同じ幅・同じ位置に出す
+        val body = rootView
+        val bodyW = body?.width ?: 0
+        val lpGrid = FrameLayout.LayoutParams(if (bodyW > 0) bodyW else MATCH, max(body?.height ?: 0, dp(200)))
+        if (bodyW > 0) lpGrid.leftMargin = body?.left ?: 0
+        addView(panel, lpGrid)
         gridPanel = panel
+        expandBtn.contentDescription = "全候補を閉じる"
     }
 
     private fun closeGrid() {
         val g = gridPanel ?: return
         removeView(g)
         gridPanel = null
+        expandBtn.contentDescription = "全候補を開く"
     }
 
     private fun dp(v: Int): Int = context.dpToPx(v.toFloat())
 
     /** 文節・範囲操作ツールバーの 1 ボタン */
-    private class Tool(val label: String, val type: String, val content: String?)
+    private class Tool(val label: String, val desc: String, val type: String, val content: String?)
 
     private companion object {
         /** 長押しの判定時間の前にこれ以上動いたら長押しにしない（dp） */
@@ -1259,20 +1558,23 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         /** 長押しのポップアップで、キーの下端よりこの割合（キーの高さに対して）以上下で離したら取り消し */
         const val LONG_PRESS_CANCEL_BELOW = 0.3f
 
-        /** Shift の二度押し（Caps Lock）とみなす間隔 */
-        const val DOUBLE_TAP_MS = 500L
+        /** ⌫ の左スワイプで単語を消すとみなす移動量（dp） */
+        const val BACKSPACE_SWIPE_DP = 40f
+
+        /** 空白キーを「ほとんど動かさずに離した」とみなす移動量（dp。これ未満ならタップ） */
+        const val SPACE_TAP_SLOP_DP = 20
 
         val TOOLS = listOf(
-            Tool("◀文節", "move_focus", "left"),
-            Tool("文節▶", "move_focus", "right"),
-            Tool("区切り縮", "resize_segment", "left"),
-            Tool("区切り伸", "resize_segment", "right"),
-            Tool("選択◀", "extend_selection", "left"),
-            Tool("選択▶", "extend_selection", "right"),
-            Tool("カタカナ", "to_katakana", null),
-            Tool("ひらがな", "to_hiragana", null),
-            Tool("半角", "to_hankaku", null),
-            Tool("取消", "cancel", null),
+            Tool("◀文節", "注目する文節を左へ", "move_focus", "left"),
+            Tool("文節▶", "注目する文節を右へ", "move_focus", "right"),
+            Tool("区切り縮", "文節の区切りを縮める", "resize_segment", "left"),
+            Tool("区切り伸", "文節の区切りを伸ばす", "resize_segment", "right"),
+            Tool("選択◀", "選択範囲を左へ広げる", "extend_selection", "left"),
+            Tool("選択▶", "選択範囲を右へ広げる", "extend_selection", "right"),
+            Tool("カタカナ", "カタカナに変換", "to_katakana", null),
+            Tool("ひらがな", "ひらがなに変換", "to_hiragana", null),
+            Tool("半角", "半角に変換", "to_hankaku", null),
+            Tool("取消", "変換を取り消す", "cancel", null),
         )
     }
 }

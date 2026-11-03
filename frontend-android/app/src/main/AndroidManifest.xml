@@ -35,6 +35,21 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="false"
             android:label="入力設定" />
+        <!-- キーボードレイアウトの管理。nagi://layout（ブラウザ等の外部アプリから）を受け取るので exported。取り込みは必ず確認ダイアログを挟む -->
+        <activity
+            android:name=".LayoutManagerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="true"
+            android:label="キーボードのレイアウト">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="layout"
+                    android:scheme="nagi" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".UserDictActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
