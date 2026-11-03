@@ -105,6 +105,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private var shiftKey: TextView? = null
     private var enterIdleLabel = "⏎"
     private var gridPanel: View? = null
+    /** キーボード本体（候補バー・ツールバー・キー）。全候補パネルの高さをこれに合わせる */
+    private var rootView: LinearLayout? = null
 
     private lateinit var segScroll: HorizontalScrollView
     private lateinit var segBar: LinearLayout
@@ -208,6 +210,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         setBackgroundColor(colors.bg)
 
         val root = LinearLayout(context)
+        rootView = root
         root.orientation = LinearLayout.VERTICAL
         root.setPadding(dp(4), 0, dp(4), dp(4))
 
@@ -724,7 +727,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             },
             onClose = { closeGrid() },
         )
-        addView(panel, FrameLayout.LayoutParams(MATCH, MATCH))
+        // match_parent だと wrap_content の親が画面いっぱいに伸びるので、いまのキーボードの高さに固定する
+        addView(panel, FrameLayout.LayoutParams(MATCH, max(rootView?.height ?: 0, dp(200))))
         gridPanel = panel
     }
 

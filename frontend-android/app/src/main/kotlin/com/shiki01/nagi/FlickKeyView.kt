@@ -29,6 +29,20 @@ internal class FlickPopupView(context: Context, private val colors: KeyboardColo
         )
     }
 
+    /**
+     * 高さは「親が決めた高さ」のときだけ使う。`wrap_content` の親の中でこのビューを `match_parent` で重ねると、
+     * 既定の測り方は「使える最大の高さ」を要求し、キーボード全体が画面いっぱいに伸びてしまうため
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        val height = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
+            MeasureSpec.getSize(heightMeasureSpec)
+        } else {
+            0
+        }
+        setMeasuredDimension(width, height)
+    }
+
     /** [keyRect]（このビューの座標）のキーに対するポップアップを出す。[active] の方向を強調する */
     fun show(keyRect: RectF, keyDef: KanaKeyDef, activeDirection: FlickDirection) {
         key = keyRect
