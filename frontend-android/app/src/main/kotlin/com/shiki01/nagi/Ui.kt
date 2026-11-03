@@ -2,6 +2,7 @@ package com.shiki01.nagi
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Dialog
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.DialogInterface
@@ -20,6 +21,9 @@ import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
+import android.view.Window
+import android.view.WindowManager
 import android.widget.AbsListView
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -408,6 +412,32 @@ internal class UiRow(context: Context) : LinearLayout(context) {
         if (color != null) v.setTextColor(color)
     }
 
+    /**
+     * タイトル・補足の下に、現在の値（長ければ折り返す）と右端のシェブロンを置く縦並びの形。選択行用。
+     * 2 回目以降は文字（と色）だけ変える
+     */
+    fun setStackedValue(text: String, color: Int? = null) {
+        var v = valueView
+        if (v == null) {
+            val line = LinearLayout(context)
+            line.orientation = HORIZONTAL
+            line.gravity = Gravity.CENTER_VERTICAL
+            v = context.textOf("", UiSize.BODY_SP, context.cAccent)
+            line.addView(v, LayoutParams(0, LP_WRAP, 1f))
+            val c = ChevronView(context, left = false, color = context.cNeutral)
+            val clp = LayoutParams(context.dp(9), context.dp(16))
+            clp.marginStart = context.dp(12)
+            line.addView(c, clp)
+            chevron = c
+            val llp = LayoutParams(LP_MATCH, LP_WRAP)
+            llp.topMargin = context.dp(6)
+            textCol.addView(line, llp)
+            valueView = v
+        }
+        v.text = text
+        if (color != null) v.setTextColor(color)
+    }
+
     fun setChevron() {
         if (chevron != null) return
         val c = ChevronView(context, left = false, color = context.cNeutral)
@@ -544,25 +574,28 @@ internal fun Context.switchRow(label: String, description: String?, checked: Boo
     return r
 }
 
-/** 選択行。現在の値を右に出し、タップでリスト選択ダイアログ。選択肢は (値, 表示)。[onSelect] は選び直したときだけ呼ぶ */
+/**
+ * 選択行。タイトルと説明を上、現在の値（と右端のシェブロン）を下に縦に並べ、行全体のタップで選択シートを開く。
+ * 選択肢は (値, 表示)。[optionNotes] は選択肢と同じ並びの補足文（任意）。[onSelect] は選び直したときだけ呼ぶ
+ */
 internal fun Context.selectRow(
     label: String,
     description: String?,
     options: List<Pair<String, String>>,
     selected: String?,
+    optionNotes: List<String?>? = null,
     onSelect: (String) -> Unit,
 ): UiRow {
-    var current = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
+    var current = ChoiceSheetLogic.displayIndex(options.map { it.first }, selected)
     val r = UiRow(this)
     r.titleView.text = label
     r.setSubtitle(description)
-    r.setValue(options.getOrNull(current)?.second ?: "", cAccent)
-    r.setChevron()
+    r.setStackedValue(options.getOrNull(current)?.second ?: "", cAccent)
     r.onTap {
-        choiceDialog(label, options.map { it.second }, current) { i ->
-            if (i != current && i in options.indices) {
+        choiceDialog(label, options.map { it.second }, current, optionNotes) { i ->
+            if (ChoiceSheetLogic.changed(i, current, options.size)) {
                 current = i
-                r.setValue(options[i].second)
+                r.setStackedValue(options[i].second)
                 onSelect(options[i].first)
             }
         }
@@ -873,16 +906,165 @@ internal fun Context.messageDialog(title: String, message: String, close: String
     AlertDialog.Builder(this).setTitle(title).setMessage(message).setPositiveButton(close, null).show()
 }
 
-/** リスト選択ダイアログ（選ぶとすぐ閉じて [onSelect] に位置を渡す） */
-internal fun Context.choiceDialog(title: String, labels: List<String>, selectedIndex: Int, onSelect: (Int) -> Unit) {
-    AlertDialog.Builder(this)
-        .setTitle(title)
-        .setSingleChoiceItems(labels.toTypedArray(), selectedIndex) { d, which ->
-            d.dismiss()
-            onSelect(which)
+private const val SHEET_RADIUS_DP = 24f
+
+/** 上限の高さを持つスクロール領域（選択肢が多いときだけスクロールさせる） */
+private class MaxHeightScrollView(context: Context, private val maxHeightPx: Int) : ScrollView(context) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.AT_MOST))
+    }
+}
+
+/** 選択中を示すチェック（線で描く） */
+private class CheckMarkView(context: Context, color: Int) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val path = Path()
+
+    init {
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = context.dpF(2.5f)
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeJoin = Paint.Join.ROUND
+        paint.color = color
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val inset = paint.strokeWidth / 2f
+        path.reset()
+        path.moveTo(inset, h * 0.55f)
+        path.lineTo(w * 0.38f, h - inset)
+        path.lineTo(w - inset, h * 0.12f)
+        canvas.drawPath(path, paint)
+    }
+}
+
+/**
+ * 選択シート（下から出るボトムシート風の自作ダイアログ）。選ぶとすぐ閉じて [onSelect] に位置を渡す。
+ * [selectedIndex] の行にチェックと強調色を付ける（範囲外なら付けない）。[notes] は選択肢ごとの補足文（任意）。
+ * 画面外のタップと戻るボタンで、何も選ばずに閉じる
+ */
+internal fun Context.choiceDialog(
+    title: String,
+    labels: List<String>,
+    selectedIndex: Int,
+    notes: List<String?>? = null,
+    onSelect: (Int) -> Unit,
+) {
+    val items = ChoiceSheetLogic.items(labels, notes, selectedIndex)
+    val dialog = Dialog(this)
+    dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val metrics = resources.displayMetrics
+
+    val root = FrameLayout(this)
+    root.setOnClickListener { dialog.dismiss() }
+
+    val sheet = LinearLayout(this)
+    sheet.orientation = LinearLayout.VERTICAL
+    sheet.isClickable = true // シート内のタップが背後の「閉じる」に抜けないようにする
+    val radius = dpF(SHEET_RADIUS_DP)
+    val sheetBg = GradientDrawable()
+    sheetBg.shape = GradientDrawable.RECTANGLE
+    sheetBg.setColor(cCard)
+    sheetBg.cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
+    sheet.background = sheetBg
+
+    val handle = View(this)
+    handle.background = rounded(cNeutral, 999f)
+    val hlp = LinearLayout.LayoutParams(dp(36), dp(4))
+    hlp.gravity = Gravity.CENTER_HORIZONTAL
+    hlp.topMargin = dp(10)
+    hlp.bottomMargin = dp(6)
+    sheet.addView(handle, hlp)
+
+    if (title.isNotEmpty()) {
+        val t = textOf(title, UiSize.BAR_TITLE_SP, cText, bold = true)
+        t.setPadding(dp(24), dp(8), dp(24), dp(12))
+        sheet.addView(t, LinearLayout.LayoutParams(LP_MATCH, LP_WRAP))
+    }
+
+    val scroll = MaxHeightScrollView(this, ChoiceSheetLogic.maxListHeight(metrics.heightPixels, dp(120)))
+    scroll.isVerticalScrollBarEnabled = false
+    val list = LinearLayout(this)
+    list.orientation = LinearLayout.VERTICAL
+    list.setPadding(dp(12), 0, dp(12), dp(8))
+    var selectedRow: View? = null
+    items.forEachIndexed { i, item ->
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.minimumHeight = dp(56)
+        row.setPadding(dp(12), dp(10), dp(12), dp(10))
+        val base = if (item.selected) rounded(cAccentSoft, UiSize.FIELD_RADIUS_DP) else null
+        row.background = rippleOver(base, UiSize.FIELD_RADIUS_DP)
+        row.isClickable = true
+        row.isFocusable = true
+
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(textOf(item.label, UiSize.BODY_SP, if (item.selected) cAccent else cText, bold = item.selected))
+        if (item.note != null) {
+            val n = textOf(item.note, UiSize.NOTE_SP, cTextSecondary)
+            n.setPadding(0, dp(2), 0, 0)
+            col.addView(n)
         }
-        .setNegativeButton("キャンセル", null)
-        .show()
+        row.addView(col, LinearLayout.LayoutParams(0, LP_WRAP, 1f))
+        if (item.selected) {
+            val check = CheckMarkView(this, cAccent)
+            check.contentDescription = "選択中"
+            val clp = LinearLayout.LayoutParams(dp(20), dp(20))
+            clp.marginStart = dp(12)
+            row.addView(check, clp)
+            selectedRow = row
+        }
+        row.setOnClickListener {
+            dialog.dismiss()
+            onSelect(i)
+        }
+        val rlp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+        if (i > 0) rlp.topMargin = dp(2)
+        list.addView(row, rlp)
+    }
+    scroll.addView(list, FrameLayout.LayoutParams(LP_MATCH, LP_WRAP))
+    sheet.addView(scroll, LinearLayout.LayoutParams(LP_MATCH, LP_WRAP))
+
+    val sheetWidth = ChoiceSheetLogic.sheetWidth(metrics.widthPixels, dp(ChoiceSheetLogic.MAX_WIDTH_DP))
+    root.addView(sheet, FrameLayout.LayoutParams(sheetWidth, LP_WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+
+    // 下端は navigation bar（と左右の切り欠き）の分だけ空ける。余白もシートの背景で塗る
+    val basePad = dp(8)
+    sheet.setPadding(0, 0, 0, basePad)
+    ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+        val bars: Insets = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+        sheet.setPadding(bars.left, 0, bars.right, basePad + bars.bottom)
+        insets
+    }
+
+    dialog.setContentView(root)
+    dialog.window?.let { w ->
+        w.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        w.setLayout(LP_MATCH, LP_MATCH)
+        w.setGravity(Gravity.BOTTOM)
+        w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        w.setDimAmount(0.5f)
+        WindowCompat.setDecorFitsSystemWindows(w, false)
+    }
+
+    // 最初の描画の直前に、下から滑り込ませる。あわせて現在の選択が見える位置までスクロールする
+    sheet.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+        override fun onPreDraw(): Boolean {
+            sheet.viewTreeObserver.removeOnPreDrawListener(this)
+            sheet.translationY = sheet.height.toFloat()
+            sheet.animate().translationY(0f).setDuration(220L).start()
+            val target = selectedRow
+            if (target != null) {
+                scroll.scrollTo(0, ChoiceSheetLogic.scrollTarget(target.top, dp(24)))
+            }
+            return true
+        }
+    })
+    dialog.show()
 }
 
 // ---- 画面の骨組み ----

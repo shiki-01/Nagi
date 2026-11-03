@@ -41,7 +41,7 @@ internal fun Context.spinnerRow(
     options: List<Pair<String, String>>,
     selected: String?,
     onSelect: (String) -> Unit,
-): UiRow = selectRow(label, description, options, selected, onSelect)
+): UiRow = selectRow(label, description, options, selected, onSelect = onSelect)
 
 /** 旧来の名前。細い区切り線 */
 internal fun Context.divider(): View {
