@@ -55,6 +55,59 @@ class TouchLogicTest {
         assertEquals(1, SpaceSwipeTracker(Float.NaN).update(1f))
     }
 
+    // ---- スペースのスワイプの加速（iOS の SpaceSwipeTracker と同じ期待値。step 10 / 強さ 1.0 で d=100 → 14） ----
+
+    @Test
+    fun 加速オフは従来と一致() {
+        val plain = SpaceSwipeTracker(10f)
+        val off = SpaceSwipeTracker(10f, accel = false, strength = 3f)
+        for (w in listOf(10f, 35f, 100f, 250f, -60f, 0f, -400f)) assertEquals(plain.update(w), off.update(w))
+    }
+
+    @Test
+    fun 加速オンでも開始距離以下は従来と一致() {
+        val plain = SpaceSwipeTracker(10f)
+        val fast = SpaceSwipeTracker(10f, accel = true, strength = 3f)
+        for (w in listOf(5f, 10f, 19.9f, 30f, 40f, -25f, -40f)) assertEquals(plain.update(w), fast.update(w))
+        assertEquals(plain.isActive, fast.isActive)
+    }
+
+    @Test
+    fun 大きく動かすと従来より多く動く() {
+        assertEquals(14, SpaceSwipeTracker(10f, true, 1f).update(100f))
+        assertEquals(23, SpaceSwipeTracker(10f, true, 3f).update(100f))
+        assertEquals(-14, SpaceSwipeTracker(10f, true, 1f).update(-100f))
+    }
+
+    @Test
+    fun 加速は可逆で経路に依存しない() {
+        val t = SpaceSwipeTracker(10f, true, 1f)
+        var sum = 0
+        for (w in listOf(30f, 100f, 250f, 100f, 60f, 0f)) sum += t.update(w)
+        assertEquals(0, sum)
+        val via = SpaceSwipeTracker(10f, true, 1f)
+        via.update(300f)
+        assertTrue(via.update(100f) < 0)
+        assertEquals(0, via.update(100f))
+    }
+
+    @Test
+    fun 加速の強さは範囲内に丸める() {
+        assertEquals(3f, SpaceSwipeTracker(10f, true, 99f).strength, 0f)
+        assertEquals(0.5f, SpaceSwipeTracker(10f, true, 0f).strength, 0f)
+        assertEquals(1f, SpaceSwipeTracker(10f, true, Float.NaN).strength, 0f)
+        assertEquals(12, SpaceSwipeTracker(10f, true, 0.01f).update(100f))
+    }
+
+    @Test
+    fun 加速でも有効化には1ステップが要る() {
+        val t = SpaceSwipeTracker(14f, true, 3f)
+        assertEquals(0, t.update(13.9f))
+        assertFalse(t.isActive)
+        assertEquals(1, t.update(14f))
+        assertTrue(t.isActive)
+    }
+
     // ---- ⌫ の連打の加速（iOS の RepeatKeyView と同じ） ----
 
     @Test

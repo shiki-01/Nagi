@@ -864,12 +864,13 @@ final class KeyboardModel: ObservableObject {
     /// スペースキーのスワイプによるカーソル移動。`steps` は右が正。
     /// 変換中は注目文節、入力中はプリエディット内のカーソルを、`arrow` と同じ Action で 1 つずつ動かす。
     /// 未入力ならホストの入力欄のカーソルをまとめて動かす（`adjustTextPosition`）
-    func spaceSwipeMove(_ steps: Int) {
+    /// 加速オン（`accel`）のときは 1 回の上限を緩める（高速スライドで切り捨てて、指の位置とずれないように）
+    func spaceSwipeMove(_ steps: Int, accel: Bool = false) {
         guard steps != 0 else { return }
         toggleState = nil
         if hasPreedit {
             let direction: TouchDirection = steps < 0 ? .left : .right
-            for _ in 0..<min(abs(steps), 20) { arrow(direction) }
+            for _ in 0..<min(abs(steps), accel ? 200 : 20) { arrow(direction) }
         } else {
             DiagLog.log("host adjustCursor \(steps)")
             host?.hostAdjustCursor(by: steps)

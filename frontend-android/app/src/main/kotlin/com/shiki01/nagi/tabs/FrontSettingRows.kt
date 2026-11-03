@@ -138,6 +138,10 @@ internal class FrontSettingRows(private val ctx: Context, private val host: Host
         FrontKeys.SPACE_SWIPE -> BoolAccess(
             { KeyboardPrefs.spaceSwipe(ctx) }, { KeyboardPrefs.setSpaceSwipe(ctx, it) }, resetKeys(ResetKeys.SPACE_SWIPE),
         )
+        FrontKeys.SPACE_SWIPE_ACCEL -> BoolAccess(
+            { KeyboardPrefs.spaceSwipeAccel(ctx) }, { KeyboardPrefs.setSpaceSwipeAccel(ctx, it) },
+            resetKeys(ResetKeys.SPACE_SWIPE_ACCEL),
+        )
         FrontKeys.BACKSPACE_SWIPE -> BoolAccess(
             { KeyboardPrefs.backspaceSwipe(ctx) }, { KeyboardPrefs.setBackspaceSwipe(ctx, it) },
             resetKeys(ResetKeys.BACKSPACE_SWIPE),
@@ -188,6 +192,10 @@ internal class FrontSettingRows(private val ctx: Context, private val host: Host
         FrontKeys.SPACE_SWIPE_STEP -> FloatAccess(
             { KeyboardPrefs.spaceSwipeStepDp(ctx) }, { KeyboardPrefs.setSpaceSwipeStepDp(ctx, it) },
             resetKeys(ResetKeys.SPACE_SWIPE_STEP),
+        )
+        FrontKeys.SPACE_SWIPE_ACCEL_STRENGTH -> FloatAccess(
+            { KeyboardPrefs.spaceSwipeAccelStrength(ctx) }, { KeyboardPrefs.setSpaceSwipeAccelStrength(ctx, it) },
+            resetKeys(ResetKeys.SPACE_SWIPE_ACCEL_STRENGTH),
         )
         FrontKeys.HEIGHT_SCALE -> FloatAccess(
             { KeyboardPrefs.heightScale(ctx) }, { KeyboardPrefs.setHeightScale(ctx, it) }, resetKeys(ResetKeys.HEIGHT_SCALE),

@@ -144,6 +144,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         val night: Boolean,
         val spaceSwipe: Boolean,
         val spaceSwipeStepDp: Float,
+        val spaceSwipeAccel: Boolean,
+        val spaceSwipeAccelStrength: Float,
         val backspaceSwipe: Boolean,
         val repeatDelayMs: Int,
         val repeatMs: Int,
@@ -326,6 +328,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             night = night,
             spaceSwipe = KeyboardPrefs.spaceSwipe(context),
             spaceSwipeStepDp = KeyboardPrefs.spaceSwipeStepDp(context),
+            spaceSwipeAccel = KeyboardPrefs.spaceSwipeAccel(context),
+            spaceSwipeAccelStrength = KeyboardPrefs.spaceSwipeAccelStrength(context),
             backspaceSwipe = KeyboardPrefs.backspaceSwipe(context),
             repeatDelayMs = KeyboardPrefs.keyRepeatDelayMs(context),
             repeatMs = KeyboardPrefs.keyRepeatMs(context),
@@ -845,7 +849,9 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private fun attachSpaceKey(face: KeyFace) = attachSpace(face) { face.showPressed(it) }
 
     private fun attachSpace(view: View, setPressed: (Boolean) -> Unit) {
-        var tracker = SpaceSwipeTracker(context.dpF(prefs.spaceSwipeStepDp))
+        var tracker = SpaceSwipeTracker(
+            context.dpF(prefs.spaceSwipeStepDp), prefs.spaceSwipeAccel, prefs.spaceSwipeAccelStrength,
+        )
         var downX = 0f
         var downY = 0f
         view.setOnTouchListener { view, ev ->
@@ -853,7 +859,9 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
                 MotionEvent.ACTION_DOWN -> {
                     downX = ev.x
                     downY = ev.y
-                    tracker = SpaceSwipeTracker(context.dpF(prefs.spaceSwipeStepDp))
+                    tracker = SpaceSwipeTracker(
+                        context.dpF(prefs.spaceSwipeStepDp), prefs.spaceSwipeAccel, prefs.spaceSwipeAccelStrength,
+                    )
                     setPressed(true)
                     buzz(view, AudioManager.FX_KEYPRESS_SPACEBAR)
                     view.parent?.requestDisallowInterceptTouchEvent(true)

@@ -460,18 +460,21 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         val dir = if (left) "left" else "right"
         val code = if (left) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
         val n = abs(steps)
+        // 加速オン（touch.space_swipe_accel）のときは 1 回の上限を緩める（高速スライドで切り捨てて指の位置とずれないように）
+        val accel = KeyboardPrefs.spaceSwipeAccel(this)
+        val coreMax = if (accel) CORE_CURSOR_MAX_ACCEL else CORE_CURSOR_MAX
         when {
-            !viaCore() -> moveHostCursor(code, n)
+            !viaCore() -> moveHostCursor(code, n, accel)
             // 変換中は注目文節、入力中は入力中の文字列内のカーソル（← → と同じ操作）
-            focusIndex >= 0 -> engine.actionRepeat("move_focus", dir, min(n, CORE_CURSOR_MAX)) { r -> apply(r, null) }
-            composing -> engine.actionRepeat("move_cursor", dir, min(n, CORE_CURSOR_MAX)) { r -> apply(r, null) }
-            else -> moveHostCursor(code, n)
+            focusIndex >= 0 -> engine.actionRepeat("move_focus", dir, min(n, coreMax)) { r -> apply(r, null) }
+            composing -> engine.actionRepeat("move_cursor", dir, min(n, coreMax)) { r -> apply(r, null) }
+            else -> moveHostCursor(code, n, accel)
         }
     }
 
     /** 入力欄のカーソルを [n] 文字動かす（方向キーを送る。エディタの種類によらず動く） */
-    private fun moveHostCursor(code: Int, n: Int) {
-        repeat(min(n, HOST_CURSOR_MAX)) { sendDownUpKeyEvents(code) }
+    private fun moveHostCursor(code: Int, n: Int, accel: Boolean = false) {
+        repeat(min(n, if (accel) HOST_CURSOR_MAX_ACCEL else HOST_CURSOR_MAX)) { sendDownUpKeyEvents(code) }
     }
 
     override fun onCycleText(text: String, previous: String?, viaCore: Boolean) {
@@ -776,5 +779,9 @@ class NagiImeService : InputMethodService(), KeyboardListener {
 
         /** スペースのスワイプ 1 回の通知で、入力欄のカーソルを動かす最大の文字数 */
         private const val HOST_CURSOR_MAX = 64
+
+        /** 加速オン（`touch.space_swipe_accel`）のときの上限。高速スライドで切り捨てない */
+        private const val CORE_CURSOR_MAX_ACCEL = 200
+        private const val HOST_CURSOR_MAX_ACCEL = 256
     }
 }

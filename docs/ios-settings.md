@@ -66,6 +66,8 @@
 | `touch.key_repeat_delay_ms` | 長押し連打を始めるまでの時間 | int 200–1000, step 50 | 400 | D | kbd | 既存(iOS) | |
 | `touch.space_swipe` | スペースキーのスワイプでカーソル移動 | bool | true | D | kbd | 実装済み(iOS)・確認済み（2026-10-22） | スペースを押したまま左右に動かすと移動モード（離してもスペースは入らない。タップは通常のスペース）。入力中は文節/カーソル移動の Action、未入力はホストの `adjustTextPosition`。旧 ID `touch.space_swipe_cursor` |
 | `touch.space_swipe_step_pt` | カーソル移動 1 文字あたりの距離 | float 4–40 pt, step 1 | 14 | D | kbd | 実装済み(iOS)・確認済み（2026-10-22） | ドラッグ距離に比例。最初の 1 文字もこの距離で入る |
+| `touch.space_swipe_accel` | 大きくスライドするほど速く動かす | bool | false | D | kbd | 実装済み(iOS/Android)・実機未確認 | スペースのスワイプで、開始点からの横移動量 d だけで総ステップ数を決める（可逆）。u=\|d\|/step として u≦4 は等速（従来どおり精密）、u>4 は 4+(u−4)+k·(u−4)²/2（k=0.25×強さ）。有効化は従来どおり 1 ステップ以上。オフは従来と同一 |
+| `touch.space_swipe_accel_strength` | 加速の強さ | float 0.5–3.0, step 0.1 | 1.0 | D | kbd | 実装済み(iOS/Android)・実機未確認 | 上の k の倍率。範囲外は丸める |
 | `touch.backspace_swipe` | ⌫の左スワイプで単語単位の削除 | bool | false | D | kbd | 実装済み(iOS)・確認済み（2026-10-22） | 単語境界は文字種の連なり（漢字/ひらがな/カタカナ/英数）でフロントが判定（コアは関与しない暫定）。入力中は無効。押した瞬間の 1 文字削除は先に済む。旧 ID `touch.backspace_swipe_word` |
 | `touch.arrow_flick_cursor` | 左右フリックでカーソル移動 | bool | true | D | kbd | 新規(iOS) | 12 キーの「←」「→」キー |
 

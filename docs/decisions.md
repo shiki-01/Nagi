@@ -1920,3 +1920,26 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **Release へ添付できない**: ワークフローに `permissions: contents: write` が無かった。付与し、手動実行でも `release_tag` を指定して既存の Release に添付できるようにした（タグはこの環境の Git からは push できない（403）ため、タグはユーザーが GitHub の画面か手元で作る）
 - **署名**: APK 署名鍵（`ANDROID_KEYSTORE_*`）と更新署名鍵（`NAGI_UPDATE_SIGNING_KEY`）は登録済み
 - **未確認**: アプリ内のリモート更新（マニフェストの取得 → 検証 → インストール）。サイト（`nagi.shiki-01.com/updates/android/latest.json`）への公開は、`android-v*` の prerelease でない Release を作って `web` ワークフローを実行する必要がある
+
+### H-79. iOS: キーボードを開いたときの「標準キーボードに置き換わる」「背景だけが広がる」の緩和（高さ制約の前倒し・コア生成の非同期化・診断ログ）（2026-11-03、ユーザー報告、原因は未確定・要実機確認）
+
+- **症状**: たまに、キーボードを開いたタイミングで (a) 勝手に標準キーボードに置き換えられる、(b) キーボードが描画されず背景だけが画面いっぱいに広がる。H-33（パスワード欄後に iOS が他社キーボードを選ぶ）とは別の、Nagi 自身の起動が絡む可能性のある症状として扱う。
+- **原因は未確定**。コードから言えるのは次の 2 点のみ（推測）。
+  - `viewDidLoad` → `setupUI` で、コア生成（`nagi_server_new_with_budget`、辞書 mmap、LLM の同期ロード、`initialize`、`get_key_table`）がメインスレッドで同期に走っていた。起動が遅いと、OS 側がキーボードを差し替える、または描画が間に合わない可能性がある。起動直後のピークで jetsam（上限 約 177MB）に当たる可能性もある。
+  - 高さ制約（`view.heightAnchor == totalHeight`）が setupUI の最後（重い初期化の後）で付いており、それまで入力ビューの高さが未確定だった。(b) はこの間に背景だけが広がった可能性がある。
+- **緩和**（`Keyboard/KeyboardViewController.swift`。`KeyboardModel.swift` は変更していない）:
+  1. 高さ制約（優先度 999、`NagiKeyMetrics.totalHeight`）と clear の背景を、`viewDidLoad` の `super.viewDidLoad()` 直後（重い初期化の前）に付ける。
+  2. コア生成（`ProductSession.shouldDeferLLM` / `make`）をメインスレッドの外へ。`viewDidLoad` は透明な「読み込み中…」のプレースホルダを先に出し、完了後にメインスレッドで `KeyboardModel` を作って `KeyboardRoot` に差し替え、`host` 設定・表示中なら `focusIn()`・高さ反映・`applyTheme()` を行う。`processShared` が既にあれば従来どおり同期で引き継ぐ。コアの生成中は静的フラグで二重生成を防ぎ、生成中にできた最新の VC にだけ完了を渡す（古い VC・世代違いは捨てる。VC が既に無ければ `processShared` に置くだけ）。
+     - FFI の確認: `NagiEngine` は全呼び出しを直列キューで行い（`NagiCore.swift`）、生成時の依存（`ProcessInfo`・`UserDefaults`・`FileManager`）もスレッド安全なので、生成だけを別スレッドで行える。以後のコア呼び出しは従来どおりメインスレッドから。
+     - スレッドは GCD の global queue ではなく、スタック 8MB を指定した専用 `Thread`（QoS userInitiated）。コアは従来メインスレッド（スタックが大きい）で動いており、GCD の作業スレッド（512KB）でコア内の深い再帰・llama.cpp の初期化が足りるか確認できないため。
+  3. 診断ログ: `core created ... makeMs=`（生成そのものの所要）、`core ready ... sinceLoad=…ms appeared=`（viewDidLoad から準備完了まで）、`viewWillDisappear while placeholder (core not ready)`（プレースホルダ表示中に閉じられた）、`layout oversize ... height= expected= modelReady=`（`viewDidLayoutSubviews` で高さが想定の 1.5 倍超、1 回のみ）、`core creation already running; waiting`。入力内容は含まない。
+- **次に見るログ**: `sinceLoad` が大きい回に標準キーボードへ置き換わっていないか / `viewWillDisappear while placeholder` の直後に別キーボードが出ていないか / 背景だけが広がった回に `layout oversize` が出ているか（出れば高さ制約の問題、出なければ別の原因）/ `previous keyboard process ... ended while visible` と `core created` の有無（生成中の強制終了か）。
+- **実機未確認**。Swift はこの環境でコンパイルできないため、CI（`ios-testflight`）のビルド結果でも確認が要る。プレースホルダの間はキーが無く入力できない（従来は生成が終わるまで画面自体が出なかった）。
+
+### H-80. スペースのスライドによるカーソル移動に「距離に応じた加速」を追加（iOS・Android。設定 `touch.space_swipe_accel` / `touch.space_swipe_accel_strength`）（2026-11-03、実機未確認）
+
+- **目的**: 1 文字だけずらすときは今の `touch.space_swipe_step_pt` のまま精密に、大きくスライドしたら速く動かす。既定オフで現状の挙動は変えない。
+- **方式**: タッチ開始点からの横移動量 d（符号付き）だけの関数で総ステップ数を決める（履歴に依存しない。指を戻せば同じ位置に戻る＝可逆）。u=|d|/step、T=4 として、u≦T は steps=u、u>T は steps=T+(u−T)+k·(u−T)²/2（k=0.25×強さ）。総ステップ=sign(d)·trunc(steps)。「1 ステップ以上動いて初めて有効化」は維持。強さは 0.5〜3.0（既定 1.0）に丸める。`SpaceSwipeTracker`（iOS `Keyboard/TouchLogic.swift` / Android `TouchLogic.kt`）に同じ式を実装。
+- **採らなかった案**: 速度（指の動きの速さ）による加速は、履歴依存で戻したときに元の位置に戻らず、1 文字ずらしが不安定になるため不採用。
+- **1 回の適用上限**: 加速オン時のみ緩める（iOS `spaceSwipeMove` 20→200、Android コア 20→200・ホスト 64→256）。オフは従来どおり。
+- **未確認**: 実機での操作感（T=4・k=0.25 の妥当性）。Swift/Kotlin はこの環境でコンパイルできないため、CI の結果でも確認が要る。

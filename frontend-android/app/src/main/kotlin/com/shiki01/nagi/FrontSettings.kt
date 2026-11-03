@@ -79,6 +79,8 @@ internal object FrontKeys {
     const val KEY_REPEAT = "touch.key_repeat_ms"
     const val SPACE_SWIPE = "touch.space_swipe"
     const val SPACE_SWIPE_STEP = "touch.space_swipe_step_pt"
+    const val SPACE_SWIPE_ACCEL = "touch.space_swipe_accel"
+    const val SPACE_SWIPE_ACCEL_STRENGTH = "touch.space_swipe_accel_strength"
     const val BACKSPACE_SWIPE = "touch.backspace_swipe"
 
     const val HEIGHT = "keyboard.height"
@@ -248,6 +250,18 @@ internal object FrontSettings {
             FrontKeys.SPACE_SWIPE_STEP, "入力", "カーソル移動 1 文字あたりの距離（pt）",
             "スペースキーをスワイプしたとき、この距離ごとにカーソルが 1 つ動きます。小さいほど速く動きます。",
             true, K.SPACE_SWIPE_STEP_MIN, K.SPACE_SWIPE_STEP_MAX, 1f, FrontUnit.INT, K.SPACE_SWIPE_STEP_DP,
+        ),
+        toggle(
+            FrontKeys.SPACE_SWIPE_ACCEL, "入力", "大きくスライドするほど速く動かす",
+            "スペースキーのスワイプで、押し始めから大きく動かすほどカーソルを速く動かします。" +
+                "近い距離では上の「1 文字あたりの距離」のままなので、1 文字だけずらすのも正確です。指を戻せば元の位置に戻ります。",
+            detail = true, default = K.SPACE_SWIPE_ACCEL,
+        ),
+        slider(
+            FrontKeys.SPACE_SWIPE_ACCEL_STRENGTH, "入力", "加速の強さ",
+            "「大きくスライドするほど速く動かす」がオンのときの、速くなる度合いです。値が大きいほど急に速くなります。",
+            true, K.SPACE_SWIPE_ACCEL_STRENGTH_MIN, K.SPACE_SWIPE_ACCEL_STRENGTH_MAX, 0.1f, FrontUnit.DEC1,
+            K.SPACE_SWIPE_ACCEL_STRENGTH,
         ),
         toggle(
             FrontKeys.BACKSPACE_SWIPE, "入力", "⌫の左スワイプで単語を削除",

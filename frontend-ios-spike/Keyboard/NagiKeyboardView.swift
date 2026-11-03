@@ -295,8 +295,10 @@ private struct KeyCell: View {
             SpaceKeyView(
                 face: face(faceContent(key, model)),
                 step: model.ios.spaceSwipeStepPt,
+                accel: model.ios.spaceSwipeAccel,
+                accelStrength: model.ios.spaceSwipeAccelStrength,
                 tap: { activate(key, model) },
-                move: { model.spaceSwipeMove($0) },
+                move: { model.spaceSwipeMove($0, accel: model.ios.spaceSwipeAccel) },
                 onSpaceDrag: { entered in
                     // スペースのドラッグ移動の開始 / 終了。この状態を使うスタイルがレイアウトに無ければ何も通知しない
                     let uses = model.lookCache.layoutUses(.spaceDrag, layout: model.layoutDef)
@@ -730,6 +732,9 @@ private struct RepeatKeyView: View {
 private struct SpaceKeyView: View {
     let face: KeyFaceInput
     let step: Double
+    /// 開始点から離れるほど速く動かす（`touch.space_swipe_accel`）と、その強さ
+    let accel: Bool
+    let accelStrength: Double
     let tap: () -> Void
     /// カーソルを動かす文字数（右が正）
     let move: (Int) -> Void
@@ -749,7 +754,7 @@ private struct SpaceKeyView: View {
                 DragGesture(minimumDistance: 0)
                     .updating($isPressed) { _, state, _ in state = true }
                     .onChanged { value in
-                        var current = tracker ?? SpaceSwipeTracker(step: step)
+                        var current = tracker ?? SpaceSwipeTracker(step: step, accel: accel, strength: accelStrength)
                         let wasActive = current.isActive
                         let delta = current.update(translationWidth: Double(value.translation.width))
                         tracker = current

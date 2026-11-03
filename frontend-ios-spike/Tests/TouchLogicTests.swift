@@ -39,6 +39,70 @@ final class TouchLogicTests: XCTestCase {
         XCTAssertFalse(t.isActive)
     }
 
+    // 加速（u = |d|/step。u <= 4 は等速、超えたら 4 + (u-4) + k·(u-4)²/2、k = 0.25 × 強さ）
+
+    func testAccelOffMatchesLegacyCalculation() {
+        var plain = SpaceSwipeTracker(step: 10)
+        var off = SpaceSwipeTracker(step: 10, accel: false, strength: 3.0)
+        for width in [10.0, 35, 100, 250, -60, 0, -400] {
+            XCTAssertEqual(off.update(translationWidth: width), plain.update(translationWidth: width))
+        }
+    }
+
+    func testAccelMatchesLinearWithinStartDistance() {
+        var plain = SpaceSwipeTracker(step: 10)
+        var fast = SpaceSwipeTracker(step: 10, accel: true, strength: 3.0)
+        for width in [5.0, 10, 19.9, 30, 40, -25, -40] {
+            XCTAssertEqual(fast.update(translationWidth: width), plain.update(translationWidth: width))
+        }
+        XCTAssertEqual(fast.isActive, plain.isActive)
+    }
+
+    func testAccelMovesMoreThanLinearBeyondStartDistance() {
+        // d = 100 → u = 10: 4 + 6 + 0.25·36/2 = 14.5 → 14（等速なら 10）
+        var fast = SpaceSwipeTracker(step: 10, accel: true, strength: 1.0)
+        XCTAssertEqual(fast.update(translationWidth: 100), 14)
+        // 強いほどさらに多く動く: 10 + 0.75·36/2 = 23.5 → 23
+        var strong = SpaceSwipeTracker(step: 10, accel: true, strength: 3.0)
+        XCTAssertEqual(strong.update(translationWidth: 100), 23)
+        // 左は符号だけ反転
+        var left = SpaceSwipeTracker(step: 10, accel: true, strength: 1.0)
+        XCTAssertEqual(left.update(translationWidth: -100), -14)
+    }
+
+    func testAccelIsReversibleAndPathIndependent() {
+        var t = SpaceSwipeTracker(step: 10, accel: true, strength: 1.0)
+        var sum = 0
+        for width in [30.0, 100, 250, 100, 60, 0] {
+            sum += t.update(translationWidth: width)
+        }
+        XCTAssertEqual(sum, 0)  // 開始点に戻せば元の位置に戻る
+        var direct = SpaceSwipeTracker(step: 10, accel: true, strength: 1.0)
+        var viaFar = SpaceSwipeTracker(step: 10, accel: true, strength: 1.0)
+        _ = viaFar.update(translationWidth: 300)
+        let back = viaFar.update(translationWidth: 100)
+        XCTAssertEqual(direct.update(translationWidth: 100), 14)
+        XCTAssertEqual(viaFar.update(translationWidth: 100), 0)
+        XCTAssertLessThan(back, 0)
+    }
+
+    func testAccelStrengthIsClampedToRange() {
+        XCTAssertEqual(SpaceSwipeTracker(step: 10, accel: true, strength: 99).strength, 3.0, accuracy: 1e-9)
+        XCTAssertEqual(SpaceSwipeTracker(step: 10, accel: true, strength: 0).strength, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(SpaceSwipeTracker(step: 10, accel: true, strength: .nan).strength, 1.0, accuracy: 1e-9)
+        // 0.5: 10 + 0.125·36/2 = 12.25 → 12
+        var weak = SpaceSwipeTracker(step: 10, accel: true, strength: 0.01)
+        XCTAssertEqual(weak.update(translationWidth: 100), 12)
+    }
+
+    func testAccelStillRequiresOneStepToActivate() {
+        var t = SpaceSwipeTracker(step: 14, accel: true, strength: 3.0)
+        XCTAssertEqual(t.update(translationWidth: 13.9), 0)
+        XCTAssertFalse(t.isActive)
+        XCTAssertEqual(t.update(translationWidth: 14), 1)
+        XCTAssertTrue(t.isActive)
+    }
+
     // MARK: WordBoundary
 
     func testDeleteCountEmpty() {
@@ -157,6 +221,13 @@ final class ThemeTests: XCTestCase {
         var s = NagiIOSSettings()
         XCTAssertTrue(s.spaceSwipe)
         XCTAssertEqual(s.spaceSwipeStepPt, 14, accuracy: 1e-9)
+        XCTAssertFalse(s.spaceSwipeAccel)
+        XCTAssertEqual(s.spaceSwipeAccelStrength, 1.0, accuracy: 1e-9)
+        s.set(NagiIOSSettings.Key.spaceSwipeAccelStrength, .number(0.1))
+        XCTAssertEqual(s.spaceSwipeAccelStrength, 0.5, accuracy: 1e-9)
+        s.set(NagiIOSSettings.Key.spaceSwipeAccelStrength, .number(9))
+        XCTAssertEqual(s.spaceSwipeAccelStrength, 3.0, accuracy: 1e-9)
+        s.set(NagiIOSSettings.Key.spaceSwipeAccelStrength, nil)
         XCTAssertFalse(s.backspaceSwipe)
         XCTAssertEqual(s.theme, "system")
         XCTAssertEqual(s.accent, "blue")
@@ -193,6 +264,7 @@ final class ThemeTests: XCTestCase {
     func testSimpleModeShowsOnlyThemeAndAccentAmongNewItems() {
         let newKeys: Set<String> = [
             NagiIOSSettings.Key.spaceSwipe, NagiIOSSettings.Key.spaceSwipeStepPt, NagiIOSSettings.Key.backspaceSwipe,
+            NagiIOSSettings.Key.spaceSwipeAccel, NagiIOSSettings.Key.spaceSwipeAccelStrength,
             NagiIOSSettings.Key.keyboardTheme, NagiIOSSettings.Key.keyboardAccent, NagiIOSSettings.Key.candbarPasteButton,
         ]
         let simple = NagiIOSSettings.definitions.filter { newKeys.contains($0.key) && $0.isSimple }.map { $0.key }

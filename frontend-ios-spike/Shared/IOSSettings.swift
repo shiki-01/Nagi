@@ -219,6 +219,14 @@ struct NagiIOSSettings: Codable, Equatable {
             description: "スペースキーをスワイプしたとき、この距離ごとにカーソルが 1 つ動きます。小さいほど速く動きます。",
             kind: .float(min: 4, max: 40, step: 1), isSimple: false, defaultValue: .number(14)),
         NagiIOSSettingDef(
+            key: Key.spaceSwipeAccel, group: "入力", label: "大きくスライドするほど速く動かす",
+            description: "スペースキーのスワイプで、押し始めから大きく動かすほどカーソルを速く動かします。近い距離では上の「1 文字あたりの距離」のままなので、1 文字だけずらすのも正確です。指を戻せば元の位置に戻ります。",
+            kind: .bool, isSimple: false, defaultValue: .bool(false)),
+        NagiIOSSettingDef(
+            key: Key.spaceSwipeAccelStrength, group: "入力", label: "加速の強さ",
+            description: "「大きくスライドするほど速く動かす」がオンのときの、速くなる度合いです。値が大きいほど急に速くなります。",
+            kind: .float(min: 0.5, max: 3.0, step: 0.1), isSimple: false, defaultValue: .number(1.0)),
+        NagiIOSSettingDef(
             key: Key.backspaceSwipe, group: "入力", label: "⌫の左スワイプで単語を削除",
             description: "⌫を押したまま左へ大きく動かすと、カーソル手前の単語（同じ種類の文字の連なり）をまとめて消します。入力中は働きません。",
             kind: .bool, isSimple: false, defaultValue: .bool(false)),
@@ -352,6 +360,8 @@ struct NagiIOSSettings: Codable, Equatable {
         static let keyRepeatMs = "touch.key_repeat_ms"
         static let spaceSwipe = "touch.space_swipe"
         static let spaceSwipeStepPt = "touch.space_swipe_step_pt"
+        static let spaceSwipeAccel = "touch.space_swipe_accel"
+        static let spaceSwipeAccelStrength = "touch.space_swipe_accel_strength"
         static let backspaceSwipe = "touch.backspace_swipe"
         static let keyboardTheme = "keyboard.theme"
         static let keyboardAccent = "keyboard.accent"
@@ -473,6 +483,9 @@ struct NagiIOSSettings: Codable, Equatable {
     var developerMode: Bool { bool(Key.developerMode) }
     var spaceSwipe: Bool { bool(Key.spaceSwipe) }
     var spaceSwipeStepPt: Double { double(Key.spaceSwipeStepPt) }
+    /// スペースのスワイプで、開始点から離れるほどカーソルを速く動かすか
+    var spaceSwipeAccel: Bool { bool(Key.spaceSwipeAccel) }
+    var spaceSwipeAccelStrength: Double { double(Key.spaceSwipeAccelStrength) }
     var backspaceSwipe: Bool { bool(Key.backspaceSwipe) }
     var theme: String { string(Key.keyboardTheme) }
     var accent: String { string(Key.keyboardAccent) }

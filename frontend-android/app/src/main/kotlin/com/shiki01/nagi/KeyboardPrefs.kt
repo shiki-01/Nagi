@@ -32,6 +32,10 @@ internal object KeyboardDefaults {
     const val SPACE_SWIPE_STEP_DP = 14f
     const val SPACE_SWIPE_STEP_MIN = 4f
     const val SPACE_SWIPE_STEP_MAX = 40f
+    const val SPACE_SWIPE_ACCEL = false
+    const val SPACE_SWIPE_ACCEL_STRENGTH = 1.0f
+    const val SPACE_SWIPE_ACCEL_STRENGTH_MIN = 0.5f
+    const val SPACE_SWIPE_ACCEL_STRENGTH_MAX = 3.0f
     const val BACKSPACE_SWIPE = false
     const val KEY_REPEAT_DELAY_MS = 450
     const val KEY_REPEAT_DELAY_MIN = 200
@@ -89,6 +93,8 @@ internal object PrefKeys {
     const val FLICK_SENSITIVITY = "flick_sensitivity"
     const val SPACE_SWIPE_STEP_DP = "space_swipe_step_dp"
     const val SPACE_SWIPE = "space_swipe"
+    const val SPACE_SWIPE_ACCEL = "space_swipe_accel"
+    const val SPACE_SWIPE_ACCEL_STRENGTH = "space_swipe_accel_strength"
     const val BACKSPACE_SWIPE = "backspace_swipe"
     const val KEY_REPEAT_DELAY_MS = "key_repeat_delay_ms"
     const val KEY_REPEAT_MS = "key_repeat_ms"
@@ -117,6 +123,8 @@ internal object ResetKeys {
     val FLICK_LONG_PRESS = listOf(PrefKeys.FLICK_LONG_PRESS_MS)
     val SPACE_SWIPE = listOf(PrefKeys.SPACE_SWIPE)
     val SPACE_SWIPE_STEP = listOf(PrefKeys.SPACE_SWIPE_STEP_DP)
+    val SPACE_SWIPE_ACCEL = listOf(PrefKeys.SPACE_SWIPE_ACCEL)
+    val SPACE_SWIPE_ACCEL_STRENGTH = listOf(PrefKeys.SPACE_SWIPE_ACCEL_STRENGTH)
     val BACKSPACE_SWIPE = listOf(PrefKeys.BACKSPACE_SWIPE)
     val KEY_REPEAT_DELAY = listOf(PrefKeys.KEY_REPEAT_DELAY_MS)
     val KEY_REPEAT = listOf(PrefKeys.KEY_REPEAT_MS)
@@ -136,7 +144,7 @@ internal object ResetKeys {
     /** 設定画面で扱う設定すべて（「すべて既定に戻す」）。かな入力のレイアウトの割り当ては別（[KeyboardPrefs.setKanaLayoutId]） */
     val ALL: List<String> = (
         TOGGLE_INPUT + FLICK_THRESHOLD + FLICK_SENSITIVITY + FLICK_POPUP +
-            SPACE_SWIPE + SPACE_SWIPE_STEP + BACKSPACE_SWIPE + KEY_REPEAT_DELAY + KEY_REPEAT + THEME + ACCENT +
+            SPACE_SWIPE + SPACE_SWIPE_STEP + SPACE_SWIPE_ACCEL + SPACE_SWIPE_ACCEL_STRENGTH + BACKSPACE_SWIPE + KEY_REPEAT_DELAY + KEY_REPEAT + THEME + ACCENT +
             KEY_SPACING + KEY_CORNER + HAPTIC + KEY_SOUND + ONE_HANDED + ONE_HANDED_WIDTH + HEIGHT_SCALE +
             HEIGHT_SCALE_LANDSCAPE + AUTO_CHECK_UPDATES + COMPOSE_NUMBERS + KEEP_PREEDIT_ON_SYMBOLS +
             KEEP_PREEDIT_ON_ENGLISH + FLICK_HINTS + FLICK_LONG_PRESS + LAYOUT_BY_FIELD
@@ -311,6 +319,20 @@ internal object KeyboardPrefs {
         .coerceIn(KeyboardDefaults.SPACE_SWIPE_STEP_MIN, KeyboardDefaults.SPACE_SWIPE_STEP_MAX)
 
     fun setSpaceSwipeStepDp(ctx: Context, v: Float) = sp(ctx).edit().putFloat(PrefKeys.SPACE_SWIPE_STEP_DP, v).apply()
+
+    /** スペースのスワイプで、開始点から離れるほどカーソルを速く動かす（`touch.space_swipe_accel`） */
+    fun spaceSwipeAccel(ctx: Context): Boolean =
+        sp(ctx).getBoolean(PrefKeys.SPACE_SWIPE_ACCEL, KeyboardDefaults.SPACE_SWIPE_ACCEL)
+
+    fun setSpaceSwipeAccel(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.SPACE_SWIPE_ACCEL, v).apply()
+
+    /** 加速の強さ（0.5〜3.0。`touch.space_swipe_accel_strength`） */
+    fun spaceSwipeAccelStrength(ctx: Context): Float =
+        sp(ctx).getFloat(PrefKeys.SPACE_SWIPE_ACCEL_STRENGTH, KeyboardDefaults.SPACE_SWIPE_ACCEL_STRENGTH)
+            .coerceIn(KeyboardDefaults.SPACE_SWIPE_ACCEL_STRENGTH_MIN, KeyboardDefaults.SPACE_SWIPE_ACCEL_STRENGTH_MAX)
+
+    fun setSpaceSwipeAccelStrength(ctx: Context, v: Float) =
+        sp(ctx).edit().putFloat(PrefKeys.SPACE_SWIPE_ACCEL_STRENGTH, v).apply()
 
     /** ⌫ の左スワイプで手前の単語をまとめて削除する（`touch.backspace_swipe`） */
     fun backspaceSwipe(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.BACKSPACE_SWIPE, KeyboardDefaults.BACKSPACE_SWIPE)

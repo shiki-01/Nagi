@@ -55,6 +55,7 @@ class KeyboardThemeTest {
         assertTrue(d.FLICK_SENSITIVITY in d.FLICK_SENSITIVITY_MIN..d.FLICK_SENSITIVITY_MAX)
         assertTrue(d.FLICK_LONG_PRESS_MS in d.FLICK_LONG_PRESS_MIN..d.FLICK_LONG_PRESS_MAX)
         assertTrue(d.SPACE_SWIPE_STEP_DP in d.SPACE_SWIPE_STEP_MIN..d.SPACE_SWIPE_STEP_MAX)
+        assertTrue(d.SPACE_SWIPE_ACCEL_STRENGTH in d.SPACE_SWIPE_ACCEL_STRENGTH_MIN..d.SPACE_SWIPE_ACCEL_STRENGTH_MAX)
         assertTrue(d.KEY_REPEAT_DELAY_MS in d.KEY_REPEAT_DELAY_MIN..d.KEY_REPEAT_DELAY_MAX)
         assertTrue(d.KEY_REPEAT_MS in d.KEY_REPEAT_MIN..d.KEY_REPEAT_MAX)
         assertTrue(d.KEY_SPACING_DP in d.KEY_SPACING_MIN..d.KEY_SPACING_MAX)
@@ -75,7 +76,8 @@ class KeyboardThemeTest {
         // この画面の項目がすべて入っている
         val groups = listOf(
             ResetKeys.TOGGLE_INPUT, ResetKeys.FLICK_THRESHOLD, ResetKeys.FLICK_SENSITIVITY, ResetKeys.FLICK_POPUP,
-            ResetKeys.SPACE_SWIPE, ResetKeys.SPACE_SWIPE_STEP, ResetKeys.BACKSPACE_SWIPE, ResetKeys.KEY_REPEAT_DELAY,
+            ResetKeys.SPACE_SWIPE, ResetKeys.SPACE_SWIPE_STEP, ResetKeys.SPACE_SWIPE_ACCEL,
+            ResetKeys.SPACE_SWIPE_ACCEL_STRENGTH, ResetKeys.BACKSPACE_SWIPE, ResetKeys.KEY_REPEAT_DELAY,
             ResetKeys.KEY_REPEAT, ResetKeys.THEME, ResetKeys.ACCENT, ResetKeys.KEY_SPACING, ResetKeys.KEY_CORNER,
             ResetKeys.HAPTIC, ResetKeys.KEY_SOUND, ResetKeys.ONE_HANDED, ResetKeys.ONE_HANDED_WIDTH,
             ResetKeys.HEIGHT_SCALE, ResetKeys.HEIGHT_SCALE_LANDSCAPE, ResetKeys.AUTO_CHECK_UPDATES,

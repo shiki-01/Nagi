@@ -10,7 +10,8 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     private let store = SharedStore.shared
     private var model: KeyboardModel?
     private let screen = KeyboardScreen()
-    private var hostingController: UIHostingController<KeyboardRoot>?
+    /// 読み込み中はプレースホルダ、コアの準備ができたら `KeyboardRoot` に差し替えるため AnyView で持つ
+    private var hostingController: UIHostingController<AnyView>?
     /// キーボード全体の高さの制約（設定の高さの倍率で、focusIn のたびに更新する）
     private var heightConstraint: NSLayoutConstraint?
     /// 直近に見た入力欄の識別子（`textDocumentProxy.documentIdentifier`）。変わったら入力欄が切り替わっている
@@ -28,12 +29,35 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     /// 表示中のままプロセスが終わった（viewWillDisappear が来なかった）ことを、次のプロセスで検出する
     private static let visiblePidKey = "keyboardVisiblePid"
 
+    /// viewDidLoad の時刻（コア準備完了までの所要時間の診断ログ用）
+    private var loadStartedAt = Date()
+    /// viewWillAppear から viewWillDisappear の間（コアの準備が表示後に終わったとき、focusIn が必要かの判定）
+    private var isAppeared = false
+    /// コア生成の依頼の世代（古い完了を捨てる）
+    private var coreGeneration = 0
+    /// 高さの異常（想定の 1.5 倍超）の警告を出したか（1 回だけ）
+    private var loggedOversize = false
+
+    /// コアを生成中か（メインスレッドからのみ読み書きする。同時に 2 つのコアを作らない）
+    nonisolated(unsafe) private static var coreCreating = false
+    /// 生成中に作られた最新の VC が、完了時に呼ばれる処理を置く（古い VC のものは上書きして捨てる）
+    nonisolated(unsafe) private static var pendingAttach: ((KeyboardModel) -> Void)?
+
     /// 共有のモデルの現在のホストが自分か（旧 VC が遅れて呼ばれても、新しい VC の状態を壊さないための判定）
     private var isCurrentHost: Bool { model?.host === self }
 
     override func viewDidLoad() {
         LaunchBaseline.capture()
         super.viewDidLoad()
+        loadStartedAt = Date()
+
+        // 重い初期化の前に、高さと透明な背景を確定させる（高さ未確定の間に背景だけが広がるのを防ぐ）。
+        // 優先度を下げて OS の制約と衝突しないようにする
+        view.backgroundColor = .clear
+        let height = view.heightAnchor.constraint(equalToConstant: CGFloat(NagiKeyMetrics.totalHeight))
+        height.priority = UILayoutPriority(999)
+        height.isActive = true
+        heightConstraint = height
 
         let reuseModel = KeyboardModel.processShared != nil
         let stats = MemoryProbe.getStats()
@@ -54,6 +78,7 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     override func viewWillAppear(_ animated: Bool) {
         DiagLog.log("viewWillAppear instance=#\(instanceNumber) currentHost=\(isCurrentHost)")
         super.viewWillAppear(animated)
+        isAppeared = true
         // ホストアプリのセットアップ状況表示用のマーカー（OnboardingView.swift の NagiSetupMarker が読む）
         if let defaults = UserDefaults(suiteName: SharedStore.shared.appGroupId) {
             let now = Date().timeIntervalSince1970
@@ -91,6 +116,11 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     override func viewWillDisappear(_ animated: Bool) {
         let current = isCurrentHost
         DiagLog.log("viewWillDisappear instance=#\(instanceNumber) currentHost=\(current)")
+        isAppeared = false
+        if model == nil {
+            let elapsed = Int(Date().timeIntervalSince(loadStartedAt) * 1000)
+            DiagLog.log("viewWillDisappear while placeholder (core not ready) instance=#\(instanceNumber) sinceLoad=\(elapsed)ms")
+        }
         // 変換中の文字列は確定してから離れる。LLM も速やかに手放す（再表示の focusIn で読み直す）。
         // 共有のモデルが既に別の VC のものなら触らない（新しい VC の状態を壊さない）
         if current {
@@ -104,39 +134,8 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     }
 
     private func setupUI() {
-        let model: KeyboardModel
-        if let existing = KeyboardModel.processShared {
-            // 同じプロセスで VC が作り直された: コアを作らずに引き継ぐ（旧 VC が残っていてもコアを二重に持たない）
-            existing.handOverToNewHost()
-            model = existing
-        } else {
-            reportPreviousProcessEndedWhileVisible()
-            // コアのセッション。辞書やモデルが無ければ、画面にメッセージを出す
-            // 空きメモリが足りないとき（別アプリから切り替えた直後など）は LLM を読み込まず辞書のみで始め、
-            // 空きができてから読み込む（旧インスタンスと合わせてメモリが倍になるのを避ける。H-26）
-            let deferLLM = ProductSession.shouldDeferLLM(store: store)
-            model = KeyboardModel(outcome: ProductSession.make(store: store, noLLM: deferLLM), llmDeferred: deferLLM)
-            KeyboardModel.processShared = model
-        }
-        model.host = self
-        self.model = model
-
-        let probeView = KeyboardSwiftUIView(
-            store: store,
-            insertTextHandler: { [weak self] text in
-                self?.textDocumentProxy.insertText(text)
-            },
-            deleteBackwardHandler: { [weak self] in
-                self?.textDocumentProxy.deleteBackward()
-            },
-            advanceToNextInputModeHandler: { [weak self] in
-                self?.advanceToNextInputMode()
-            }
-        )
-        // 触覚ジェネレータを結びつけるビュー（iOS 17.5 以降）
-        NagiKeyFeedback.anchorView = view
-        let root = KeyboardRoot(model: model, screen: screen, probeView: probeView)
-        let hostView = UIHostingController(rootView: root)
+        // まず軽いプレースホルダを出す（コアの生成は重いので、画面を先に出す）
+        let hostView = UIHostingController(rootView: AnyView(KeyboardPlaceholderView()))
         hostingController = hostView
         // 背景を透明にする（既定のままだと不透明で黒く見える。システムのキーボードの背景（ブラー）を見せる）
         hostView.view.backgroundColor = .clear
@@ -152,12 +151,115 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
         ])
         hostView.didMove(toParent: self)
         applyTheme()
+        // 触覚ジェネレータを結びつけるビュー（iOS 17.5 以降）
+        NagiKeyFeedback.anchorView = view
 
-        // キーボードの高さ（候補バー 44 + キー 4 行）。優先度を下げて OS の制約と衝突しないようにする
-        let height = view.heightAnchor.constraint(equalToConstant: CGFloat(NagiKeyMetrics.totalHeight))
-        height.priority = UILayoutPriority(999)
-        height.isActive = true
-        heightConstraint = height
+        if let existing = KeyboardModel.processShared {
+            // 同じプロセスで VC が作り直された: コアを作らずに引き継ぐ（旧 VC が残っていてもコアを二重に持たない）
+            existing.handOverToNewHost()
+            attachModel(existing)
+        } else {
+            startCoreCreation()
+        }
+    }
+
+    /// コアの生成をメインスレッドの外で行う。完了したらメインスレッドで `KeyboardModel` を作り、
+    /// 最新の VC に渡す。生成中に別の VC ができても、コアは 1 つだけ作る
+    private func startCoreCreation() {
+        coreGeneration += 1
+        let generation = coreGeneration
+        KeyboardViewController.pendingAttach = { [weak self] model in
+            guard let self = self, generation == self.coreGeneration else { return }
+            self.coreReady(model)
+        }
+        guard !KeyboardViewController.coreCreating else {
+            DiagLog.log("core creation already running; waiting instance=#\(instanceNumber)")
+            return
+        }
+        KeyboardViewController.coreCreating = true
+        reportPreviousProcessEndedWhileVisible()
+        let store = self.store
+        let instance = instanceNumber
+        // コアは以前メインスレッドの大きなスタックで動いていたので、GCD の既定（512KB）ではなく
+        // スタックを明示した専用スレッドで生成する
+        let thread = Thread {
+            let started = Date()
+            // コアのセッション。辞書やモデルが無ければ、画面にメッセージを出す
+            // 空きメモリが足りないとき（別アプリから切り替えた直後など）は LLM を読み込まず辞書のみで始め、
+            // 空きができてから読み込む（旧インスタンスと合わせてメモリが倍になるのを避ける。H-26）
+            let deferLLM = ProductSession.shouldDeferLLM(store: store)
+            let outcome = ProductSession.make(store: store, noLLM: deferLLM)
+            let makeMs = Int(Date().timeIntervalSince(started) * 1000)
+            DispatchQueue.main.async {
+                DiagLog.log("core created instance=#\(instance) makeMs=\(makeMs) session=\(outcome.session != nil) deferLLM=\(deferLLM)")
+                KeyboardViewController.finishCoreCreation(outcome: outcome, deferLLM: deferLLM)
+            }
+        }
+        thread.name = "com.shiki.nagi.core-create"
+        thread.stackSize = 8 * 1024 * 1024
+        thread.qualityOfService = .userInitiated
+        thread.start()
+    }
+
+    /// メインスレッド: 生成したコアからモデルを作り、待っている最新の VC へ渡す（VC が既に無ければ共有に置くだけ）
+    private static func finishCoreCreation(outcome: ProductSession.Outcome, deferLLM: Bool) {
+        coreCreating = false
+        let model: KeyboardModel
+        if let existing = KeyboardModel.processShared {
+            model = existing
+        } else {
+            model = KeyboardModel(outcome: outcome, llmDeferred: deferLLM)
+            KeyboardModel.processShared = model
+        }
+        let attach = pendingAttach
+        pendingAttach = nil
+        attach?(model)
+    }
+
+    /// メインスレッド: コアの準備ができた（プレースホルダの表示中に生成が終わった）
+    private func coreReady(_ model: KeyboardModel) {
+        let elapsed = Int(Date().timeIntervalSince(loadStartedAt) * 1000)
+        DiagLog.log("core ready instance=#\(instanceNumber) sinceLoad=\(elapsed)ms appeared=\(isAppeared)")
+        attachModel(model)
+    }
+
+    /// モデルをこの VC のホストにして、画面をプレースホルダからキーボードへ差し替える。
+    /// 既に表示中（viewWillAppear が先に来ていた）なら、viewWillAppear で出来なかった focusIn もここで行う
+    private func attachModel(_ model: KeyboardModel) {
+        model.host = self
+        self.model = model
+        let probeView = KeyboardSwiftUIView(
+            store: store,
+            insertTextHandler: { [weak self] text in
+                self?.textDocumentProxy.insertText(text)
+            },
+            deleteBackwardHandler: { [weak self] in
+                self?.textDocumentProxy.deleteBackward()
+            },
+            advanceToNextInputModeHandler: { [weak self] in
+                self?.advanceToNextInputMode()
+            }
+        )
+        hostingController?.rootView = AnyView(KeyboardRoot(model: model, screen: screen, probeView: probeView))
+        if isAppeared {
+            model.focusIn()
+        }
+        // focusIn で読み直した設定の高さを反映する
+        heightConstraint?.constant = CGFloat(NagiKeyMetrics.totalHeight)
+        applyTheme()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // 想定の高さの 1.5 倍を超えたら 1 回だけ記録する（背景だけが画面いっぱいに広がる不具合の切り分け用）
+        guard !loggedOversize else { return }
+        let expected = CGFloat(NagiKeyMetrics.totalHeight)
+        let actual = view.bounds.height
+        if actual > expected * 1.5 {
+            loggedOversize = true
+            let elapsed = Int(Date().timeIntervalSince(loadStartedAt) * 1000)
+            DiagLog.log("layout oversize instance=#\(instanceNumber) height=\(Int(actual)) expected=\(Int(expected)) modelReady=\(model != nil) sinceLoad=\(elapsed)ms")
+        }
     }
 
     /// 前のプロセスが表示中のまま終わった（viewWillDisappear が来なかった）なら記録して、印を消す
@@ -266,6 +368,16 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
             lastDocumentIdentifier = identifier
         }
         if current { model?.hostTextChanged() }
+    }
+}
+
+/// コアの準備ができるまでの間に出す軽いプレースホルダ（背景は透明。高さは VC の制約で確保済み）
+struct KeyboardPlaceholderView: View {
+    var body: some View {
+        Text("読み込み中…")
+            .font(.system(size: 13))
+            .foregroundColor(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

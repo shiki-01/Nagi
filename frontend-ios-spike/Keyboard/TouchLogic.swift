@@ -5,16 +5,39 @@ import Foundation
 /// スペースキーのスワイプによるカーソル移動の量を決める。
 /// 押下位置からの横方向の移動量を渡すと、前回から何文字ぶん動かすか（右が正、左が負）を返す。
 /// 移動量が 1 ステップ（設定 `touch.space_swipe_step_pt`）に届くまでは何もせず（= 単純タップのまま）、
-/// 届いたらカーソル移動モードに入る。モードに入ったあとは、ドラッグ距離に比例して動かし、指を戻せば戻る
+/// 届いたらカーソル移動モードに入る。モードに入ったあとは、ドラッグ距離に比例して動かし、指を戻せば戻る。
+/// 加速（設定 `touch.space_swipe_accel`）がオンのときは、開始点からの距離が `accelStart` ステップを超えた分だけ
+/// 速く動かす（総ステップ数は開始点からの移動量だけで決まるので、指を戻せば同じ位置に戻る）
 struct SpaceSwipeTracker {
+    /// 加速が効き始めるまでのステップ数（これ以下は等速で、精密に 1 文字ずつ動かせる）
+    static let accelStart = 4.0
+    /// 加速の強さ（設定 `touch.space_swipe_accel_strength`）の範囲。Android の `SpaceSwipeTracker` と同じ
+    static let strengthRange: ClosedRange<Double> = 0.5...3.0
+
     let step: Double
+    let accel: Bool
+    let strength: Double
     /// カーソル移動モードに入ったか（入ったら、離したときにスペースを入力しない）
     private(set) var isActive = false
     private var movedSteps = 0
 
-    init(step: Double) {
+    init(step: Double, accel: Bool = false, strength: Double = 1.0) {
         // 0 や負の値で割らない（設定は 4pt 以上に丸められているが、念のため）
         self.step = max(step, 1)
+        self.accel = accel
+        // 範囲外・非数は範囲内に丸める（非数は既定の 1.0）
+        let value = strength.isFinite ? strength : 1.0
+        self.strength = min(max(value, Self.strengthRange.lowerBound), Self.strengthRange.upperBound)
+    }
+
+    /// 開始点からの移動量（ステップ単位の絶対値 `u`）に対する総ステップ数（小数）。
+    /// `u <= T` は `u`、超えたら `T + (u-T) + k·(u-T)²/2`（`T = accelStart`、`k = 0.25 × strength`）
+    static func acceleratedSteps(u: Double, strength: Double) -> Double {
+        let t = accelStart
+        guard u > t else { return u }
+        let over = u - t
+        let k = 0.25 * strength
+        return t + over + k * over * over / 2
     }
 
     /// - Returns: 今回動かす文字数（右が正）。モードに入る前・変化なしは 0
@@ -24,7 +47,14 @@ struct SpaceSwipeTracker {
             isActive = true
         }
         guard translationWidth.isFinite else { return 0 }
-        let total = Int((translationWidth / step).rounded(.towardZero))
+        let total: Int
+        if accel {
+            let steps = min(Self.acceleratedSteps(u: abs(translationWidth) / step, strength: strength), 1_000_000)
+            let magnitude = Int(steps.rounded(.towardZero))
+            total = translationWidth < 0 ? -magnitude : magnitude
+        } else {
+            total = Int((translationWidth / step).rounded(.towardZero))
+        }
         let delta = total - movedSteps
         movedSteps = total
         return delta

@@ -132,7 +132,8 @@ class FrontSettingsTest {
                 FrontKeys.TOGGLE_INPUT, FrontKeys.COMPOSE_NUMBERS, FrontKeys.KEEP_PREEDIT_ON_SYMBOLS,
                 FrontKeys.KEEP_PREEDIT_ON_ENGLISH, FrontKeys.FLICK_SENSITIVITY, FrontKeys.FLICK_THRESHOLD, FrontKeys.FLICK_POPUP,
                 FrontKeys.FLICK_HINTS, FrontKeys.FLICK_LONG_PRESS, FrontKeys.KEY_REPEAT_DELAY, FrontKeys.KEY_REPEAT,
-                FrontKeys.SPACE_SWIPE, FrontKeys.SPACE_SWIPE_STEP, FrontKeys.BACKSPACE_SWIPE,
+                FrontKeys.SPACE_SWIPE, FrontKeys.SPACE_SWIPE_STEP, FrontKeys.SPACE_SWIPE_ACCEL,
+                FrontKeys.SPACE_SWIPE_ACCEL_STRENGTH, FrontKeys.BACKSPACE_SWIPE,
             ),
             keys(section(detail, "入力")),
         )
@@ -231,6 +232,11 @@ class FrontSettingsTest {
         assertEquals(110f, slider(FrontKeys.KEY_REPEAT).defaultFloat, 0f)
         assertEquals(6f, slider(FrontKeys.KEY_SPACING).defaultFloat, 0f)
         assertEquals(14f, slider(FrontKeys.SPACE_SWIPE_STEP).defaultFloat, 0f)
+        assertFalse(d.SPACE_SWIPE_ACCEL)
+        assertFalse(FrontSettings.definitions.first { it.key == FrontKeys.SPACE_SWIPE_ACCEL }.defaultBool)
+        assertEquals(1.0f, slider(FrontKeys.SPACE_SWIPE_ACCEL_STRENGTH).defaultFloat, 0f)
+        assertEquals(0.5f, slider(FrontKeys.SPACE_SWIPE_ACCEL_STRENGTH).min, 0f)
+        assertEquals(3.0f, slider(FrontKeys.SPACE_SWIPE_ACCEL_STRENGTH).max, 0f)
         assertEquals(0.8f, slider(FrontKeys.HEIGHT_SCALE).min, 0f)
         assertEquals(1.3f, slider(FrontKeys.HEIGHT_SCALE).max, 0f)
         assertEquals(0.05f, slider(FrontKeys.HEIGHT_SCALE).step, 0f)

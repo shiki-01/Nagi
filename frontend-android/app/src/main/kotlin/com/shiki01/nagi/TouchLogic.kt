@@ -2,6 +2,7 @@ package com.shiki01.nagi
 
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 // 入力の操作感の判定ロジック（android.* に依存しない純粋な処理。単体テスト対象）。
@@ -11,10 +12,15 @@ import kotlin.math.roundToInt
  * スペースキーのスワイプによるカーソル移動の量を決める。
  * 押下位置からの横方向の移動量（右が正）を [update] に渡すと、前回から何文字ぶん動かすか（右が正、左が負）を返す。
  * 移動量が 1 ステップ（[step]。px）に届くまでは何もせず（= 単純タップのまま）、届いたらカーソル移動モードに入る。
- * 入ったあとはドラッグ距離に比例して動かし、指を戻せば戻る
+ * 入ったあとはドラッグ距離に比例して動かし、指を戻せば戻る。
+ * 加速（[accel]。`touch.space_swipe_accel`）がオンのときは、開始点からの距離が [ACCEL_START] ステップを超えた分だけ
+ * 速く動かす（総ステップ数は開始点からの移動量だけで決まるので、指を戻せば同じ位置に戻る。iOS と同じ式）
  */
-internal class SpaceSwipeTracker(step: Float) {
+internal class SpaceSwipeTracker(step: Float, private val accel: Boolean = false, strength: Float = 1f) {
     private val step: Float = max(if (step.isNaN()) 1f else step, 1f)
+
+    /** 加速の強さ。範囲外・非数は 0.5〜3.0 に丸める（非数は 1.0） */
+    val strength: Float = (if (strength.isNaN()) 1f else strength).coerceIn(STRENGTH_MIN, STRENGTH_MAX)
 
     /** カーソル移動モードに入ったか（入ったら、離したときに空白を入力しない） */
     var isActive: Boolean = false
@@ -29,10 +35,30 @@ internal class SpaceSwipeTracker(step: Float) {
             isActive = true
         }
         // 0 に向かって丸める（Float.toInt() と同じ）
-        val total = (translationX / step).toInt()
+        val total = if (accel) {
+            val steps = min(acceleratedSteps((abs(translationX) / step).toDouble(), strength.toDouble()), 1_000_000.0)
+            val magnitude = steps.toInt()
+            if (translationX < 0f) -magnitude else magnitude
+        } else {
+            (translationX / step).toInt()
+        }
         val delta = total - movedSteps
         movedSteps = total
         return delta
+    }
+
+    companion object {
+        /** 加速が効き始めるまでのステップ数（これ以下は等速） */
+        const val ACCEL_START = 4.0
+        const val STRENGTH_MIN = 0.5f
+        const val STRENGTH_MAX = 3.0f
+
+        /** 移動量 [u]（ステップ単位の絶対値）に対する総ステップ数。`u <= T` は `u`、超えたら `T + (u-T) + k·(u-T)²/2`（k = 0.25 × 強さ） */
+        fun acceleratedSteps(u: Double, strength: Double): Double {
+            if (u <= ACCEL_START) return u
+            val over = u - ACCEL_START
+            return ACCEL_START + over + 0.25 * strength * over * over / 2
+        }
     }
 }
 
