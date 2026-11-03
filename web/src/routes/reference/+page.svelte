@@ -147,6 +147,11 @@
             作り方は 2 通りです。<a href="/custom-keyboard">編集ページ</a>で作って書き出す方法と、JSON を直接書く方法です。
             本体アプリの「レイアウト」タブで、貼り付け・ファイル・<code>nagi://layout?data=…</code> のリンクから取り込みます。
           </li>
+          <li>
+            編集ページの「JSON の書き出しと読み込み」には、「アプリで開く」（<code>nagi://layout?data=…</code> を開く）・「リンクをコピー」・「QR を表示」があります。
+            コピーと QR は共有ページ（<code>https://nagi.shiki-01.com/layout#data=…</code>）のリンクで、Android では Nagi が直接開き、
+            アプリが無い端末ではサイトの案内が出ます。Android がまだ反映しない指定（<code>look</code> 系・<code>toolbar</code> など）を使っているときは、編集ページに警告が出ます。
+          </li>
           <li>行（<code>rows</code>）にキー（<code>keys</code>）を並べます。候補バーが空のときに出る 1 行は <code>toolbar</code> で指定します。</li>
           <li>
             見た目（<code>look</code> ほか）は省略できます。省略したときの見た目は、組み込みのレイアウトと同じです。
@@ -511,7 +516,7 @@
           <li>同じ <code>id</code> のユーザーレイアウトを取り込むと更新されます。同梱のレイアウトと同じ <code>id</code> でも、ユーザーのものが優先されます。</li>
           <li>割り当て中のレイアウトを削除すると、既定に戻ります。</li>
           <li>
-            URL スキーム（<code>nagi://layout?data=…</code>）の上限は 1MB です。<code>assets</code> を含むレイアウトは URL では渡せず、ファイルかコピーで渡します。
+            リンク（<code>nagi://layout?data=…</code> と共有ページの <code>#data=…</code>）の上限は 1MB です。<code>assets</code> を含むレイアウトは URL では渡せず、ファイルかコピーで渡します。
             JSON 全体の上限は {sizeKB(LAYOUT_FILE_MAX_BYTES)} です。
           </li>
           <li>

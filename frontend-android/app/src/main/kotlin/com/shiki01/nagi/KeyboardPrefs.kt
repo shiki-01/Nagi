@@ -105,6 +105,18 @@ internal object PrefKeys {
     const val ACCENT = "accent"
     const val AUTO_CHECK_UPDATES = "auto_check_updates"
     const val LAYOUT_BY_FIELD = "layout_by_field"
+
+    // ツールバー・クリップボード履歴（iOS の toolbar.items / candbar.paste_button / clipboard.history.*）
+    const val TOOLBAR_ITEMS = "toolbar_items"
+    const val PASTE_BUTTON = "paste_button"
+    const val CLIPBOARD_ENABLED = "clipboard_history_enabled"
+    const val CLIPBOARD_RETENTION = "clipboard_history_retention"
+    const val CLIPBOARD_MAX_ITEMS = "clipboard_history_max_items"
+    const val CLIPBOARD_TYPES = "clipboard_history_types"
+    const val CLIPBOARD_PREVIEW_CHARS = "clipboard_history_preview_chars"
+
+    /** 最後に取り込んだクリップボードの時刻印（同じ内容を読み直さないため。設定ではないので「既定に戻す」の対象外） */
+    const val CLIPBOARD_LAST_STAMP = "clipboard_last_stamp"
 }
 
 /**
@@ -140,6 +152,13 @@ internal object ResetKeys {
     val HEIGHT_SCALE_LANDSCAPE = listOf(PrefKeys.HEIGHT_SCALE_LANDSCAPE)
     val AUTO_CHECK_UPDATES = listOf(PrefKeys.AUTO_CHECK_UPDATES)
     val LAYOUT_BY_FIELD = listOf(PrefKeys.LAYOUT_BY_FIELD)
+    val TOOLBAR_ITEMS = listOf(PrefKeys.TOOLBAR_ITEMS)
+    val PASTE_BUTTON = listOf(PrefKeys.PASTE_BUTTON)
+    val CLIPBOARD_ENABLED = listOf(PrefKeys.CLIPBOARD_ENABLED)
+    val CLIPBOARD_RETENTION = listOf(PrefKeys.CLIPBOARD_RETENTION)
+    val CLIPBOARD_MAX_ITEMS = listOf(PrefKeys.CLIPBOARD_MAX_ITEMS)
+    val CLIPBOARD_TYPES = listOf(PrefKeys.CLIPBOARD_TYPES)
+    val CLIPBOARD_PREVIEW_CHARS = listOf(PrefKeys.CLIPBOARD_PREVIEW_CHARS)
 
     /** 設定画面で扱う設定すべて（「すべて既定に戻す」）。かな入力のレイアウトの割り当ては別（[KeyboardPrefs.setKanaLayoutId]） */
     val ALL: List<String> = (
@@ -147,7 +166,8 @@ internal object ResetKeys {
             SPACE_SWIPE + SPACE_SWIPE_STEP + SPACE_SWIPE_ACCEL + SPACE_SWIPE_ACCEL_STRENGTH + BACKSPACE_SWIPE + KEY_REPEAT_DELAY + KEY_REPEAT + THEME + ACCENT +
             KEY_SPACING + KEY_CORNER + HAPTIC + KEY_SOUND + ONE_HANDED + ONE_HANDED_WIDTH + HEIGHT_SCALE +
             HEIGHT_SCALE_LANDSCAPE + AUTO_CHECK_UPDATES + COMPOSE_NUMBERS + KEEP_PREEDIT_ON_SYMBOLS +
-            KEEP_PREEDIT_ON_ENGLISH + FLICK_HINTS + FLICK_LONG_PRESS + LAYOUT_BY_FIELD
+            KEEP_PREEDIT_ON_ENGLISH + FLICK_HINTS + FLICK_LONG_PRESS + LAYOUT_BY_FIELD + TOOLBAR_ITEMS + PASTE_BUTTON +
+            CLIPBOARD_ENABLED + CLIPBOARD_RETENTION + CLIPBOARD_MAX_ITEMS + CLIPBOARD_TYPES + CLIPBOARD_PREVIEW_CHARS
         ).distinct()
 }
 
@@ -231,6 +251,65 @@ internal object KeyboardPrefs {
     fun layoutByField(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.LAYOUT_BY_FIELD, true)
 
     fun setLayoutByField(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.LAYOUT_BY_FIELD, v).apply()
+
+    /** ツールバーの項目と並び順（`toolbar.items`）。未設定・空・読めない値は既定 */
+    fun toolbarItems(ctx: Context): List<ToolbarItem> = ToolbarLogic.parse(sp(ctx).getString(PrefKeys.TOOLBAR_ITEMS, null))
+
+    fun setToolbarItems(ctx: Context, items: List<ToolbarItem>) =
+        sp(ctx).edit().putString(PrefKeys.TOOLBAR_ITEMS, ToolbarLogic.encode(items)).apply()
+
+    /** ツールバーに「貼り付け」を出す（`candbar.paste_button`）。オフなら項目に入れていても出さない */
+    fun pasteButton(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.PASTE_BUTTON, true)
+
+    fun setPasteButton(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.PASTE_BUTTON, v).apply()
+
+    fun clipboardEnabled(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.CLIPBOARD_ENABLED, ClipboardDefaults.ENABLED)
+
+    fun setClipboardEnabled(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.CLIPBOARD_ENABLED, v).apply()
+
+    /** 保存期間の選択肢の値（1h / 24h / 7d / 30d / forever） */
+    fun clipboardRetention(ctx: Context): String {
+        val v = sp(ctx).getString(PrefKeys.CLIPBOARD_RETENTION, null)
+        return if (ClipboardDefaults.RETENTION_CHOICES.any { it.first == v }) v!! else ClipboardDefaults.RETENTION
+    }
+
+    fun setClipboardRetention(ctx: Context, v: String) = sp(ctx).edit().putString(PrefKeys.CLIPBOARD_RETENTION, v).apply()
+
+    /** 保存する最大数の選択肢の値（10 / 30 / 50 / 100 / 200） */
+    fun clipboardMaxItems(ctx: Context): String =
+        ClipboardHistoryLogic.maxItems(sp(ctx).getString(PrefKeys.CLIPBOARD_MAX_ITEMS, null)).toString()
+
+    fun setClipboardMaxItems(ctx: Context, v: String) = sp(ctx).edit().putString(PrefKeys.CLIPBOARD_MAX_ITEMS, v).apply()
+
+    /** カードに表示する文字数の選択肢の値（20 / 40 / 80 / 120） */
+    fun clipboardPreviewChars(ctx: Context): String {
+        val v = sp(ctx).getString(PrefKeys.CLIPBOARD_PREVIEW_CHARS, null)
+        return if (ClipboardDefaults.PREVIEW_CHOICES.any { it.first == v }) v!! else ClipboardDefaults.PREVIEW_CHARS.toString()
+    }
+
+    fun setClipboardPreviewChars(ctx: Context, v: String) =
+        sp(ctx).edit().putString(PrefKeys.CLIPBOARD_PREVIEW_CHARS, v).apply()
+
+    /** 保存する種類。未設定は全種類 */
+    fun clipboardKinds(ctx: Context): Set<ClipboardKind> =
+        ClipboardHistoryLogic.parseKinds(sp(ctx).getString(PrefKeys.CLIPBOARD_TYPES, null))
+
+    fun setClipboardKinds(ctx: Context, v: Set<ClipboardKind>) =
+        sp(ctx).edit().putString(PrefKeys.CLIPBOARD_TYPES, ClipboardHistoryLogic.encodeKinds(v)).apply()
+
+    /** 履歴の設定をまとめたもの */
+    fun clipboardConfig(ctx: Context): ClipboardConfig = ClipboardConfig(
+        enabled = clipboardEnabled(ctx),
+        retentionMs = ClipboardHistoryLogic.retentionMs(clipboardRetention(ctx)),
+        maxItems = ClipboardHistoryLogic.maxItems(clipboardMaxItems(ctx)),
+        kinds = clipboardKinds(ctx),
+        previewChars = ClipboardHistoryLogic.previewChars(clipboardPreviewChars(ctx)),
+    )
+
+    /** 最後に取り込んだクリップボードの時刻印（0 は未記録） */
+    fun clipboardLastStamp(ctx: Context): Long = sp(ctx).getLong(PrefKeys.CLIPBOARD_LAST_STAMP, 0L)
+
+    fun setClipboardLastStamp(ctx: Context, v: Long) = sp(ctx).edit().putLong(PrefKeys.CLIPBOARD_LAST_STAMP, v).apply()
 
     /** 長押しと判定する時間（ミリ秒、150〜1000）。iOS の `flick.long_press_ms` */
     fun flickLongPressMs(ctx: Context): Int = sp(ctx).getInt(PrefKeys.FLICK_LONG_PRESS_MS, KeyboardDefaults.FLICK_LONG_PRESS_MS)

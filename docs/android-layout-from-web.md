@@ -1,4 +1,4 @@
-# Android: サイトのエディタで作ったレイアウトを読み込んで使う（企画。実装は未着手）
+# Android: サイトのエディタで作ったレイアウトを読み込んで使う（企画。A・B・C は実装済み。§8）
 
 - 版: 2026-11-03（企画のみ。実装は後回し）
 - 関連: `docs/ios-keyboard-layout.md`（schema 2）、`docs/decisions.md` H-76〜H-78、`docs/android-release.md`
@@ -72,3 +72,20 @@
 - B（App Links、共有ページ）: 中
 - C（QR）: 小（ライブラリは、サイトの既存の依存に合わせて選ぶ）
 - 描画の対応範囲の拡大（4-3）: 大（別計画）
+
+## 8. 実装状況（2026-11-03）
+
+| 方式 | 状況 |
+| --- | --- |
+| A. `nagi://layout` のリンク | **実装済み**。`web/src/lib/keyboard/layout-url.ts`（生成・復元。上限 1MB、`assets` ありは作らず理由を返す。往復テストは `layout-url.test.ts`）。`JsonPanel` に「アプリで開く」「リンクをコピー」「QR を表示」。Android 側の受け口は従来どおり |
+| B. https の App Links | **実装済み（実機での検証は未了）**。`LayoutManagerActivity` に `https://nagi.shiki-01.com/layout`（`autoVerify`）の intent-filter。`LayoutLink.parse` がフラグメント / クエリの `data` を受け、`nagi://` と同じ経路（確認ダイアログ → 取り込み → 割り当て）へ。共有ページ `web/src/routes/layout/+page.svelte`（フラグメントをブラウザ内だけで読む）。`android-apk.yml` が release 鍵のときだけ `assetlinks.json` を生成して Release に添付し、`web.yml` が最新の公開リリースから `/.well-known/assetlinks.json` に取り込む |
+| C. QR | **実装済み**（サイト側。npm `qrcode`、白地に黒の SVG。共有ページの https リンクを QR にする）。データが QR の容量を超えるときは理由を表示 |
+| 未対応機能の通知 | Android: `LayoutCompat.unsupported` を `LayoutImporter.inspect` の `LayoutCandidate.unsupported` に入れ、確認ダイアログに表示。サイト: `compat.ts`（Android / iOS 別の警告。純粋関数） |
+
+### 残り
+
+- アプリ内の QR 読み取り（4-2 の 4）: 標準のカメラアプリで足りる間は見送り。
+- 描画の対応範囲の拡大（4-3）。Android が対応した項目は、`LayoutCompat.UNSUPPORTED`（Kotlin）と `compat.ts` の `UNSUPPORTED.android` から外すこと（2 か所を揃える）。
+- 初回リリースの手順: release 鍵で署名した公開リリース（prerelease でない `android-v*`）を作る → `web` ワークフローを手動実行（assetlinks.json が公開される）。
+- **assetlinks の検証結果の確認**: 公開後に `https://nagi.shiki-01.com/.well-known/assetlinks.json` を開いて指紋を確認し、実機で `adb shell pm get-app-links com.shiki01.nagi` を実行する（`nagi.shiki-01.com` が `verified` なら成功。`none` / `1024` などのときは、`adb shell pm verify-app-links --re-verify com.shiki01.nagi` のあとにもう一度確認する）。署名鍵を変えたら assetlinks.json も更新される（次のリリースで再生成）。
+- 実機の確認: スマホのブラウザで共有リンクを開く → 確認ダイアログ（未対応の指定の一覧を含む）→ 取り込み → かな / 英字への割り当て。

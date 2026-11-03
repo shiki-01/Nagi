@@ -61,6 +61,9 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     /** 環境（メモリ・熱・電源）の監視（OT-01〜03）。サービスが生きている間だけ */
     private var envMonitor: EnvironmentMonitor? = null
 
+    /** クリップボード履歴の取り込みと「貼り付け」ボタンの判定（キーボードを表示している間だけ変化を受ける） */
+    private var clipboard: ClipboardCapture? = null
+
     /** コアの障害からの復旧（OT-04）の状態と、予約した作り直し */
     private val recovery = RecoveryState()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -71,6 +74,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         engine = NagiRuntime.get(this)
         engine.onNotification = { r -> applyNotification(r) }
         envMonitor = EnvironmentMonitor(this) { engine }.also { it.start() }
+        clipboard = ClipboardCapture(this)
         // 起動後に 12 キーの表を 1 回取る（取れなければフォールバック表のまま）
         engine.withKeyTable { t ->
             if (t != null) {
@@ -86,6 +90,8 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     }
 
     override fun onDestroy() {
+        clipboard?.stop()
+        clipboard = null
         envMonitor?.stop()
         envMonitor = null
         restartTask?.let { mainHandler.removeCallbacks(it) }
@@ -116,8 +122,28 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         // 設定画面で変えた値（配置・高さ・テーマ・アクセント等）を反映する
         keyboard?.reloadPrefs()
         accentArgb = KeyboardColors.resolve(this).accent
+        startClipboardWatch()
         // 同じ入力欄への再表示（restarting）では、利用者が選んだレイアウトを変えない
         if (!restarting) applyFieldLayout(info)
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        // キーボードを隠したら、クリップボードの変化は受けない（読めるのは表示している間だけ）
+        clipboard?.stop()
+        super.onFinishInputView(finishingInput)
+    }
+
+    /** 変化の通知を受け始め、いまのクリップボードで「貼り付け」の表示を決めて、履歴がオンなら取り込む */
+    private fun startClipboardWatch() {
+        val cap = clipboard ?: return
+        cap.start { onClipboardChanged() }
+        onClipboardChanged()
+    }
+
+    private fun onClipboardChanged() {
+        val cap = clipboard ?: return
+        keyboard?.setClipboardHasText(cap.hasText())
+        if (cap.captureCurrent(secure)) keyboard?.refreshClipboardHistory()
     }
 
     /**
@@ -422,6 +448,14 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         if (text.isNullOrEmpty()) return
         onCommitThen { currentInputConnection?.commitText(text, 1) }
     }
+
+    override fun onClipboardInsert(text: String) {
+        // パスワード欄では履歴を使わない（ページの状態が古くても入れない）。内容はログに出さない
+        if (secure || text.isEmpty()) return
+        onCommitThen { currentInputConnection?.commitText(text, 1) }
+    }
+
+    override fun isSecureInput(): Boolean = secure
 
     override fun onDeleteWord() {
         if (composing) return

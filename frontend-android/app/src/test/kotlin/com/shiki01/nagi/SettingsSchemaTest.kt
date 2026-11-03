@@ -80,7 +80,7 @@ class SettingsSchemaTest {
     fun groupOrderIsIosFixedOrderAndUnknownGroupsComeLastInAppearanceOrder() {
         assertEquals(
             listOf(
-                "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "アップデート", "開発者",
+                "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "クリップボード履歴", "アップデート", "開発者",
                 "表記の候補", "ユーザー辞書", "アプリごとの設定",
             ),
             SettingsSchema.GROUP_ORDER,

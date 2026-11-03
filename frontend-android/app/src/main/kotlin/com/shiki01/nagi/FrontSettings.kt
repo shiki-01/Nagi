@@ -40,6 +40,12 @@ internal enum class FrontKind {
 
     /** 押すと何かが起きる行（削除・画面を開く） */
     ACTION,
+
+    /** 複数選択（クリップボード履歴の保存する種類。選択肢は [FrontSettingDef.choices]） */
+    MULTI,
+
+    /** 順序つきの項目の編集（ツールバーの項目。専用の画面を開く） */
+    ORDERED_LIST,
 }
 
 /** スライダーの値の表示 */
@@ -104,6 +110,16 @@ internal object FrontKeys {
     const val UPDATE_AUTO_CHECK = "update.auto_check"
     const val UPDATE_OPEN = "update.open"
 
+    const val CANDBAR_PASTE_BUTTON = "candbar.paste_button"
+    const val TOOLBAR_ITEMS = "toolbar.items"
+
+    const val CLIPBOARD_ENABLED = "clipboard.history.enabled"
+    const val CLIPBOARD_RETENTION = "clipboard.history.retention"
+    const val CLIPBOARD_MAX_ITEMS = "clipboard.history.max_items"
+    const val CLIPBOARD_TYPES = "clipboard.history.types"
+    const val CLIPBOARD_PREVIEW_CHARS = "clipboard.history.preview_chars"
+    const val CLIPBOARD_CLEAR = "clipboard.history.clear"
+
     const val LEARNING_CLEAR = "learning.clear"
 
     const val DEVELOPER_MODE = "developer.mode"
@@ -131,6 +147,12 @@ internal object FrontSettings {
     /** 画面の末尾の注記 */
     const val PAGE_FOOTNOTE =
         "変更はキーボードを次に開いたときに反映されます。「次回起動で反映」と出ている項目は、エンジンを再起動してください。"
+
+    /** 「クリップボード履歴」グループの注記 */
+    const val CLIPBOARD_NOTE =
+        "履歴はキーボードが表示されている間にコピーしたものだけが残ります。パスワード欄と、学習しない指定の入力欄では" +
+            "取り込みも表示もしません。1 件が 1 万文字を超えるものは記録しません。履歴はこの端末内にだけ保存し、" +
+            "内容は診断ログにも出しません。オフにしても保存済みの履歴は消えません（「履歴をすべて削除」で消せます）。"
 
     const val MODE_FOOTNOTE = "詳細にすると項目が増えます。切り替えても設定値は変わりません。"
 
@@ -334,6 +356,17 @@ internal object FrontSettings {
             "確定キーや選択中の候補などの色です。",
             false, AccentColor.values().map { it.json to it.label }, K.ACCENT,
         ),
+        toggle(
+            FrontKeys.CANDBAR_PASTE_BUTTON, "キーボード", "ツールバーに「貼り付け」を出す",
+            "ツールバーの項目に「貼り付け」を入れていても、これがオフなら出しません。クリップボードに文字があるときだけ出します。",
+            detail = true, default = true,
+        ),
+        FrontSettingDef(
+            FrontKeys.TOOLBAR_ITEMS, "キーボード", "ツールバーの項目",
+            "入力中でなく、候補が無いときに候補バーの場所に出す操作です。表示する項目と並び順を選べます" +
+                "（入力中の候補が出ると候補バーに切り替わります）。",
+            detail = true, kind = FrontKind.ORDERED_LIST,
+        ),
         FrontSettingDef(
             FrontKeys.LAYOUT_KANA, "キーボード", "かなモードのレイアウト",
             "使うレイアウトです。ローマ字入力にするには、かなに qwerty-kana を選びます。",
@@ -344,6 +377,36 @@ internal object FrontSettings {
             "使うレイアウトです。",
             detail = false, kind = FrontKind.LAYOUT, defaultChoice = LayoutIds.DEFAULT_ALPHA,
         ),
+
+        // ---- クリップボード履歴 ----
+        toggle(
+            FrontKeys.CLIPBOARD_ENABLED, "クリップボード履歴", "クリップボード履歴を使う",
+            "コピーした文字列をキーボードの履歴ページ（ツールバーの「履歴」）に残し、タップで入力できます。" +
+                "オフの間はクリップボードを一切読まず、何も保存しません。",
+            detail = false, default = ClipboardDefaults.ENABLED,
+        ),
+        choice(
+            FrontKeys.CLIPBOARD_RETENTION, "クリップボード履歴", "保存期間",
+            "この期間を過ぎた履歴は消えます。ピン留めした項目は消えません。",
+            false, ClipboardDefaults.RETENTION_CHOICES, ClipboardDefaults.RETENTION,
+        ),
+        choice(
+            FrontKeys.CLIPBOARD_MAX_ITEMS, "クリップボード履歴", "保存する最大数",
+            "超えたぶんは古い順に消えます。ピン留めは数に含めず、消えません（ピン留めは 20 件まで）。",
+            true, ClipboardDefaults.MAX_ITEMS_CHOICES, ClipboardDefaults.MAX_ITEMS.toString(),
+        ),
+        FrontSettingDef(
+            FrontKeys.CLIPBOARD_TYPES, "クリップボード履歴", "保存する種類",
+            "チェックを外した種類は保存しません。数字・記号は電話番号やコードなど、数字と記号だけの文字列です。",
+            detail = true, kind = FrontKind.MULTI,
+            choices = ClipboardKind.values().map { it.json to it.title },
+        ),
+        choice(
+            FrontKeys.CLIPBOARD_PREVIEW_CHARS, "クリップボード履歴", "カードに表示する文字数",
+            "履歴ページのカードに出す文字数の上限です。超えたぶんは「…」で省略します（入力するときは全文です）。",
+            true, ClipboardDefaults.PREVIEW_CHOICES, ClipboardDefaults.PREVIEW_CHARS.toString(),
+        ),
+        action(FrontKeys.CLIPBOARD_CLEAR, "クリップボード履歴", "履歴をすべて削除", "ピン留めした項目も消えます"),
 
         // ---- 学習 ----
         action(FrontKeys.LEARNING_CLEAR, "学習", "学習データをすべて削除", "ユーザー辞書は消えません"),
@@ -391,11 +454,14 @@ internal object FrontSettings {
         FrontKind.CHOICE, FrontKind.HEIGHT_PRESET -> def.choices.firstOrNull { it.first == def.defaultChoice }?.second ?: def.defaultChoice
         FrontKind.LAYOUT -> def.defaultChoice
         FrontKind.ACTION -> ""
+        FrontKind.MULTI -> ClipboardHistoryLogic.kindsSummary(ClipboardKind.values().toSet())
+        FrontKind.ORDERED_LIST -> ToolbarLogic.summary(ToolbarLogic.DEFAULT)
     }
 
     /** グループの下に出す、反映のタイミングの注記（フロント固有の項目があるグループ） */
     fun footnote(group: String): String? = when (group) {
         "入力", "キーボード" -> RELOAD_NOTE
+        "クリップボード履歴" -> CLIPBOARD_NOTE
         else -> null
     }
 

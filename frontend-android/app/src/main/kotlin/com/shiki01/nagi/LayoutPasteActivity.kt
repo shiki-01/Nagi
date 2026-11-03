@@ -158,7 +158,7 @@ class LayoutPasteActivity : Activity() {
                 is InspectResult.Ok -> {
                     val c = r.candidate
                     errorBanner.hide()
-                    if (c.replaces || c.overridesPreset || viaLink) {
+                    if (c.replaces || c.overridesPreset || viaLink || c.unsupported.isNotEmpty()) {
                         confirmDialog(
                             LayoutImportText.confirmTitle(viaLink),
                             LayoutImportText.confirmMessage(
@@ -169,6 +169,7 @@ class LayoutPasteActivity : Activity() {
                                 c.replaces,
                                 c.overridesPreset,
                                 viaLink,
+                                c.unsupported,
                             ),
                             "取り込む",
                         ) { runImport(c.json, viaLink) }

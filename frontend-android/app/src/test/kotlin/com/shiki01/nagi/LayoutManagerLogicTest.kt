@@ -249,6 +249,26 @@ class LayoutManagerLogicTest {
     }
 
     @Test
+    fun httpsのAppLinksも受け入れる() {
+        val url = "https://nagi.shiki-01.com/layout#data=" + "A".repeat(8)
+        assertTrue(LayoutIntake.classify(true, url) is IntakeResult.Accept)
+        assertTrue(LayoutIntake.classifyUrl(url) is IntakeResult.Accept)
+        assertTrue(LayoutIntake.looksLikeLink(" $url"))
+        assertTrue(LayoutIntake.classifyUrl("https://example.com/layout#data=A") is IntakeResult.Reject)
+        assertFalse(LayoutIntake.looksLikeLink("https://example.com/layout#data=A"))
+        val big = "https://nagi.shiki-01.com/layout#data=" + "A".repeat(LayoutLink.MAX_DATA_CHARS + 5000)
+        assertTrue(LayoutIntake.classify(true, big) is IntakeResult.Reject)
+    }
+
+    @Test
+    fun 確認文に未対応の指定が入る() {
+        val none = LayoutImportText.confirmMessage("テスト", "t1", LayoutMode.KANA, 12, false, false, false, emptyList())
+        assertFalse(none.contains("反映されません"))
+        val some = LayoutImportText.confirmMessage("テスト", "t1", LayoutMode.KANA, 12, false, false, false, listOf("look", "toolbar"))
+        assertTrue(some.contains("この端末では次の指定は反映されません: look（見た目）、toolbar（ツールバー）"))
+    }
+
+    @Test
     fun 生成したリンクを受け入れて解釈できる() {
         val json = LayoutFixtures.minimal()
         val link = LayoutLink.encode(json)

@@ -10,6 +10,8 @@ internal class LayoutCandidate(
     val replaces: Boolean,
     /** 同梱と同じ ID（ユーザーのものが優先して使われる） */
     val overridesPreset: Boolean,
+    /** この端末がまだ反映しない指定（JSON に実際に含まれるものだけ。[LayoutCompat.UNSUPPORTED] の順）。確認ダイアログで知らせる */
+    val unsupported: List<String> = emptyList(),
 ) {
     val keyCount: Int get() = layout.keyCount
 }
@@ -75,6 +77,7 @@ internal object LayoutImporter {
                             jsonText,
                             LayoutConflict.replaces(id, users),
                             LayoutConflict.overridesPreset(id, presets),
+                            LayoutCompat.unsupported(jsonText),
                         ),
                     )
                 }

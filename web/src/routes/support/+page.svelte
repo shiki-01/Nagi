@@ -135,6 +135,12 @@
             <code>nagi://layout?data=…</code> 形式のリンクを Safari で開いても取り込めます。
           </li>
           <li>
+            Android では、<a href="/custom-keyboard">編集ページ</a>の「アプリで開く」、または「リンクをコピー」「QR を表示」で、スマホの Nagi に直接渡せます
+            （<code>https://nagi.shiki-01.com/layout#data=…</code> のリンクを開くと、確認画面のあとに取り込まれます）。
+            Nagi が入っていない端末では、<a href="/layout">共有ページ</a>の案内が出ます。Android 版は<a href="{REPO_URL}/releases">配布ページ</a>の APK からインストールします。
+          </li>
+          <li>Android がまだ反映しない指定（見た目の細かい設定やツールバーなど）を含むレイアウトは、取り込みの確認画面にその一覧が出ます。</li>
+          <li>
             取り込んだレイアウトは、設定タブの「かな」「英字」などの割り当てで選びます。反映は、キーボードを開き直したときです。
             不正なレイアウトは既定のものに戻ります。
           </li>

@@ -43,11 +43,11 @@ internal object SettingsSchema {
     private val HIDDEN_KEYS = setOf("conversion.model", "update.auto_check")
 
     /**
-     * グループの並び（iOS の `groupOrder` と同じ固定順。iOS の「クリップボード履歴」は Android に無いので含めない）。
+     * グループの並び（iOS の `groupOrder` と同じ固定順。Android も同じ並び）。
      * ここに無い名前は最後に、出現順で並べる
      */
     val GROUP_ORDER: List<String> = listOf(
-        "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "アップデート", "開発者",
+        "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "クリップボード履歴", "アップデート", "開発者",
         "表記の候補", "ユーザー辞書", "アプリごとの設定",
     )
 

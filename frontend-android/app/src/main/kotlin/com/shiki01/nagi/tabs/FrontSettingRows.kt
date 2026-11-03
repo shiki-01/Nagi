@@ -1,6 +1,8 @@
 package com.shiki01.nagi.tabs
 
+import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
@@ -8,6 +10,8 @@ import android.widget.TextView
 import com.shiki01.nagi.AccentColor
 import com.shiki01.nagi.AppPrefs
 import com.shiki01.nagi.AssignSlot
+import com.shiki01.nagi.ClipboardHistoryLogic
+import com.shiki01.nagi.ClipboardKind
 import com.shiki01.nagi.FrontKeys
 import com.shiki01.nagi.FrontKind
 import com.shiki01.nagi.FrontSettingDef
@@ -22,10 +26,14 @@ import com.shiki01.nagi.LayoutInfo
 import com.shiki01.nagi.LayoutStore
 import com.shiki01.nagi.OneHanded
 import com.shiki01.nagi.ResetKeys
+import com.shiki01.nagi.ToolbarItemsActivity
+import com.shiki01.nagi.ToolbarLogic
 import com.shiki01.nagi.UiSize
 import com.shiki01.nagi.cAccent
 import com.shiki01.nagi.confirmDialog
 import com.shiki01.nagi.dp
+import com.shiki01.nagi.findActivity
+import com.shiki01.nagi.navRow
 import com.shiki01.nagi.selectRow
 import com.shiki01.nagi.sliderRow
 import com.shiki01.nagi.switchRow
@@ -88,6 +96,8 @@ internal class FrontSettingRows(private val ctx: Context, private val host: Host
         FrontKind.CHOICE -> choiceRow(def)
         FrontKind.HEIGHT_PRESET -> heightRow(def)
         FrontKind.LAYOUT -> layoutRow(def, layouts)
+        FrontKind.MULTI -> multiRow(def)
+        FrontKind.ORDERED_LIST -> toolbarItemsRow(def)
         FrontKind.ACTION -> throw IllegalArgumentException("ACTION は行にしない: ${def.key}")
     }
 
@@ -161,6 +171,13 @@ internal class FrontSettingRows(private val ctx: Context, private val host: Host
             { KeyboardPrefs.autoCheckUpdates(ctx) }, { KeyboardPrefs.setAutoCheckUpdates(ctx, it) },
             resetKeys(ResetKeys.AUTO_CHECK_UPDATES),
         )
+        FrontKeys.CANDBAR_PASTE_BUTTON -> BoolAccess(
+            { KeyboardPrefs.pasteButton(ctx) }, { KeyboardPrefs.setPasteButton(ctx, it) }, resetKeys(ResetKeys.PASTE_BUTTON),
+        )
+        FrontKeys.CLIPBOARD_ENABLED -> BoolAccess(
+            { KeyboardPrefs.clipboardEnabled(ctx) }, { KeyboardPrefs.setClipboardEnabled(ctx, it) },
+            resetKeys(ResetKeys.CLIPBOARD_ENABLED),
+        )
         FrontKeys.DEVELOPER_MODE -> BoolAccess(
             { AppPrefs.developerMode(ctx) }, { AppPrefs.setDeveloperMode(ctx, it) }, { AppPrefs.setDeveloperMode(ctx, false) },
             rebuildOnChange = true,
@@ -233,6 +250,18 @@ internal class FrontSettingRows(private val ctx: Context, private val host: Host
             { FrontSettings.soundValue(KeyboardPrefs.keySound(ctx)) },
             { KeyboardPrefs.setKeySound(ctx, FrontSettings.soundEnabled(it)) },
             resetKeys(ResetKeys.KEY_SOUND),
+        )
+        FrontKeys.CLIPBOARD_RETENTION -> ChoiceAccess(
+            { KeyboardPrefs.clipboardRetention(ctx) }, { KeyboardPrefs.setClipboardRetention(ctx, it) },
+            resetKeys(ResetKeys.CLIPBOARD_RETENTION),
+        )
+        FrontKeys.CLIPBOARD_MAX_ITEMS -> ChoiceAccess(
+            { KeyboardPrefs.clipboardMaxItems(ctx) }, { KeyboardPrefs.setClipboardMaxItems(ctx, it) },
+            resetKeys(ResetKeys.CLIPBOARD_MAX_ITEMS),
+        )
+        FrontKeys.CLIPBOARD_PREVIEW_CHARS -> ChoiceAccess(
+            { KeyboardPrefs.clipboardPreviewChars(ctx) }, { KeyboardPrefs.setClipboardPreviewChars(ctx, it) },
+            resetKeys(ResetKeys.CLIPBOARD_PREVIEW_CHARS),
         )
         FrontKeys.THEME -> ChoiceAccess(
             { KeyboardPrefs.theme(ctx) }, { KeyboardPrefs.setTheme(ctx, it) }, resetKeys(ResetKeys.THEME),
@@ -326,6 +355,51 @@ internal class FrontSettingRows(private val ctx: Context, private val host: Host
                 if (slot == AssignSlot.KANA) KeyboardPrefs.setKanaLayoutId(ctx, null) else KeyboardPrefs.setAlphaLayoutId(ctx, null)
                 KeyboardPrefs.bumpLayoutsRevision(ctx)
             },
+        )
+    }
+
+    /** 保存する種類（複数選択）。行を押すとチェックつきのダイアログを開く */
+    private fun multiRow(def: FrontSettingDef): View {
+        val kinds = ClipboardKind.values()
+        val current = KeyboardPrefs.clipboardKinds(ctx)
+        val row = ctx.navRow(def.label, def.description, ClipboardHistoryLogic.kindsSummary(current)) {
+            val checked = BooleanArray(kinds.size) { kinds[it] in current }
+            AlertDialog.Builder(ctx)
+                .setTitle(def.label)
+                .setMultiChoiceItems(kinds.map { it.title }.toTypedArray(), checked) { _, which, isChecked ->
+                    checked[which] = isChecked
+                }
+                .setPositiveButton("決定") { _, _ ->
+                    KeyboardPrefs.setClipboardKinds(ctx, kinds.filterIndexed { i, _ -> checked[i] }.toSet())
+                    host.rebuild()
+                }
+                .setNegativeButton("キャンセル", null)
+                .show()
+        }
+        return resettable(
+            def, row,
+            isDefault = { KeyboardPrefs.clipboardKinds(ctx).containsAll(kinds.toList()) },
+            reset = { KeyboardPrefs.reset(ctx, ResetKeys.CLIPBOARD_TYPES) },
+        )
+    }
+
+    /** ツールバーの項目。補足に現在の並びを出し、専用の画面（並べ替え）を開く */
+    private fun toolbarItemsRow(def: FrontSettingDef): View {
+        val current = KeyboardPrefs.toolbarItems(ctx)
+        val subtitle = "${def.description}\n現在の並び: ${ToolbarLogic.summary(current)}"
+        val row = ctx.navRow(def.label, subtitle) {
+            val intent = Intent(ctx, ToolbarItemsActivity::class.java)
+            val activity = ctx.findActivity()
+            if (activity != null) {
+                activity.startActivity(intent)
+            } else {
+                ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
+        return resettable(
+            def, row,
+            isDefault = { KeyboardPrefs.toolbarItems(ctx) == ToolbarLogic.DEFAULT },
+            reset = { KeyboardPrefs.reset(ctx, ResetKeys.TOOLBAR_ITEMS) },
         )
     }
 

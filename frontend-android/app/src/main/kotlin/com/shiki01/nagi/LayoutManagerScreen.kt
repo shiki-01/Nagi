@@ -660,6 +660,7 @@ internal class LayoutManagerScreen(
                             c.replaces,
                             c.overridesPreset,
                             viaLink,
+                            c.unsupported,
                         ),
                         "取り込む",
                     ) { runImport(c.json, viaLink) }

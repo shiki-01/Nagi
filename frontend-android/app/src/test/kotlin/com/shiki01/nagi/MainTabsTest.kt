@@ -47,6 +47,13 @@ class MainTabsTest {
     }
 
     @Test
+    fun webAppLinkOpensLayoutsTab() {
+        val r = MainRouting.resolve(true, "https://nagi.shiki-01.com/layout#data=abc", null)
+        assertEquals(MainTab.LAYOUTS, r.tab)
+        assertTrue(r.layoutIntent)
+    }
+
+    @Test
     fun rejectedLinkAlsoOpensLayoutsTabToShowTheReason() {
         val r = MainRouting.resolve(true, "https://example.com/", null)
         assertEquals(MainTab.LAYOUTS, r.tab)

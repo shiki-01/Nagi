@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import androidx.fragment.app.Fragment
 import com.shiki01.nagi.AppPrefs
+import com.shiki01.nagi.ClipboardHistoryStore
 import com.shiki01.nagi.DeveloperActivity
 import com.shiki01.nagi.FrontKeys
 import com.shiki01.nagi.FrontKind
@@ -266,7 +267,8 @@ class SettingsFragment : Fragment() {
             ctx.destructiveButton("すべて既定に戻す") {
                 ctx.confirmDialog(
                     "すべて既定に戻す",
-                    "キーボードの設定（入力・キーの見た目と操作・片手モード・高さ・レイアウトの割り当て・アップデートの自動確認）を" +
+                    "キーボードの設定（入力・キーの見た目と操作・片手モード・高さ・レイアウトの割り当て・ツールバー・" +
+                        "クリップボード履歴の設定・アップデートの自動確認）を" +
                         "すべて既定の値に戻します。変換の設定（コア）は戻りません。",
                     "戻す",
                     destructive = true,
@@ -288,6 +290,7 @@ class SettingsFragment : Fragment() {
         if (def.kind != FrontKind.ACTION) return front.build(def, layouts)
         return when (def.key) {
             FrontKeys.LEARNING_CLEAR -> ctx.actionRow(def.label, def.description, danger = true) { confirmClearLearning() }
+            FrontKeys.CLIPBOARD_CLEAR -> ctx.actionRow(def.label, def.description, danger = true) { confirmClearClipboard() }
             FrontKeys.UPDATE_OPEN -> ctx.navRow(def.label, def.description) {
                 startActivity(Intent(ctx, UpdateActivity::class.java))
             }
@@ -312,6 +315,22 @@ class SettingsFragment : Fragment() {
             NagiRuntime.get(app).call("clear_learning", JSONObject().put("session_id", "android")) { r ->
                 app.toast(if (r != null) "学習データを削除しました" else "削除できませんでした（コアが応答しません）")
             }
+        }
+    }
+
+    // ---- クリップボード履歴の削除 ----
+
+    private fun confirmClearClipboard() {
+        val ctx = requireContext()
+        val app = ctx.applicationContext
+        ctx.confirmDialog(
+            "履歴をすべて削除",
+            "クリップボード履歴を、ピン留めした項目も含めてすべて消します。元に戻せません。",
+            "削除",
+            destructive = true,
+        ) {
+            val store = ClipboardHistoryStore(java.io.File(app.filesDir, ClipboardHistoryStore.FILE_NAME))
+            background({ store.clear() }) { app.toast("クリップボード履歴を削除しました") }
         }
     }
 

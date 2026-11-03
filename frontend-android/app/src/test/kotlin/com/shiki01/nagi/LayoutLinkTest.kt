@@ -110,4 +110,54 @@ class LayoutLinkTest {
         // 空の assets は問題なし
         ok(LayoutLink.encode(LayoutFixtures.minimal(extra = """, "assets": {}""")))
     }
+
+    // ---- https の App Links（https://nagi.shiki-01.com/layout） ----
+
+    private val web = "https://nagi.shiki-01.com/layout"
+
+    @Test
+    fun httpsのフラグメントのdataを読める() {
+        val r = ok("$web#data=" + b64url(json, false))
+        assertEquals(json, r.json)
+        assertEquals("t1", r.layout.id)
+        assertEquals(json, ok(LayoutLink.encodeWeb(json)).json)
+    }
+
+    @Test
+    fun httpsのクエリのdataも読める() {
+        assertEquals(json, ok("$web?data=" + b64url(json, false)).json)
+        assertEquals(json, ok("$web/#data=" + b64url(json, true).replace("=", "%3D")).json)
+        // フラグメントを優先する
+        val other = LayoutFixtures.minimal(id = "t2")
+        assertEquals("t2", ok("$web?data=" + b64url(json, false) + "#data=" + b64url(other, false)).layout.id)
+        // ホストの大文字小文字は区別しない
+        ok("HTTPS://NAGI.SHIKI-01.COM/layout#data=" + b64url(json, false))
+    }
+
+    @Test
+    fun httpsはホストとパスが違えば拒否() {
+        val d = b64url(json, false)
+        assertEquals("対応していない URL です", reason("https://example.com/layout#data=$d"))
+        assertEquals("対応していない URL です", reason("https://nagi.shiki-01.com.evil.example/layout#data=$d"))
+        assertEquals("対応していない URL です", reason("https://nagi.shiki-01.com/layouts#data=$d"))
+        assertEquals("対応していない URL です", reason("https://nagi.shiki-01.com/#data=$d"))
+        assertEquals("対応していない URL です", reason("http://nagi.shiki-01.com/layout#data=$d"))
+    }
+
+    @Test
+    fun httpsでもdataの欠落_assets_上限を弾く() {
+        assertTrue(reason(web).contains("data がありません"))
+        assertTrue(reason("$web#x=1").contains("data がありません"))
+        val withAssets = LayoutFixtures.minimal(extra = """, "assets": {"bg": "data:image/png;base64,AAAA"}""")
+        assertTrue(reason(LayoutLink.encodeWeb(withAssets)).contains("assets"))
+        assertTrue(reason("$web#data=" + "A".repeat(LayoutLink.MAX_DATA_CHARS + 1)).contains("大きすぎます"))
+    }
+
+    @Test
+    fun isWebLinkの判定() {
+        assertTrue(LayoutLink.isWebLink("  $web#data=x"))
+        assertTrue(LayoutLink.isWebLink(web))
+        assertTrue(!LayoutLink.isWebLink("nagi://layout?data=x"))
+        assertTrue(!LayoutLink.isWebLink("https://nagi.shiki-01.com/support"))
+    }
 }

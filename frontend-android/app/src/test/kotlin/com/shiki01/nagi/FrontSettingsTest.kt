@@ -55,7 +55,7 @@ class FrontSettingsTest {
     fun 詳細ではグループが固定順に並ぶ() {
         assertEquals(
             listOf(
-                "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "アップデート", "開発者",
+                "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "クリップボード履歴", "アップデート", "開発者",
                 "表記の候補", "ユーザー辞書", "アプリごとの設定",
             ),
             titles(plan(SettingsUiMode.DETAIL)),
@@ -66,7 +66,7 @@ class FrontSettingsTest {
     fun シンプルでは詳細の項目だけのグループは出ない() {
         // 表記の候補・ユーザー辞書・アプリごとの設定 は、この入力ではシンプルの行が無い。開発者もオフなら出ない
         assertEquals(
-            listOf("入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "アップデート"),
+            listOf("入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "クリップボード履歴", "アップデート"),
             titles(plan(SettingsUiMode.SIMPLE)),
         )
     }
@@ -75,7 +75,7 @@ class FrontSettingsTest {
     fun 未知のグループは最後に出現順() {
         val items = listOf(core("x.1", "未知B"), core("i.1", "入力"), core("x.2", "未知A"))
         val sections = SettingsPlan.build(items, SettingsUiMode.SIMPLE, false)
-        assertEquals(listOf("入力", "学習", "キーボード", "アップデート", "未知B", "未知A"), titles(sections))
+        assertEquals(listOf("入力", "学習", "キーボード", "クリップボード履歴", "アップデート", "未知B", "未知A"), titles(sections))
     }
 
     // ---- 出し分け ----
@@ -105,7 +105,7 @@ class FrontSettingsTest {
                 FrontKeys.TOGGLE_INPUT, FrontKeys.FLICK_SENSITIVITY, FrontKeys.FLICK_POPUP, FrontKeys.FLICK_HINTS,
                 FrontKeys.HEIGHT, FrontKeys.ONE_HANDED, FrontKeys.HAPTIC, FrontKeys.SOUND, FrontKeys.THEME, FrontKeys.ACCENT,
                 FrontKeys.LAYOUT_KANA, FrontKeys.LAYOUT_ALPHA, FrontKeys.LEARNING_CLEAR, FrontKeys.UPDATE_AUTO_CHECK,
-                FrontKeys.UPDATE_OPEN,
+                FrontKeys.UPDATE_OPEN, FrontKeys.CLIPBOARD_ENABLED, FrontKeys.CLIPBOARD_RETENTION, FrontKeys.CLIPBOARD_CLEAR,
             ),
             simpleFront,
         )
@@ -145,8 +145,8 @@ class FrontSettingsTest {
             listOf(
                 FrontKeys.HEIGHT, FrontKeys.HEIGHT_SCALE, FrontKeys.HEIGHT_SCALE_LANDSCAPE, FrontKeys.ONE_HANDED,
                 FrontKeys.ONE_HANDED_WIDTH, FrontKeys.KEY_SPACING, FrontKeys.KEY_CORNER, FrontKeys.LAYOUT_BY_FIELD,
-                FrontKeys.HAPTIC, FrontKeys.SOUND, FrontKeys.THEME, FrontKeys.ACCENT, FrontKeys.LAYOUT_KANA,
-                FrontKeys.LAYOUT_ALPHA,
+                FrontKeys.HAPTIC, FrontKeys.SOUND, FrontKeys.THEME, FrontKeys.ACCENT, FrontKeys.CANDBAR_PASTE_BUTTON,
+                FrontKeys.TOOLBAR_ITEMS, FrontKeys.LAYOUT_KANA, FrontKeys.LAYOUT_ALPHA,
             ),
             keys(section(plan(SettingsUiMode.DETAIL), "キーボード")),
         )
@@ -157,6 +157,39 @@ class FrontSettingsTest {
             ),
             keys(section(plan(SettingsUiMode.SIMPLE), "キーボード")),
         )
+    }
+
+    @Test
+    fun クリップボード履歴グループの並びとシンプル詳細() {
+        assertEquals(
+            listOf(
+                FrontKeys.CLIPBOARD_ENABLED, FrontKeys.CLIPBOARD_RETENTION, FrontKeys.CLIPBOARD_MAX_ITEMS,
+                FrontKeys.CLIPBOARD_TYPES, FrontKeys.CLIPBOARD_PREVIEW_CHARS, FrontKeys.CLIPBOARD_CLEAR,
+            ),
+            keys(section(plan(SettingsUiMode.DETAIL), "クリップボード履歴")),
+        )
+        assertEquals(
+            listOf(FrontKeys.CLIPBOARD_ENABLED, FrontKeys.CLIPBOARD_RETENTION, FrontKeys.CLIPBOARD_CLEAR),
+            keys(section(plan(SettingsUiMode.SIMPLE), "クリップボード履歴")),
+        )
+        // 項目が無くても（コアが空でも）出る
+        assertTrue("クリップボード履歴" in titles(SettingsPlan.build(emptyList(), SettingsUiMode.SIMPLE, false)))
+    }
+
+    @Test
+    fun クリップボード履歴の既定値と選択肢はiosに揃っている() {
+        fun d(key: String) = FrontSettings.definitions.first { it.key == key }
+        assertFalse(d(FrontKeys.CLIPBOARD_ENABLED).defaultBool)
+        assertEquals("24h", d(FrontKeys.CLIPBOARD_RETENTION).defaultChoice)
+        assertEquals(listOf("1h", "24h", "7d", "30d", "forever"), d(FrontKeys.CLIPBOARD_RETENTION).choices.map { it.first })
+        assertEquals("50", d(FrontKeys.CLIPBOARD_MAX_ITEMS).defaultChoice)
+        assertEquals(listOf("10", "30", "50", "100", "200"), d(FrontKeys.CLIPBOARD_MAX_ITEMS).choices.map { it.first })
+        assertEquals("40", d(FrontKeys.CLIPBOARD_PREVIEW_CHARS).defaultChoice)
+        assertEquals(listOf("20", "40", "80", "120"), d(FrontKeys.CLIPBOARD_PREVIEW_CHARS).choices.map { it.first })
+        assertEquals(listOf("text", "url", "number", "email"), d(FrontKeys.CLIPBOARD_TYPES).choices.map { it.first })
+        assertTrue(d(FrontKeys.CANDBAR_PASTE_BUTTON).defaultBool)
+        assertEquals("すべて", FrontSettings.defaultText(d(FrontKeys.CLIPBOARD_TYPES)))
+        assertEquals(FrontSettings.CLIPBOARD_NOTE, section(plan(SettingsUiMode.DETAIL), "クリップボード履歴").footnote)
     }
 
     @Test

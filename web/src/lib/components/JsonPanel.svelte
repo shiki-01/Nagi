@@ -5,7 +5,12 @@
   import { LAYOUT_FILE_MAX_BYTES } from '$lib/keyboard/types'
   import { parseLayoutJSON } from '$lib/keyboard/validate'
   import type { ValidationError } from '$lib/keyboard/validate'
+  import { compatWarnings } from '$lib/keyboard/compat'
+  import { buildLayoutLinks } from '$lib/keyboard/layout-url'
+  import { REPO_URL } from '$lib/site'
+  import { onMount } from 'svelte'
   import ErrorList from './ErrorList.svelte'
+  import QrCode from './QrCode.svelte'
 
   let { store }: { store: EditorStore } = $props()
 
@@ -55,6 +60,36 @@
   function onblur() {
     applyDraft()
     editing = false
+  }
+
+  // アプリへ渡すリンク（nagi://layout は「アプリで開く」、https の共有ページは コピー・QR 用。どちらも同じレイアウト）。
+  // 上限超え・assets ありは作れず、理由を表示する。検証エラー中は作らない
+  const links = $derived(invalid || draftError ? undefined : buildLayoutLinks(store.layout))
+  const linkOk = $derived(links?.ok ? links : undefined)
+  const linkReason = $derived(invalid || draftError ? '検証エラーを直すと、リンクを作れます。' : links && !links.ok ? links.message : '')
+  const compat = $derived(compatWarnings(store.layout))
+  let showQr = $state(false)
+  let showGuide = $state(false)
+  let isMobile = $state(false)
+  onMount(() => {
+    isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  })
+
+  function openInApp() {
+    if (!linkOk) return
+    showGuide = true
+    message = 'Nagi アプリを開きます。開かないときは、下の案内を確認してください。'
+    window.location.href = linkOk.appUrl
+  }
+
+  async function copyLink() {
+    if (!linkOk) return
+    try {
+      await navigator.clipboard.writeText(linkOk.shareUrl)
+      message = 'リンクをコピーしました。スマホのブラウザで開くと、Nagi アプリに取り込めます。'
+    } catch {
+      message = 'コピーできませんでした。'
+    }
   }
 
   function download() {
@@ -127,6 +162,43 @@
       <button type="button" class="btn primary" disabled={invalid || !!draftError} onclick={download}>JSON をダウンロード</button>
       <button type="button" class="btn" disabled={invalid || !!draftError} onclick={copy}>コピー</button>
     </div>
+    <div class="share" aria-labelledby="share-title">
+      <h4 id="share-title">アプリに渡す（Android）</h4>
+      <p class="hint">
+        {isMobile ? 'このスマホの Nagi アプリで開けます。' : 'パソコンで作ったときは、QR コードをスマホのカメラで読み取ると渡せます。'}
+        上限は 1MB で、画像（assets）を含むものは渡せません。
+      </p>
+      <div class="btns">
+        <button type="button" class="btn" class:primary={isMobile} disabled={!linkOk} onclick={openInApp}>アプリで開く</button>
+        <button type="button" class="btn" disabled={!linkOk} onclick={copyLink}>リンクをコピー</button>
+        <button type="button" class="btn" class:primary={!isMobile} disabled={!linkOk} aria-expanded={showQr} onclick={() => (showQr = !showQr)}>
+          {showQr ? 'QR を隠す' : 'QR を表示'}
+        </button>
+      </div>
+      {#if !linkOk && linkReason}
+        <p class="warn" role="status">{linkReason}</p>
+      {/if}
+      {#if showQr && linkOk}
+        <QrCode text={linkOk.shareUrl} />
+      {/if}
+      {#if showGuide}
+        <p class="hint">
+          アプリが開かないときは、Nagi（Android 版）が入っていないか、このブラウザがアプリを開けません。
+          <a href="{REPO_URL}/releases">配布ページ</a>からインストールするか（手順は<a href="/support#layout">サポート</a>）、
+          リンクをコピーして Chrome で開いてください。
+        </p>
+      {/if}
+    </div>
+    {#if compat.length > 0}
+      <div class="compat" role="note">
+        <p class="warn"><strong>アプリがまだ反映しない指定があります。</strong>共有や書き出しはできますが、見た目どおりに動かない場合があります。</p>
+        <ul>
+          {#each compat as w (w.platform)}
+            <li>{w.platformLabel}: {w.features.map((f) => `${f.name}（${f.label}）`).join('、')}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
     <label>
       <span class="lbl">JSON（直接編集できます。編集は即座にフォームとプレビューへ反映されます）</span>
       <textarea
@@ -212,6 +284,16 @@
   .warn {
     margin: 0;
     color: var(--danger);
+    font-size: 0.875rem;
+  }
+  .share {
+    display: grid;
+    gap: 8px;
+    padding-top: 4px;
+  }
+  .compat ul {
+    margin: 4px 0 0;
+    padding-left: 1.25em;
     font-size: 0.875rem;
   }
   .file {

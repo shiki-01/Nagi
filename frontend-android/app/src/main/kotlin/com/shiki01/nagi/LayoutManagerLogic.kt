@@ -159,6 +159,7 @@ internal object LayoutImportText {
         replaces: Boolean,
         overridesPreset: Boolean,
         viaLink: Boolean,
+        unsupported: List<String> = emptyList(),
     ): String {
         val sb = StringBuilder()
         sb.append("名前: ").append(name).append('\n')
@@ -167,6 +168,7 @@ internal object LayoutImportText {
         sb.append("キー数: ").append(keyCount)
         if (replaces) sb.append("\n\n同じ id の自分のレイアウトを置き換えます。")
         if (overridesPreset) sb.append("\n\n同梱のレイアウト（").append(id).append("）と同じ id です。取り込むと、同梱のものの代わりにこちらが使われます。")
+        LayoutCompat.notice(unsupported)?.let { sb.append("\n\n").append(it) }
         if (viaLink) sb.append("\n\n外部のアプリやページから開かれたリンクです。心当たりがなければ取り込まないでください。")
         return sb.toString()
     }
@@ -197,6 +199,13 @@ internal object LayoutIntake {
     /** 貼り付けたリンクなど、VIEW の Intent を介さない文字列の判定 */
     fun classifyUrl(raw: String): IntakeResult {
         val url = raw.trim()
+        // App Links の https リンク（https://nagi.shiki-01.com/layout#data=…）も nagi://layout と同じ経路へ渡す
+        if (LayoutLink.isWebLink(url)) {
+            if (url.length > LayoutLink.MAX_DATA_CHARS + URL_EXTRA) {
+                return IntakeResult.Reject("リンクが大きすぎます（${LayoutLink.MAX_DATA_CHARS / 1024} KB まで）")
+            }
+            return IntakeResult.Accept(url)
+        }
         val schemeEnd = url.indexOf("://")
         if (schemeEnd < 0 || !url.substring(0, schemeEnd).equals("nagi", ignoreCase = true)) {
             return IntakeResult.Reject("対応していない URL です")
@@ -209,8 +218,9 @@ internal object LayoutIntake {
         return IntakeResult.Accept(url)
     }
 
-    /** 貼り付けた文字列が、JSON ではなく nagi:// のリンクに見えるか */
-    fun looksLikeLink(text: String): Boolean = text.trimStart().startsWith("nagi://", ignoreCase = true)
+    /** 貼り付けた文字列が、JSON ではなく nagi:// または https://nagi.shiki-01.com/layout のリンクに見えるか */
+    fun looksLikeLink(text: String): Boolean =
+        text.trimStart().startsWith("nagi://", ignoreCase = true) || LayoutLink.isWebLink(text)
 
     /** 生成したリンクが、受け取り側の上限（data の文字数）を超えるか */
     fun linkTooLong(link: String): Boolean = link.length - LINK_PREFIX.length > LayoutLink.MAX_DATA_CHARS

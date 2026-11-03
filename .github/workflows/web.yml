@@ -41,6 +41,24 @@ jobs:
               echo "$os-v* のリリースが無いため飛ばしました"
             fi
           done
+      # App Links の検証ファイル（/.well-known/assetlinks.json）。最新の公開リリース（prerelease でない android-v*）の
+      # assetlinks.json を置く（android-apk ワークフローが release 鍵のときだけ添付する）。無ければ飛ばす
+      - name: assetlinks.json を取り込む（Android App Links）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName,isDraft,isPrerelease \
+            --jq '[.[] | select((.tagName | startswith("android-v")) and (.isDraft | not) and (.isPrerelease | not))][0].tagName // empty')
+          if [ -n "$tag" ]; then
+            mkdir -p static/.well-known
+            if gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern assetlinks.json --dir static/.well-known --clobber; then
+              echo "取り込んだ assetlinks.json: $tag"
+            else
+              echo "$tag に assetlinks.json が無いため飛ばしました"
+            fi
+          else
+            echo "android-v* の公開リリースが無いため飛ばしました"
+          fi
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:

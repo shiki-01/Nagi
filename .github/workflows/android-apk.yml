@@ -205,6 +205,39 @@ jobs:
           cp frontend-android/app/build/outputs/apk/release/app-release.apk "dist/nagi-${VERSION_NAME}.apk"
           sha256sum "dist/nagi-${VERSION_NAME}.apk" | tee "dist/nagi-${VERSION_NAME}.apk.sha256"
 
+      # App Links（https://nagi.shiki-01.com/layout をアプリで開く）の検証用。release 鍵の証明書の SHA-256 指紋は公開情報。
+      # web ワークフローが最新の公開リリースから取り込み、/.well-known/assetlinks.json として公開する。
+      # パスワードは環境変数経由で渡し、ログには出さない。release 鍵が無い（debug 鍵）ときは作らない
+      - name: assetlinks.json を生成（release 鍵のときのみ）
+        env:
+          KEYSTORE_PATH: ${{ env.NAGI_KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "${KEYSTORE_PATH}" ]; then
+            echo "::warning::release 鍵が無いため、assetlinks.json の生成をスキップします"
+            exit 0
+          fi
+          fp=$(keytool -J-Duser.language=en -list -v -keystore "${KEYSTORE_PATH}" -alias "${KEY_ALIAS}" -storepass:env KEYSTORE_PASSWORD 2>/dev/null \
+            | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*\([0-9A-Fa-f:]\{95\}\).*$/\1/p' | head -n 1 | tr 'a-f' 'A-F')
+          if [ -z "${fp}" ]; then
+            echo "::warning::証明書の SHA-256 指紋を取り出せなかったため、assetlinks.json の生成をスキップします"
+            exit 0
+          fi
+          cat > dist/assetlinks.json <<JSON
+          [
+            {
+              "relation": ["delegate_permission/common.handle_all_urls"],
+              "target": {
+                "namespace": "android_app",
+                "package_name": "com.shiki01.nagi",
+                "sha256_cert_fingerprints": ["${fp}"]
+              }
+            }
+          ]
+          JSON
+          echo "証明書の指紋: ${fp}"
+
       - name: 更新マニフェスト（latest.json）を署名して生成
         env:
           NAGI_UPDATE_SIGNING_KEY: ${{ secrets.NAGI_UPDATE_SIGNING_KEY }}

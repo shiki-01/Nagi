@@ -43,6 +43,17 @@
                     android:host="layout"
                     android:scheme="nagi" />
             </intent-filter>
+            <!-- App Links: https://nagi.shiki-01.com/layout#data=…（サイトの共有ページ）をアプリで直接開く。
+                 検証は https://nagi.shiki-01.com/.well-known/assetlinks.json（android-apk ワークフローが生成、web が公開） -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="nagi.shiki-01.com"
+                    android:pathPrefix="/layout"
+                    android:scheme="https" />
+            </intent-filter>
         </activity>
         <!-- JSON の貼り付け取り込み。回転で作り直さない（入力内容を保つ） -->
         <activity
@@ -93,6 +104,12 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="false"
             android:label="データの使用量" />
+        <!-- ツールバーの項目の並べ替え（設定タブの「ツールバーの項目」から開く） -->
+        <activity
+            android:name=".ToolbarItemsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="ツールバーの項目" />
 
         <service
             android:name=".NagiImeService"

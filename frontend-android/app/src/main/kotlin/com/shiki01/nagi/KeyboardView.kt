@@ -110,6 +110,12 @@ internal interface KeyboardListener {
      * [viaCore] が true ならコアを通す（かな）。false ならアプリへ直接入れる
      */
     fun onCycleText(text: String, previous: String?, viaCore: Boolean)
+
+    /** クリップボード履歴のカードの文字を入れる（入力中の文字を確定してから。内容はログに出さない） */
+    fun onClipboardInsert(text: String)
+
+    /** パスワード欄・学習しない指定の入力欄か（クリップボード履歴の内容を出さない判定に使う） */
+    fun isSecureInput(): Boolean
 }
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
@@ -155,6 +161,9 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         val keyCornerDp: Float,
         /** 「アニメーションをオフ」でないか */
         val animations: Boolean,
+        /** ツールバーの項目と並び順（`toolbar.items`）、「貼り付け」を出すか（`candbar.paste_button`） */
+        val toolbarItems: List<ToolbarItem>,
+        val pasteButton: Boolean,
     )
 
     /** 直前のトグル入力（同じキーの連打で文字を置き換えるための記録） */
@@ -210,6 +219,17 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private lateinit var segScroll: HorizontalScrollView
     private lateinit var segBar: LinearLayout
     private lateinit var candScroll: HorizontalScrollView
+
+    /** 入力中でなく候補も無いときに、候補バーの場所へ出す操作の列（ツールバー） */
+    private lateinit var actionScroll: HorizontalScrollView
+    private lateinit var actionRow: LinearLayout
+
+    /** いま actionRow に並べている項目（変わったときだけ作り直す）。null は未構築 */
+    private var shownActions: List<ToolbarItem>? = null
+
+    /** クリップボードに文字があるか（「貼り付け」を出す判定。サービスが [setClipboardHasText] で伝える） */
+    private var clipboardHasText = false
+    private var historyPanel: ClipboardHistoryPanel? = null
     private lateinit var candBar: LinearLayout
     private lateinit var toolbarScroll: HorizontalScrollView
     private lateinit var reconvertBtn: TextView
@@ -270,6 +290,19 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     fun setComposing(composing: Boolean) {
         this.composing = composing
         renderLabels()
+        renderToolbar()
+    }
+
+    /** クリップボードに文字があるか。「貼り付け」ボタンの出し分けが変わるときだけ描き直す */
+    fun setClipboardHasText(has: Boolean) {
+        if (clipboardHasText == has) return
+        clipboardHasText = has
+        renderToolbar()
+    }
+
+    /** クリップボード履歴のページを開いていれば、内容を読み直す（新しくコピーされたとき） */
+    fun refreshClipboardHistory() {
+        historyPanel?.reload()
     }
 
     /** 候補バーを更新する。空・非表示なら空にする（高さは保つ） */
@@ -283,6 +316,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         segTexts = texts
         focusIndex = focus
         renderSegments()
+        renderToolbar()
     }
 
     /** 設定画面で変わった値を反映する（変わっていなければ何もしない） */
@@ -338,6 +372,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             keySpacingDp = KeyboardPrefs.keySpacingDp(context),
             keyCornerDp = KeyboardPrefs.keyCornerDp(context),
             animations = MotionPrefs.animationsEnabled(context),
+            toolbarItems = KeyboardPrefs.toolbarItems(context),
+            pasteButton = KeyboardPrefs.pasteButton(context),
         )
     }
 
@@ -345,6 +381,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         removeAllViews()
         uiHandler.removeCallbacksAndMessages(null)
         gridPanel = null
+        historyPanel = null
+        shownActions = null
         colors = KeyboardColors.resolve(context)
         setBackgroundColor(colors.bg)
         // 同梱のレイアウトが使う Iconify アイコンを（未取得なら）バックグラウンドで取得する。プロセスにつき 1 回
@@ -378,6 +416,17 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         candScroll.isHorizontalScrollBarEnabled = false
         candScroll.addView(candBar, FrameLayout.LayoutParams(WRAP, MATCH))
         candRow.addView(candScroll, lp(0, MATCH, 1f))
+        // ツールバー（候補の無いときだけ candScroll の代わりに出す）
+        actionRow = LinearLayout(context)
+        actionRow.orientation = LinearLayout.HORIZONTAL
+        actionRow.gravity = Gravity.CENTER_VERTICAL
+        actionScroll = HorizontalScrollView(context)
+        actionScroll.isHorizontalScrollBarEnabled = false
+        actionScroll.isFillViewport = true
+        actionScroll.addView(actionRow, FrameLayout.LayoutParams(WRAP, MATCH))
+        actionScroll.visibility = View.GONE
+        ViewCompat.setAccessibilityPaneTitle(actionScroll, "ツールバー")
+        candRow.addView(actionScroll, lp(0, MATCH, 1f))
         reconvertBtn = barButton("再変換", "選択した文字を再変換") { listener.onReconvert() }
         expandBtn = barButton("▾", "全候補を開く") { toggleGrid() }
         val layoutBtn = barButton("⇄", "12キーとローマ字入力の切り替え") { toggleLayout() }
@@ -963,7 +1012,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             "dismiss" -> listener.onDismiss()
             "paste" -> listener.onPaste()
             "deleteWord" -> listener.onDeleteWord()
-            else -> Unit // history など、Android では未対応の操作は無視する
+            "history" -> toggleClipboardHistory()
+            else -> Unit // Android では未対応の操作は無視する
         }
     }
 
@@ -1546,6 +1596,96 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         // 次語候補は件数が少なく、選ぶとそのまま挿入されるので展開しない
         expandBtn.visibility = if (candItems.size > 1 && !nextWord) View.VISIBLE else View.GONE
         expandBtn.contentDescription = if (gridPanel != null) "全候補を閉じる" else "全候補を開く"
+        renderToolbar()
+    }
+
+    // ---- ツールバー ----
+
+    /**
+     * 入力中でなく、候補も文節列も無いときは、候補バーの場所にツールバーを出す（候補が出たら候補バーに戻る）。
+     * 項目は設定 `toolbar.items`。「貼り付け」は `candbar.paste_button` がオンで、クリップボードに文字があるときだけ
+     */
+    private fun renderToolbar() {
+        if (!::actionScroll.isInitialized) return
+        val show = ToolbarLogic.shouldShow(composing, candItems.isEmpty() && bar.pinned == null, false) && segTexts.isEmpty()
+        val items = if (show) ToolbarLogic.visible(prefs.toolbarItems, prefs.pasteButton, clipboardHasText) else emptyList()
+        val showBar = show && items.isNotEmpty()
+        actionScroll.visibility = if (showBar) View.VISIBLE else View.GONE
+        candScroll.visibility = if (showBar) View.GONE else View.VISIBLE
+        if (!showBar || shownActions == items) return
+        shownActions = items
+        actionRow.removeAllViews()
+        for (item in items) {
+            val b = TextView(context)
+            b.text = item.glyph
+            b.contentDescription = item.title
+            b.textSize = 15f
+            b.setTextColor(colors.fg)
+            b.gravity = Gravity.CENTER
+            b.setPadding(dp(6), 0, dp(6), 0)
+            b.background = roundRect(AccentColor.withAlpha(colors.fg, 0x14), cornerPx)
+            b.setOnClickListener {
+                buzz(b)
+                runToolbarItem(item)
+            }
+            val p = LinearLayout.LayoutParams(dp(TOOLBAR_BUTTON_MIN_DP), MATCH, 1f)
+            p.setMargins(dp(3), dp(5), dp(3), dp(5))
+            actionRow.addView(b, p)
+        }
+        actionScroll.scrollTo(0, 0)
+    }
+
+    /** ツールバーの項目の操作。既存のキー操作（[KeyboardListener]）を呼ぶだけ */
+    private fun runToolbarItem(item: ToolbarItem) {
+        when (item) {
+            ToolbarItem.DISMISS -> listener.onDismiss()
+            ToolbarItem.PASTE -> listener.onPaste()
+            ToolbarItem.CURSOR_LEFT -> listener.onArrow(true)
+            ToolbarItem.CURSOR_RIGHT -> listener.onArrow(false)
+            ToolbarItem.NEWLINE -> listener.onEnter()
+            ToolbarItem.SPACE -> listener.onSpace()
+            ToolbarItem.DELETE_WORD -> listener.onDeleteWord()
+            ToolbarItem.EMOJI -> switchLayout(LayoutIds.EMOJI)
+            ToolbarItem.NEXT_KEYBOARD -> listener.onNextInputMethod()
+            ToolbarItem.HISTORY -> toggleClipboardHistory()
+        }
+    }
+
+    // ---- クリップボード履歴のページ ----
+
+    private fun toggleClipboardHistory() {
+        if (historyPanel != null) closeClipboardHistory() else openClipboardHistory()
+    }
+
+    private fun openClipboardHistory() {
+        if (historyPanel != null) return
+        closeGrid()
+        val store = ClipboardHistoryStore(java.io.File(context.applicationContext.filesDir, ClipboardHistoryStore.FILE_NAME))
+        val panel = ClipboardHistoryPanel(
+            context = context,
+            colors = colors,
+            store = store,
+            cornerPx = cornerPx,
+            isSecure = { listener.isSecureInput() },
+            onInsert = { text ->
+                closeClipboardHistory()
+                listener.onClipboardInsert(text)
+            },
+            onClose = { closeClipboardHistory() },
+        )
+        // 全候補の一覧と同じく、いまのキーボードの高さ・幅に固定する
+        val body = rootView
+        val bodyW = body?.width ?: 0
+        val lpPanel = FrameLayout.LayoutParams(if (bodyW > 0) bodyW else MATCH, max(body?.height ?: 0, dp(200)))
+        if (bodyW > 0) lpPanel.leftMargin = body?.left ?: 0
+        addView(panel, lpPanel)
+        historyPanel = panel
+    }
+
+    private fun closeClipboardHistory() {
+        val p = historyPanel ?: return
+        removeView(p)
+        historyPanel = null
     }
 
     /** 右端に固定する補正候補（最有力の 1 件）。無ければ隠す */
@@ -1640,6 +1780,9 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private class Tool(val label: String, val desc: String, val type: String, val content: String?)
 
     private companion object {
+        /** ツールバーのボタンの最小幅（dp。項目が多いときは横にスクロールする） */
+        const val TOOLBAR_BUTTON_MIN_DP = 52
+
         /** 長押しの判定時間の前にこれ以上動いたら長押しにしない（dp） */
         const val LONG_PRESS_MOVE_DP = 20
 
