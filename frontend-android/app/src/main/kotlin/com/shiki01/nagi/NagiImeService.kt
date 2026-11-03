@@ -1,5 +1,6 @@
 package com.shiki01.nagi
 
+import android.content.ClipboardManager
 import android.content.Context
 import android.inputmethodservice.InputMethodService
 import android.os.Build
@@ -41,6 +42,12 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     private var keyTable: List<KanaKeyDef> = KeyTables.FALLBACK
     private var strip: CandidateStrip? = null
     private var stripShown = false
+
+    /** 入力欄の種類によるレイアウトの自動選択で、かな / 英字のモードを変えたときの元のモード（戻すときに使う） */
+    private var modeBeforeField: Boolean? = null
+
+    /** 入力欄の種類によるレイアウトの自動選択で、かな / 英字以外（数字など）を開いている */
+    private var fieldLayoutShown = false
 
     /** 物理キーを押し下げで受け取ったキー（離したときの [onKeyUp] も受け取って OS に流さない） */
     private val handledKeys = HashSet<Int>()
@@ -84,6 +91,65 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         super.onStartInputView(info, restarting)
         // 設定画面で変えた値（配置・高さ・テーマ等）を反映する
         keyboard?.reloadPrefs()
+        // 同じ入力欄への再表示（restarting）では、利用者が選んだレイアウトを変えない
+        if (!restarting) applyFieldLayout(info)
+    }
+
+    /**
+     * 入力欄の種類（メール・URL・数字など）に合わせてレイアウトを自動で選び、改行キーの文字を変える
+     * （設定 `layoutByField` が有効なときだけ）。既に同じモードなら何もしない。
+     * 指定のない欄に移ったら、自動で切り替えていた場合だけ元のモードに戻す
+     */
+    private fun applyFieldLayout(info: EditorInfo?) {
+        val kb = keyboard ?: return
+        if (!KeyboardPrefs.layoutByField(this)) {
+            kb.setEnterLabel(null)
+            restoreFromField(kb)
+            return
+        }
+        kb.setEnterLabel(LayoutSelect.enterLabel(info?.imeOptions ?: 0))
+        val kind = FieldKind.fromInputType(info?.inputType ?: 0)
+        val target = LayoutStore.fieldTarget(this, kind)
+        if (target == null) {
+            restoreFromField(kb)
+            return
+        }
+        val wantKana = LayoutSelect.kanaModeOfTarget(target)
+        if (target == LayoutSelect.TARGET_KANA || target == LayoutSelect.TARGET_ALPHA) {
+            // 割り当て済みのかな / 英字。今のモードと同じなら、利用者が選んだ同じモードの別レイアウトも変えない
+            if (wantKana == kana && !fieldLayoutShown) return
+            if (modeBeforeField == null) modeBeforeField = kana
+            fieldLayoutShown = false
+            changeKana(wantKana == true)
+            kb.setKanaMode(kana)
+            return
+        }
+        val mode = kb.showLayoutId(target) ?: return
+        val kanaOfMode = LayoutSelect.kanaModeOf(mode)
+        if (kanaOfMode != null) {
+            if (modeBeforeField == null) modeBeforeField = kana
+            changeKana(kanaOfMode)
+            fieldLayoutShown = false
+        } else {
+            fieldLayoutShown = true
+        }
+    }
+
+    /** 自動選択で変えたモード・レイアウトを元に戻す */
+    private fun restoreFromField(kb: KeyboardView) {
+        val before = modeBeforeField
+        if (before == null && !fieldLayoutShown) return
+        modeBeforeField = null
+        fieldLayoutShown = false
+        if (before != null) changeKana(before)
+        kb.setKanaMode(kana)
+    }
+
+    /** 入力モード（かな / 英字）を変える。画面の組み立てはしない */
+    private fun changeKana(value: Boolean) {
+        if (kana == value) return
+        kana = value
+        engine.action("set_mode", if (kana) "hiragana" else "alphanumeric") { }
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
@@ -253,6 +319,61 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         if (sel.isNullOrEmpty()) return
         // 返った preedit を setComposingText で入れると、選択範囲が置き換わる
         engine.reconvert(sel) { r -> apply(r, null) }
+    }
+
+    override fun onCommitThen(block: () -> Unit) {
+        if (composing) {
+            engine.action("commit") { r ->
+                apply(r, null)
+                block()
+            }
+        } else {
+            block()
+        }
+    }
+
+    override fun onSetKana(kana: Boolean) {
+        if (kana == this.kana) return
+        changeKana(kana)
+        updateKeyboard(null)
+    }
+
+    override fun onConvert() {
+        if (!kana) return
+        engine.action("start_convert") { r -> apply(r, null) }
+    }
+
+    override fun onDismiss() {
+        requestHideSelf(0)
+    }
+
+    override fun onPaste() {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        val clip = cm.primaryClip ?: return
+        if (clip.itemCount == 0) return
+        val text = clip.getItemAt(0).coerceToText(this)?.toString()
+        if (text.isNullOrEmpty()) return
+        onCommitThen { currentInputConnection?.commitText(text, 1) }
+    }
+
+    override fun onDeleteWord() {
+        if (composing) return
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(64, 0) ?: return
+        val n = TextOps.wordDeleteLength(before)
+        if (n > 0) ic.deleteSurroundingText(n, 0)
+    }
+
+    override fun onCycleText(text: String, previous: String?, viaCore: Boolean) {
+        val n = previous?.let { it.codePointCount(0, it.length) } ?: 0
+        if (viaCore && kana) {
+            // 直前の文字をコアの backspace で消してから入れ直す（コアが使えなければアプリへ直接）
+            for (i in 0 until n) engine.action("backspace") { r -> apply(r) { sendDelete() } }
+            engine.insertText(text) { r -> apply(r) { currentInputConnection?.commitText(text, 1) } }
+        } else {
+            for (i in 0 until n) sendDelete()
+            currentInputConnection?.commitText(text, 1)
+        }
     }
 
     private fun switchMode() {

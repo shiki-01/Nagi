@@ -44,9 +44,21 @@ android {
         }
     }
 
+    // キーボードのレイアウト（config/keyboard/presets/*.json）を assets の presets/ として同梱する。
+    // src/main/assets（辞書・更新用公開鍵。CI が配置する）はそのまま使い、リポジトリ共通の config/keyboard を足す
+    sourceSets {
+        getByName("main") {
+            assets.srcDir("../../config/keyboard")
+        }
+    }
+
     // 辞書は mmap で読むため、assets から filesDir に展開する。圧縮しない（展開を速くする）
     androidResources {
         noCompress += listOf("bin")
+        // config/keyboard のうちプリセット以外（JSON Schema・テスト用のレイアウト）は APK に入れない。
+        // 既定の除外（.svn / .git / .DS_Store など）も残す。`!` は「除外」、区切りは `:`
+        ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~:" +
+            "!test-layouts:!test-looks:!layout.schema.json:!README.md"
     }
 
     packaging {

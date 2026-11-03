@@ -12,10 +12,95 @@ internal object KeyboardPrefs {
 
     private fun sp(ctx: Context): SharedPreferences = ctx.getSharedPreferences(NAME, Context.MODE_PRIVATE)
 
-    /** 日本語入力のレイアウト: "flick"（12 キー）/ "qwerty"（ローマ字） */
-    fun layout(ctx: Context): String = sp(ctx).getString("layout", "flick") ?: "flick"
+    /**
+     * 日本語入力のレイアウト（旧来の値）: "flick"（12 キー）/ "qwerty"（ローマ字）。
+     * かな用のレイアウト ID（[kanaLayoutId]）から読み替える。ID が QWERTY 系なら "qwerty"、それ以外は "flick"
+     */
+    fun layout(ctx: Context): String = if (kanaLayoutId(ctx).startsWith("qwerty")) "qwerty" else "flick"
 
-    fun setLayout(ctx: Context, v: String) = sp(ctx).edit().putString("layout", v).apply()
+    /** 旧来の値で設定する。かな用のレイアウト ID も `flick-kana` / `qwerty-kana` に合わせる */
+    fun setLayout(ctx: Context, v: String) {
+        sp(ctx).edit()
+            .putString("layout", v)
+            .putString("layout_kana", if (v == "qwerty") "qwerty-kana" else LayoutIds.DEFAULT_KANA)
+            .apply()
+    }
+
+    /** かな入力で使うレイアウトの ID。未設定なら旧来の "layout" の値から（flick-kana / qwerty-kana） */
+    fun kanaLayoutId(ctx: Context): String {
+        val v = sp(ctx).getString("layout_kana", null)
+        if (v != null && LayoutIds.isValid(v)) return v
+        return if (sp(ctx).getString("layout", "flick") == "qwerty") "qwerty-kana" else LayoutIds.DEFAULT_KANA
+    }
+
+    /** 英字入力で使うレイアウトの ID。未設定なら `qwerty-alpha` */
+    fun alphaLayoutId(ctx: Context): String {
+        val v = sp(ctx).getString("layout_alpha", null)
+        return if (v != null && LayoutIds.isValid(v)) v else LayoutIds.DEFAULT_ALPHA
+    }
+
+    /** かな用のレイアウト ID を設定する（null で既定に戻す） */
+    fun setKanaLayoutId(ctx: Context, id: String?) {
+        val e = sp(ctx).edit()
+        if (id == null) e.remove("layout_kana").remove("layout") else e.putString("layout_kana", id)
+        e.apply()
+    }
+
+    /** 英字用のレイアウト ID を設定する（null で既定に戻す） */
+    fun setAlphaLayoutId(ctx: Context, id: String?) {
+        val e = sp(ctx).edit()
+        if (id == null) e.remove("layout_alpha") else e.putString("layout_alpha", id)
+        e.apply()
+    }
+
+    /** 入力欄の種類ごとに利用者が割り当てたレイアウト（`kana` / `alpha` / ID / "none"）。未設定は null（既定） */
+    fun fieldLayoutId(ctx: Context, kind: FieldKind): String? {
+        val v = sp(ctx).getString("layout_field_${kind.key}", null) ?: return null
+        return if (v == LayoutSelect.FIELD_NONE || v == LayoutSelect.TARGET_KANA || v == LayoutSelect.TARGET_ALPHA ||
+            LayoutIds.isValid(v)
+        ) {
+            v
+        } else {
+            null
+        }
+    }
+
+    /** 入力欄の種類ごとのレイアウトを設定する（null で既定に戻す） */
+    fun setFieldLayoutId(ctx: Context, kind: FieldKind, id: String?) {
+        val e = sp(ctx).edit()
+        if (id == null) e.remove("layout_field_${kind.key}") else e.putString("layout_field_${kind.key}", id)
+        e.apply()
+    }
+
+    /** 利用者が割り当てた入力欄別のレイアウト（未設定の種類は含まない） */
+    fun fieldAssignments(ctx: Context): Map<FieldKind, String> {
+        val out = HashMap<FieldKind, String>()
+        for (k in FieldKind.values()) fieldLayoutId(ctx, k)?.let { out[k] = it }
+        return out
+    }
+
+    /** 入力欄の種類（メール・URL・数字など）に合わせてレイアウトを自動で選び、改行キーの文字を変える */
+    fun layoutByField(ctx: Context): Boolean = sp(ctx).getBoolean("layout_by_field", true)
+
+    fun setLayoutByField(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("layout_by_field", v).apply()
+
+    /** 長押しと判定する時間（ミリ秒、150〜1000）。iOS の `flick.long_press_ms` */
+    fun flickLongPressMs(ctx: Context): Int = sp(ctx).getInt("flick_long_press_ms", 350).coerceIn(150, 1000)
+
+    fun setFlickLongPressMs(ctx: Context, v: Int) = sp(ctx).edit().putInt("flick_long_press_ms", v).apply()
+
+    /** フリック先の文字を、キーの角に小さく表示する。iOS の `flick.hints` */
+    fun flickHints(ctx: Context): Boolean = sp(ctx).getBoolean("flick_hints", true)
+
+    fun setFlickHints(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("flick_hints", v).apply()
+
+    /** レイアウトの保存・削除・割り当てのたびに増える番号（キーボードが組み立て直すかの判定とキャッシュ破棄に使う） */
+    fun layoutsRevision(ctx: Context): Long = sp(ctx).getLong("layouts_rev", 0L)
+
+    fun bumpLayoutsRevision(ctx: Context) {
+        val p = sp(ctx)
+        p.edit().putLong("layouts_rev", p.getLong("layouts_rev", 0L) + 1L).apply()
+    }
 
     /** 12 キーでキーを押したときトグル入力（あ→い→う…）にする（false なら tap = 行の先頭） */
     fun toggleInput(ctx: Context): Boolean = sp(ctx).getBoolean("toggle_input", false)
