@@ -62,6 +62,19 @@ enum LayoutGeometry {
         return result
     }
 
+    /// グライド入力（なぞり入力）の対象にする英字キーの最小数（コアの認識器の条件。QWERTY のレイアウトだけが満たす）
+    static let minGlideLetterKeys = 20
+
+    /// グライド入力の対象のレイアウトか。かなモードの QWERTY（英字 1 文字のキーが `minGlideLetterKeys` 個以上）だけ。
+    /// 12 キーのかな・英字（qwerty-alpha）・数字記号・絵文字は対象外
+    static func supportsGlide(layout: KeyboardLayoutDef) -> Bool {
+        guard layout.mode == .kana else { return false }
+        let count = layout.rows.reduce(0) { total, row in
+            total + row.keys.filter { letterLabel($0) != nil }.count
+        }
+        return count >= minGlideLetterKeys
+    }
+
     /// コアへ送る内容。英字キーが `minLetterKeys` 個に満たない（12 キーのかな・数字・記号など）か、
     /// 絵文字・領域が空のときは nil（送らない）
     static func snapshot(layout: KeyboardLayoutDef, size: CGSize, keySpacing: Double, rowSpacing: Double) -> Snapshot? {

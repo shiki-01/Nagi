@@ -154,6 +154,9 @@ private struct LayoutPad: View {
     @ObservedObject var visual: KeyboardVisualState
     /// 押下中のキー（"行:列"）。ポップアップが下の行に隠れないよう、その行を手前に出す
     @State private var pressedKey: String?
+    /// 指が触れている間 true（グライド入力のジェスチャ用）。`onEnded` なしで取り消されたとき自動で false に戻るので、
+    /// それを検出して軌跡を捨てる
+    @GestureState private var glideTouching = false
 
     var body: some View {
         VStack(spacing: CGFloat(model.metrics.rowSpacing)) {
@@ -173,6 +176,16 @@ private struct LayoutPad: View {
                     .zIndex((pressedKey ?? "").hasPrefix("\(rowIndex):") ? 1 : 0)
             }
         }
+        // グライド入力（なぞり入力）: キー側のジェスチャと同時に指の位置を集める（キーの処理は奪わない）。
+        // 使えないとき（設定オフ・QWERTY 以外・パスワード欄）は子のジェスチャだけを有効にして、従来と同じ挙動にする。
+        // 座標はこのビューのローカル座標で、下の `GeometryReader`（`set_layout_geometry` の領域）と同じ原点
+        .simultaneousGesture(glideGesture, including: model.isGlideAvailable ? .all : .subviews)
+        .onChange(of: glideTouching) { touching in
+            guard !touching else { return }
+            // 正常に離した場合は `onEnded` が先に軌跡を片付ける。まだ残っていれば取り消されたとみなす
+            DispatchQueue.main.async { model.glideTouchCancelled() }
+        }
+        .overlay(GlideTrailView(trail: model.glideTrail))
         // キー領域の大きさをコアへ伝える（曖昧入力のキー近接。表示後・レイアウト切替・向き/高さの変更で送り直す。
         // 内容が同じなら `KeyboardModel` が送らない）
         .background(
@@ -183,6 +196,46 @@ private struct LayoutPad: View {
                     .onChange(of: model.layoutDef.id) { _ in model.updateLayoutGeometry(size: geo.size) }
             }
         )
+    }
+}
+
+extension LayoutPad {
+    /// グライド入力用のジェスチャ。点を集めて、なぞりかどうかの判定と送信は `KeyboardModel` が行う
+    fileprivate var glideGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .updating($glideTouching) { _, state, _ in state = true }
+            .onChanged { value in
+                model.glideTouchChanged(
+                    x: Double(value.location.x), y: Double(value.location.y),
+                    timeMs: value.time.timeIntervalSinceReferenceDate * 1000
+                )
+            }
+            .onEnded { value in
+                model.glideTouchEnded(
+                    x: Double(value.location.x), y: Double(value.location.y),
+                    timeMs: value.time.timeIntervalSinceReferenceDate * 1000
+                )
+            }
+    }
+}
+
+/// グライド入力の軌跡（細い線）。なぞりと判定されてから、指を離すまで描く。タッチは通さない（キーの操作を妨げない）
+private struct GlideTrailView: View {
+    @ObservedObject var trail: GlideTrailState
+
+    var body: some View {
+        let points = trail.points
+        Canvas { context, _ in
+            guard points.count > 1 else { return }
+            var path = Path()
+            path.move(to: points[0])
+            for point in points.dropFirst() { path.addLine(to: point) }
+            context.stroke(
+                path, with: .color(themeAccent.opacity(0.75)),
+                style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
+            )
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -315,12 +368,15 @@ private struct KeyCell: View {
                     rowWidth: rowWidth,
                     onPress: onPress,
                     activateKey: { touch in activate(key, model, touch: touch) },
-                    activateItem: { item in activate(item, model) }
+                    activateItem: { item in activate(item, model) },
+                    isGlideStroke: { model.isGlideStroke },
+                    takeGlideRelease: { model.takeGlideSwallowsRelease() }
                 )
             } else {
                 TapKeyView(
                     face: face(faceContent(key, model)),
-                    action: { touch in activate(key, model, touch: touch) }
+                    action: { touch in activate(key, model, touch: touch) },
+                    takeGlideRelease: { model.takeGlideSwallowsRelease() }
                 )
             }
         }
@@ -398,6 +454,8 @@ private struct TapKeyView: View {
     let face: KeyFaceInput
     /// 引数は、指が触れた位置のキー内の相対位置（曖昧入力の手がかり）
     let action: (TouchPoint?) -> Void
+    /// 直近のストロークがグライド入力（なぞり）だったか。true なら離したときのタップを取り消す（呼ぶと印が降りる）
+    var takeGlideRelease: () -> Bool = { false }
 
     @GestureState private var isPressed = false
     @StateObject private var hold = ReleaseHold()
@@ -413,8 +471,10 @@ private struct TapKeyView: View {
                         .updating($isPressed) { _, state, _ in state = true }
                         .onEnded { value in
                             if face.uses(.released) { hold.begin(ms: face.releasedHoldMs) }
+                            // なぞり入力だったときは、離したキーをタップとして入れない（印は必ず降ろす）
+                            let glided = takeGlideRelease()
                             // 指を大きく動かして離した場合は、押した扱いにしない
-                            if abs(value.translation.width) < tapSlopPoints && abs(value.translation.height) < tapSlopPoints {
+                            if !glided && abs(value.translation.width) < tapSlopPoints && abs(value.translation.height) < tapSlopPoints {
                                 NagiKeyFeedback.keyDown()
                                 action(touchPoint(value.startLocation, in: geo.size))
                             }
@@ -451,6 +511,10 @@ private struct LongPressKeyView: View {
     let onPress: (Bool) -> Void
     let activateKey: (TouchPoint?) -> Void
     let activateItem: (LayoutKeyDef) -> Void
+    /// グライド入力（なぞり）と判定されているか（ポップアップを出さない・畳むのに見る）と、
+    /// 離したときに直近のストロークがなぞりだったか（true なら入力しない。呼ぶと印が降りる）
+    var isGlideStroke: () -> Bool = { false }
+    var takeGlideRelease: () -> Bool = { false }
 
     /// 指が触れている間 true。ジェスチャが `onEnded` なしで取り消された（システムのジェスチャに奪われた等）とき、
     /// 自動で false に戻るので、それを検出して状態をリセットする
@@ -502,7 +566,13 @@ private struct LongPressKeyView: View {
             onPress(true)
             startTimer(keyWidth: keyWidth)
         }
-        if popupShown {
+        if isGlideStroke() {
+            // なぞり入力と判定された: 長押しのポップアップは出さない（出ていれば畳む）
+            timer?.cancel()
+            timer = nil
+            popupShown = false
+            selected = nil
+        } else if popupShown {
             selected = index(at: value.location, keyWidth: keyWidth)
         } else if abs(value.translation.width) >= 20 || abs(value.translation.height) >= 20 {
             // 長押しになる前に大きく動いた: ポップアップは出さない
@@ -516,7 +586,7 @@ private struct LongPressKeyView: View {
         let delay = UInt64(NagiKeyMetrics.current.flickLongPressMs) * 1_000_000
         timer = Task { @MainActor in
             try? await Task.sleep(nanoseconds: delay)
-            guard !Task.isCancelled, isDown else { return }
+            guard !Task.isCancelled, isDown, !isGlideStroke() else { return }
             popupShown = true
             selected = index(at: lastLocation, keyWidth: keyWidth)
             NagiKeyFeedback.keyDown()
@@ -524,7 +594,8 @@ private struct LongPressKeyView: View {
     }
 
     private func ended(_ value: DragGesture.Value, keySize: CGSize) {
-        let wasPopup = popupShown
+        let glided = takeGlideRelease()
+        let wasPopup = popupShown && !glided
         let chosen = selected
         reset()
         // 正常な終了（取り消しでない）。入力が実行されたかは問わない
@@ -534,7 +605,7 @@ private struct LongPressKeyView: View {
                 NagiKeyFeedback.keyDown()
                 activateItem(popup[chosen])
             }
-        } else if abs(value.translation.width) < tapSlopPoints && abs(value.translation.height) < tapSlopPoints {
+        } else if !glided && abs(value.translation.width) < tapSlopPoints && abs(value.translation.height) < tapSlopPoints {
             NagiKeyFeedback.keyDown()
             activateKey(touchPoint(value.startLocation, in: keySize))
         }
@@ -1298,13 +1369,19 @@ private struct CandidateButton: View {
                         .font(.system(size: 9))
                         .foregroundColor(.orange)
                         .lineLimit(1)
+                } else if let glide = item.glideHint {
+                    // グライド入力（なぞり入力）の候補: 「なぞり: かんじ」（認識した元の読み）
+                    Text(glide)
+                        .font(.system(size: 9))
+                        .foregroundColor(themeAccent)
+                        .lineLimit(1)
                 }
                 Text(item.surface)
                     .font(.system(size: 17))
                     .foregroundColor(Color(UIColor.label))
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, item.hint == nil ? 6 : 2)
+            .padding(.vertical, (item.hint == nil && item.glideHint == nil) ? 6 : 2)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(selected ? themeAccent.opacity(0.25)
@@ -1336,6 +1413,12 @@ private struct ExpandedCandidates: View {
                                 Text(hint)
                                     .font(.system(size: 9))
                                     .foregroundColor(.orange)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            } else if let glide = item.glideHint {
+                                Text(glide)
+                                    .font(.system(size: 9))
+                                    .foregroundColor(themeAccent)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.7)
                             }

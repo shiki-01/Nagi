@@ -45,3 +45,12 @@ func pinnedFuzzyIndex(hints: [String?], nextWord: Bool) -> Int? {
     guard !nextWord else { return nil }
     return hints.firstIndex { $0 != nil }
 }
+
+/// グライド入力（なぞり入力）の候補に付ける「なぞり」の表示。出所に `glide` を含まない候補は nil。
+/// 認識した読み（`CandidateView.reading`）が表記と違えば「なぞり: かんじ」の形にする（同じ読みの候補が複数あるので、元の読みを見せる）。
+/// 候補の種類の判定（`classifyCandidates`）や右端への固定（`pinnedFuzzyIndex`）には影響しない
+func glideHint(sources: [CandidateSource], surface: String, reading: String?) -> String? {
+    guard sources.contains(.glide) else { return nil }
+    guard let reading = reading, !reading.isEmpty, reading != surface else { return "なぞり" }
+    return "なぞり: \(reading)"
+}

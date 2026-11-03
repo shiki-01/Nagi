@@ -137,7 +137,8 @@ F0 → F1（F0 で効果を確認）→ F2 → 必要に応じて F3 / F4。
 | G0 | 実装済み。合成軌跡ジェネレータ（`nagi_glide::synth`、シード固定）、読み → ローマ字経路の仕様（`nagi_glide::spell`）、ベンチ `nagi-glide-eval`（top1 / top5 / top10・1 ストロークの認識時間・索引サイズ・常駐メモリ） |
 | G1 | 実装済み。`core/glide`（`nagi-glide`）、索引 39.17 MB（`cargo xtask build-glide-index`、mmap）。語頻度に比例した読みで normal の top1 78%・top5 98%、認識 p95 約 12ms（合成軌跡・Xeon 2.1GHz） |
 | G2 | 実装済み。`glide_input`・`CandidateSource::Glide`・`Engine::glide_input`・設定 `input.glide`（既定 false）・JSON-RPC 統合テスト。FFI / JNI は変更不要 |
-| G3 / G4 | 未着手（フロントの UI。実機確認） |
+| G3 | 未着手（Android の UI。実機確認） |
+| G4 | **実装済み・実機未確認・CI（Swift）未確認**（iOS の UI。2026-11-03、`docs/decisions.md` H-83）。QWERTY のかなでの軌跡収集・なぞり判定・軌跡の描画・`glide_input` の送信・候補の「なぞり」表示・触覚。**索引 `nagi-glide.bin` の iOS への配布は未実装** |
 | G5 | 未着手 |
 
 実機の軌跡による精度は未確認（合成は楽観的）。

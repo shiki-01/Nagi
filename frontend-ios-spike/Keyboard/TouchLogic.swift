@@ -290,3 +290,172 @@ enum LayoutSwitchKeep {
         return false
     }
 }
+
+// MARK: - グライド入力（なぞり入力。docs/glide-input.md）
+
+/// グライド入力のしきい値。ジェスチャの判定（`GlideStrokeTracker`）が使う
+enum GlideGesture {
+    /// なぞりと判定する軌跡の長さ（pt、指が動いた道のり）の下限。
+    /// タップとみなす移動量（キー側の 40pt）以上にして、雑なタップがなぞりに化けないようにする
+    static let minPathLength = 40.0
+    /// なぞりと判定するために通過するキーの数の下限
+    static let minDistinctKeys = 2
+    /// コアへ送る点の最大数（`docs/glide-input.md`: 最大 2048 点。超えるとコアが間引くが、こちらで先に抑える）
+    static let maxPoints = 2048
+    /// 点を残す最小の間隔（pt）。これより近い点は捨てる（点数が増えるごとに倍々で広げる）
+    static let minPointSpacing = 1.0
+    /// 軌跡の描画用の点の間隔（pt）と最大数（超えたら古い点から捨てる）
+    static let trailSpacing = 2.0
+    static let maxTrailPoints = 400
+    /// キーの当たり判定を、キー矩形の外側へ広げる量（pt。キー間の隙間に指があっても最寄りのキーとみなす）
+    static let keySlack = 3.0
+    /// 連続する 2 点の距離がキーの最小幅のこの倍率を超え、かつ `jumpWindowMs` より短い間に起きたら、
+    /// 指が入れ替わった（2 本目の指に追従先が移った）などの飛びとみなす
+    static let jumpKeyWidths = 3.0
+    static let jumpWindowMs = 40.0
+
+    /// コアへ送る点（プロトコルの型）に直す。座標は `set_layout_geometry` のキー矩形と同じ座標系、`t` は ms（ストロークの最初が 0）
+    static func points(_ samples: [GlideSample]) -> [GlidePoint] {
+        samples.map { GlidePoint(x: $0.x, y: $0.y, t: $0.t) }
+    }
+
+    /// 座標 `(x, y)` を当たり判定するキーの添字。矩形（`keySlack` だけ広げる）に入るキーのうち、中心が最も近いもの。無ければ nil
+    static func hitKey(x: Double, y: Double, keys: [LayoutGeometry.KeyRect]) -> Int? {
+        var best: (index: Int, distance: Double)?
+        for (index, key) in keys.enumerated() {
+            guard x >= key.x - keySlack, x <= key.x + key.w + keySlack,
+                  y >= key.y - keySlack, y <= key.y + key.h + keySlack else { continue }
+            let dx = x - (key.x + key.w / 2)
+            let dy = y - (key.y + key.h / 2)
+            let distance = dx * dx + dy * dy
+            if best == nil || distance < best!.distance { best = (index, distance) }
+        }
+        return best?.index
+    }
+}
+
+/// 軌跡の点 1 つ。`t` はストロークの最初の点からの経過時間（ms）
+struct GlideSample: Equatable {
+    let x: Double
+    let y: Double
+    let t: Double
+}
+
+/// 1 回のストローク（指を置いてから離すまで）の軌跡を集め、「なぞり」かどうかを判定する（UI に依存しない純粋な処理）。
+///
+/// - 始点がキーの上であること。キー以外（⇧・⌫・スペースなど）から始まったストロークは、なぞりにならない
+/// - 道のりが `GlideGesture.minPathLength` 以上で、2 キー以上を通過したら「なぞり」（以後は戻らない）
+/// - 座標はキー領域（`set_layout_geometry` と同じ座標系）の範囲 `0...width` × `0...height` に収める
+/// - 送る点は `GlideGesture.maxPoints` 以内（超えたら半分に間引く）。最後の点は必ず含める
+struct GlideStrokeTracker {
+    private let keys: [LayoutGeometry.KeyRect]
+    private let width: Double
+    private let height: Double
+    private let minPath: Double
+    private let jumpLimit: Double
+    private var visited = Set<Int>()
+    private var startedOnKey = false
+    private var originMs = 0.0
+    private var lastRaw: GlideSample?
+    private var lastKept: GlideSample?
+    private var lastTrail: GlideSample?
+    private var spacing = GlideGesture.minPointSpacing
+
+    /// コアへ送る点（間引き後）
+    private(set) var samples: [GlideSample] = []
+    /// 描画用の軌跡（なぞりと判定される前から溜める）
+    private(set) var trail: [GlideSample] = []
+    /// 指が動いた道のり（pt）
+    private(set) var pathLength = 0.0
+    /// なぞりと判定されたか
+    private(set) var isGlide = false
+    /// 指の飛びなどで無効になったか（なぞりになる前に起きた場合。以後なぞりにならない）
+    private(set) var isInvalid = false
+
+    /// 通過したキーの数
+    var visitedKeyCount: Int { visited.count }
+
+    /// - keys: 描画中のレイアウトのキー矩形（`set_layout_geometry` に渡したものと同じ）
+    /// - width, height: キー領域の大きさ（座標をこの範囲に収める）
+    init(keys: [LayoutGeometry.KeyRect], width: Double, height: Double, minPathLength: Double = GlideGesture.minPathLength) {
+        self.keys = keys
+        self.width = width.isFinite ? max(width, 0) : 0
+        self.height = height.isFinite ? max(height, 0) : 0
+        self.minPath = minPathLength
+        let narrowest = keys.map(\.w).filter { $0.isFinite && $0 > 0 }.min() ?? 0
+        self.jumpLimit = narrowest * GlideGesture.jumpKeyWidths
+    }
+
+    /// 点を 1 つ加える。この呼び出しで「なぞり」と判定されたとき true。
+    /// 非数の座標・時刻は無視する。時刻は単調増加に直す（逆戻りは直前の時刻に揃える）
+    @discardableResult
+    mutating func add(x: Double, y: Double, timeMs: Double) -> Bool {
+        guard x.isFinite, y.isFinite, timeMs.isFinite, !isInvalid else { return false }
+        let cx = min(max(x, 0), width)
+        let cy = min(max(y, 0), height)
+        guard let previous = lastRaw else {
+            originMs = timeMs
+            let first = GlideSample(x: cx, y: cy, t: 0)
+            lastRaw = first
+            if let key = GlideGesture.hitKey(x: cx, y: cy, keys: keys) {
+                startedOnKey = true
+                visited.insert(key)
+                keep(first)
+                addTrail(first)
+            }
+            return false
+        }
+        guard startedOnKey else { return false }
+        let sample = GlideSample(x: cx, y: cy, t: max(timeMs - originMs, previous.t))
+        let step = ((sample.x - previous.x) * (sample.x - previous.x) + (sample.y - previous.y) * (sample.y - previous.y)).squareRoot()
+        if jumpLimit > 0, step > jumpLimit, sample.t - previous.t < GlideGesture.jumpWindowMs {
+            // 飛びの点は取り込まない。なぞりの判定前なら、このストロークはなぞりにしない
+            if !isGlide { isInvalid = true }
+            return false
+        }
+        lastRaw = sample
+        pathLength += step
+        if let key = GlideGesture.hitKey(x: cx, y: cy, keys: keys) { visited.insert(key) }
+        if let kept = lastKept {
+            let dx = sample.x - kept.x
+            let dy = sample.y - kept.y
+            if (dx * dx + dy * dy).squareRoot() >= spacing { keep(sample) }
+        } else {
+            keep(sample)
+        }
+        addTrail(sample)
+        if !isGlide, pathLength >= minPath, visited.count >= GlideGesture.minDistinctKeys {
+            isGlide = true
+            return true
+        }
+        return false
+    }
+
+    /// ストロークの終わり。なぞりなら送る点（最後の点を含む）を返す。なぞりでなければ nil
+    mutating func finish() -> [GlideSample]? {
+        guard isGlide, !isInvalid else { return nil }
+        if let last = lastRaw, last != samples.last { keep(last) }
+        return samples
+    }
+
+    private mutating func keep(_ sample: GlideSample) {
+        if samples.count >= GlideGesture.maxPoints {
+            // 1 つおきに残して半分にし、以後の間隔も倍にする（長いストロークでも上限内に収める）
+            samples = samples.enumerated().filter { $0.offset % 2 == 0 }.map { $0.element }
+            spacing *= 2
+        }
+        samples.append(sample)
+        lastKept = sample
+    }
+
+    private mutating func addTrail(_ sample: GlideSample) {
+        if let last = lastTrail {
+            let dx = sample.x - last.x
+            let dy = sample.y - last.y
+            guard (dx * dx + dy * dy).squareRoot() >= GlideGesture.trailSpacing else { return }
+        }
+        trail.append(sample)
+        lastTrail = sample
+        if trail.count > GlideGesture.maxTrailPoints { trail.removeFirst(trail.count - GlideGesture.maxTrailPoints) }
+    }
+}

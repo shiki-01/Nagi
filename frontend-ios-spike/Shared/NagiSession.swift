@@ -164,6 +164,13 @@ final class NagiSession {
         return result != nil
     }
 
+    /// グライド入力（なぞり入力）の軌跡を送る。座標は `setLayoutGeometry` のキー矩形と同じ座標系の絶対座標、`t` は ms。
+    /// 応答の `consumed = false` は認識しなかった（機能が無効・タップ相当・候補なしなど。何も変わっていない）。
+    /// 座標はログに出さない
+    func glideInput(points: [GlidePoint], layoutId: String?) -> ProcessKeyResult? {
+        request("glide_input", GlideInputParams(session_id: sessionId, points: points, layout_id: layoutId))
+    }
+
     func perform(_ action: TouchAction) -> ProcessKeyResult? {
         request("perform_action", PerformActionParams(session_id: sessionId, action: action))
     }

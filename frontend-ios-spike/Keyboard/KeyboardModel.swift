@@ -9,6 +9,22 @@ struct CandidateItem: Identifiable {
     let covers: Int?
     /// 曖昧入力（タイプミス補正）の候補の「もしかして: かんじ」表示。補正候補でなければ nil
     var hint: String? = nil
+    /// グライド入力（なぞり入力）の候補の「なぞり: かんじ」表示。なぞりの候補でなければ nil
+    var glideHint: String? = nil
+}
+
+/// グライド入力の軌跡の描画用の状態。軌跡の更新だけで再描画が起きるよう、`KeyboardModel` とは別の ObservableObject にする
+/// （キー全体のビューを毎フレーム作り直さない）。座標はキー領域のローカル座標
+final class GlideTrailState: ObservableObject {
+    @Published private(set) var points: [CGPoint] = []
+
+    func set(_ samples: [GlideSample]) {
+        points = samples.map { CGPoint(x: $0.x, y: $0.y) }
+    }
+
+    func clear() {
+        if !points.isEmpty { points = [] }
+    }
 }
 
 /// 英字のシフトの状態
@@ -64,6 +80,19 @@ final class KeyboardModel: ObservableObject {
     var metrics: ResolvedMetrics {
         ResolvedMetrics.make(layoutDef.metrics, settingSpacing: NagiKeyMetrics.keySpacing)
     }
+    /// グライド入力（なぞり入力）の軌跡の描画用の状態
+    let glideTrail = GlideTrailState()
+    /// コアの設定 `input.glide`（既定 false）。`refreshGlideSettingIfNeeded` が `get_settings` で読む
+    @Published private(set) var glideSetting = false
+    /// `glideSetting` を読み直す必要があるか（セッションを作り直した・`config.toml` を読み直したとき）
+    private var glideSettingStale = true
+    /// 進行中のストローク（指を置いてから離すまで）の軌跡。なぞりの対象でなければ nil
+    private var glideTracker: GlideStrokeTracker?
+    /// 進行中のストロークのレイアウト（軌跡を取ったレイアウトの識別子。`glide_input` の `layout_id`）
+    private var glideLayoutId: String?
+    /// 直近のストロークがなぞりと判定された。キー側の「離したときのタップ・ポップアップ選択」を 1 回だけ取り消す印
+    /// （`takeGlideSwallowsRelease`）。次のストロークの開始でも降ろす
+    private var glideSwallowsRelease = false
     /// 日本語入力の流れか（かなから数字・記号へ切り替えて来た間は true。数字・記号をコアに通すかの判定に使う）
     private var japaneseContext = true
     /// 英字のシフト（1 回で次の 1 文字、2 回連続で Caps Lock）
@@ -223,6 +252,8 @@ final class KeyboardModel: ObservableObject {
         session?.onCandidatesUpdate = { [weak self] update in self?.applyCandidatesUpdate(update) }
         session?.startNotifications()
         reportEnvironment(reason: "attach")
+        // 新しいセッションは設定 `input.glide` も知らない（次の focusIn で読み直す）
+        glideSettingStale = true
         // 新しいセッションは幾何を知らないので、送り直す
         lastSentGeometry = nil
         sendLayoutGeometry()
@@ -1057,6 +1088,8 @@ final class KeyboardModel: ObservableObject {
         closeClipboardHistory()
         captureClipboardHistory()
         applyCoreSettingsChanges()
+        refreshGlideSettingIfNeeded()
+        glideSwallowsRelease = false
         reportEnvironment(reason: "focusIn")
         // レイアウトのファイルが変わっていても追随する（ホストアプリでの割り当て・取り込み）
         layoutCache.removeAll()
@@ -1091,6 +1124,7 @@ final class KeyboardModel: ObservableObject {
             if let result = session.reloadConfig() {
                 DiagLog.log("reload_config ok=\(result.ok) errors=\(result.errors.count)")
             }
+            glideSettingStale = true
         }
     }
 
@@ -1139,6 +1173,104 @@ final class KeyboardModel: ObservableObject {
         let ok = session.setLayoutGeometry(snapshot)
         // キーの座標は入力内容ではないが、ログには数だけ残す
         DiagLog.log("set_layout_geometry layout=\(snapshot.layoutId) keys=\(snapshot.keys.count) ok=\(ok)")
+    }
+
+    // MARK: - グライド入力（なぞり入力。docs/glide-input.md）
+
+    /// コアの設定 `input.glide` を読み直す（セッションの作り直し・設定の再読み込みのあとだけ。`get_settings` を毎回呼ばない）。
+    /// 読めなかったとき（設定ファイルの構文エラーなど）は直前の値のまま
+    private func refreshGlideSettingIfNeeded() {
+        guard glideSettingStale else { return }
+        guard let session = session else {
+            glideSetting = false
+            return
+        }
+        glideSettingStale = false
+        guard let snapshot = session.getSettings(), snapshot.error == nil else {
+            DiagLog.log("glide setting: get_settings failed")
+            return
+        }
+        var enabled = false
+        if let item = snapshot.items.first(where: { $0.key == "input.glide" }), case .bool(let on)? = item.value {
+            enabled = on
+        }
+        if enabled != glideSetting { glideSetting = enabled }
+        DiagLog.log("glide setting enabled=\(enabled)")
+    }
+
+    /// 表示中のレイアウトでなぞり入力を受け付けるか。設定 `input.glide` がオン、かなモードの QWERTY、
+    /// コアあり、パスワード欄でないときだけ。それ以外は従来のタップ・長押し・フリックのまま
+    var isGlideAvailable: Bool {
+        glideSetting && session != nil && LayoutGeometry.supportsGlide(layout: layoutDef) && !(host?.hostIsSecure() ?? false)
+    }
+
+    /// ストローク中の指の位置（キー領域のローカル座標 = `set_layout_geometry` のキー矩形と同じ座標系）。
+    /// 最初の呼び出しでストロークが始まる
+    func glideTouchChanged(x: Double, y: Double, timeMs: Double) {
+        if glideTracker == nil {
+            // 新しいストロークの開始（前のストロークの印は降ろす）
+            glideSwallowsRelease = false
+            glideLayoutId = nil
+            guard isGlideAvailable, let size = layoutGeometrySize else { return }
+            let spacing = metrics
+            guard let snapshot = LayoutGeometry.snapshot(
+                layout: layoutDef, size: size, keySpacing: spacing.keySpacing, rowSpacing: spacing.rowSpacing
+            ) else { return }
+            glideLayoutId = snapshot.layoutId
+            glideTracker = GlideStrokeTracker(keys: snapshot.keys, width: snapshot.width, height: snapshot.height)
+        }
+        guard var tracker = glideTracker else { return }
+        let started = tracker.add(x: x, y: y, timeMs: timeMs)
+        glideTracker = tracker
+        if started {
+            // なぞりと判定: 以後、離したときのタップを取り消し、軌跡を描く
+            glideSwallowsRelease = true
+            toggleState = nil
+        }
+        if tracker.isGlide { glideTrail.set(tracker.trail) }
+    }
+
+    /// 指を離した。なぞりと判定済みなら、軌跡を `glide_input` で送って結果を反映する。
+    /// 判定はストローク中（`glideTouchChanged`）に済ませる（キー側の離したときの処理より前に印を立てるため）。
+    /// 離した位置は点列に加えるだけで、ここで初めてなぞりになることはない
+    func glideTouchEnded(x: Double, y: Double, timeMs: Double) {
+        guard var tracker = glideTracker else { return }
+        glideTracker = nil
+        glideTrail.clear()
+        let wasGlide = tracker.isGlide
+        tracker.add(x: x, y: y, timeMs: timeMs)
+        guard wasGlide, let samples = tracker.finish(), let session = session else { return }
+        let points = GlideGesture.points(samples)
+        let layoutId = glideLayoutId
+        toggleState = nil
+        var consumed = false
+        if let result = session.glideInput(points: points, layoutId: layoutId) {
+            consecutiveFailures = 0
+            apply(result, origin: "response(glide_input)")
+            consumed = result.consumed
+        } else if !session.lastRequestWasRPCError {
+            noteCoreFailure("glide_input")
+        }
+        DiagLog.log("glide_input points=\(points.count) consumed=\(consumed)")
+        // 認識できたときだけ、確定の触覚を 1 回
+        if consumed { NagiKeyFeedback.keyDown() }
+    }
+
+    /// ジェスチャが `onEnded` なしで取り消された（システムのジェスチャに奪われたなど）。軌跡を捨てる（送らない）
+    func glideTouchCancelled() {
+        glideTracker = nil
+        glideTrail.clear()
+    }
+
+    /// なぞりと判定されているか（キー側が、押している間のポップアップなどを止めるのに見る）
+    var isGlideStroke: Bool { glideSwallowsRelease }
+
+    /// キーを離したとき、直近のストロークがなぞりだったか。true なら、そのキーのタップ・ポップアップ選択を取り消す。
+    /// 呼ぶと印を降ろす（次のタップを巻き込まないよう、1 回だけ有効）
+    func takeGlideSwallowsRelease() -> Bool {
+        let swallows = glideSwallowsRelease
+        glideSwallowsRelease = false
+        return swallows
     }
 
     // MARK: - 文脈（set_context）
@@ -1331,7 +1463,8 @@ final class KeyboardModel: ObservableObject {
             candidates = view.items.enumerated().map { index, item in
                 CandidateItem(
                     id: index, surface: item.surface, covers: item.covers.map { Int($0) },
-                    hint: fuzzyHint(sources: item.sources, reading: item.reading)
+                    hint: fuzzyHint(sources: item.sources, reading: item.reading),
+                    glideHint: glideHint(sources: item.sources, surface: item.surface, reading: item.reading)
                 )
             }
         }
