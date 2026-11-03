@@ -127,6 +127,7 @@ final class NagiSettingsModel: ObservableObject {
             DispatchQueue.main.async {
                 self.coreLoaded = true
                 if let snapshot = snapshot {
+                    Self.syncGlideIndex(items: snapshot.items)
                     self.coreItems = snapshot.items
                     self.snapshotError = snapshot.error
                     self.coreMessage = nil
@@ -135,6 +136,17 @@ final class NagiSettingsModel: ObservableObject {
                 }
                 if let keep = keepingMessage { self.coreMessage = keep }
             }
+        }
+    }
+
+    /// `input.glide`（なぞり入力）の値を記録し、オンなら索引を作る（無い・古いときだけ。`GlideIndexBuilder`）。
+    /// 索引はホストアプリが辞書から作り、拡張は読むだけ（decisions.md H-84）
+    private static func syncGlideIndex(items: [SettingItem]) {
+        guard let item = items.first(where: { $0.key == "input.glide" }),
+              case .bool(let on)? = item.value else { return }
+        GlideIndexPreference.record(enabled: on)
+        if on {
+            Task { @MainActor in GlideIndexBuilder.shared.ensureBuiltIfWanted() }
         }
     }
 
@@ -468,6 +480,7 @@ final class NagiSettingsModel: ObservableObject {
                 }
                 // 続けて操作した場合は、最後の応答のときだけ最新の状態で置き換える
                 if self.inFlight == 0 {
+                    Self.syncGlideIndex(items: result.snapshot.items)
                     self.coreItems = result.snapshot.items
                     self.snapshotError = result.snapshot.error
                 }
@@ -568,6 +581,10 @@ struct SettingsView<Developer: View>: View {
                     Section(header: Text(section.title)) {
                         ForEach(section.rows) { row in
                             NagiSettingRowView(model: model, row: row)
+                            // なぞり入力の索引（拡張はこのファイルがあるときだけなぞり入力を受け付ける）
+                            if row.key == "input.glide" && row.origin == .core {
+                                NagiGlideIndexNote()
+                            }
                         }
                         if section.title == NagiSettingsModel.developerGroup && model.ios.developerMode {
                             NavigationLink("開発者ツール（診断ログ・計測・テスト）") {

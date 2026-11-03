@@ -66,6 +66,15 @@ fn geometry_params(layout_id: &str) -> Value {
 }
 
 fn server(glide: bool, with_llm: bool) -> Server {
+    server_with(glide, with_llm, None)
+}
+
+/// `file_only` は `Pipeline::set_glide_file_only` の引数（`Some` ならファイル専用）
+fn server_with(
+    glide: bool,
+    with_llm: bool,
+    file_only: Option<Option<std::path::PathBuf>>,
+) -> Server {
     let mut config = Config::default();
     config.input.glide = glide;
     let runtime = Runtime::new(
@@ -87,7 +96,10 @@ fn server(glide: bool, with_llm: bool) -> Server {
         Box::new(FakeModel::new(&[("がっこう", "学校"), ("かんじ", "漢字")]))
             as Box<dyn nagi_infer::ConversionModel>
     });
-    let pipeline = Pipeline::new(Some(dict.clone()), model, runtime.clone());
+    let mut pipeline = Pipeline::new(Some(dict.clone()), model, runtime.clone());
+    if let Some(path) = file_only {
+        pipeline.set_glide_file_only(path);
+    }
     let mut reload = Reloadable::detached();
     reload.dict = Some(dict);
     let mut s = Server::from_built(Built {
@@ -278,5 +290,44 @@ fn preloaded_index_file_is_used() {
             .unwrap()
             .is_err()
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn file_only_mode_does_not_build_an_index_in_memory() {
+    let dir = std::env::temp_dir().join(format!("nagi-glide-file-only-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("dict").join("nagi-glide.bin");
+
+    // 索引ファイルが無い間は利用不可（consumed=false。パニックせず、入力も動かない）
+    let mut s = server_with(true, false, Some(Some(path.clone())));
+    let r = glide(&mut s, "がっこう", 1);
+    assert_eq!(r["consumed"], false, "{r}");
+    assert!(r.get("preedit").is_none() && r.get("candidates").is_none());
+    // 通常のキー入力は動く
+    let k = send(
+        &mut s,
+        "insert_reading",
+        json!({"session_id":"s","input":{"type":"text","content":"k"}}),
+    );
+    assert_eq!(k["consumed"], true, "{k}");
+    // （ここまでのキー入力は入力中のまま。確定されてもされなくても、次のなぞりの可否には関係しない）
+
+    // 壊れたファイルも利用不可のまま
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"broken").unwrap();
+    let r = glide(&mut s, "がっこう", 1);
+    assert_eq!(r["consumed"], false, "{r}");
+
+    // 後から（本体アプリが）索引を置くと、サーバーを作り直さなくても次のなぞりから使える
+    let bytes = GlideIndex::dictionary_bytes(&dict_with_extra(EXTRA));
+    GlideIndex::write_file(&path, &bytes).unwrap();
+    let r = glide(&mut s, "がっこう", 1);
+    assert_eq!(r["consumed"], true, "{r}");
+    assert_eq!(r["preedit"]["segments"][0]["reading"], "がっこう", "{r}");
+
+    // データディレクトリ無し（パスなし）は常に利用不可
+    let mut none = server_with(true, false, Some(None));
+    assert_eq!(glide(&mut none, "がっこう", 1)["consumed"], false);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -32,7 +32,9 @@ enum ProductSession {
             dataDir: dataDir,
             userDir: prepared.path,
             noLLM: noLLM,
-            memoryBudgetMB: budgetMB
+            memoryBudgetMB: budgetMB,
+            // なぞり入力の索引は本体アプリが作る。無いときに辞書から 39MB をメモリ上に作らない（H-84）
+            glideIndexFileOnly: true
         ), let session = NagiSession(engine: engine) else {
             return Outcome(session: nil, message: "変換エンジンを起動できませんでした（保存先: \(prepared.path ?? "なし")）")
         }

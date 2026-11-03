@@ -61,6 +61,31 @@ pub unsafe extern "C" fn nagi_server_new_with_budget(
     no_llm: i32,
     memory_budget_mb: u64,
 ) -> NagiServerHandle {
+    // SAFETY: 引数の条件は呼び出し側が満たす（`nagi_server_new_with_flags` と同じ）
+    unsafe { nagi_server_new_with_flags(data_dir, user_dir, no_llm, memory_budget_mb, 0) }
+}
+
+/// `nagi_server_new_with_flags` の `flags`: グライド入力の索引をファイル（`<data_dir>/dict/nagi-glide.bin`）
+/// だけから使う。ファイルが無い間はグライド入力が使えず、辞書から索引をメモリ上に作らない
+/// （作ると約 1.3 秒・約 39MB。iOS のキーボード拡張のメモリ上限・ロックの面で危険）。
+/// 索引は本体アプリが `nagi_build_glide_index` で作る
+pub const NAGI_FLAG_GLIDE_INDEX_FILE_ONLY: u32 = 1;
+
+/// サーバーを初期化して返す。メモリ上限とフラグを指定できる版（iOS のキーボード拡張が使う）。
+///
+/// `flags` は `NAGI_FLAG_*` の OR（0 は `nagi_server_new_with_budget` と同じ）。ほかの引数と戻り値は
+/// `nagi_server_new_with_budget` と同じ。未知のビットは無視する。
+///
+/// # Safety
+/// `nagi_server_new_with_budget` と同じ。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nagi_server_new_with_flags(
+    data_dir: *const c_char,
+    user_dir: *const c_char,
+    no_llm: i32,
+    memory_budget_mb: u64,
+    flags: u32,
+) -> NagiServerHandle {
     // SAFETY: C 呼び出し側の責務：data_dir / user_dir は NULL-terminated UTF-8 文字列
     let result = catch_unwind(|| {
         let mut args = Vec::new();
@@ -94,6 +119,11 @@ pub unsafe extern "C" fn nagi_server_new_with_budget(
         if memory_budget_mb != 0 {
             args.push("--memory-budget-mb".to_string());
             args.push(memory_budget_mb.to_string());
+        }
+
+        // グライド入力の索引はファイル専用
+        if flags & NAGI_FLAG_GLIDE_INDEX_FILE_ONLY != 0 {
+            args.push("--glide-index-file-only".to_string());
         }
 
         // parse_args を呼ぶ
@@ -442,5 +472,54 @@ pub unsafe extern "C" fn nagi_build_optional_index(
         Ok(Ok(())) => std::ptr::null_mut(),
         Ok(Err(message)) => fail(&message),
         Err(_) => fail("索引の組み立て中に内部エラーが起きました"),
+    }
+}
+
+// ---- グライド入力の索引 ----
+
+/// 辞書ファイルから、グライド入力（なぞり入力）の索引ファイルを作る。本体アプリが、辞書の取り込み・更新の
+/// あとにバックグラウンドで呼ぶ（約 1.6 秒・書き出し約 39MB。構築中の一時メモリはその数倍になりうる。
+/// キーボード拡張では呼ばないこと）。一時ファイルに書いてから置き換えるので、拡張が mmap 中の索引や、
+/// 途中で失敗したときの既存の索引は壊れない。
+///
+/// # Arguments
+/// - `dict_path`: 辞書（`nagi-dict.bin`）のパス（UTF-8）
+/// - `out_path`: 出力する索引のパス（UTF-8。通常は `<data_dir>/dict/nagi-glide.bin`。親ディレクトリは作る）
+///
+/// # Returns
+/// 成功なら NULL。失敗なら理由（UTF-8 C 文字列。`nagi_string_free` で解放すること）。
+///
+/// # Safety
+/// - 2 つの引数は NULL-terminated UTF-8 文字列であること。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nagi_build_glide_index(
+    dict_path: *const c_char,
+    out_path: *const c_char,
+) -> *mut c_char {
+    let fail = |message: &str| {
+        CString::new(message.replace('\0', ""))
+            .unwrap_or_default()
+            .into_raw()
+    };
+    let read = |p: *const c_char| -> Option<String> {
+        if p.is_null() {
+            return None;
+        }
+        // SAFETY: 呼び出し側の責務で NULL-terminated 文字列
+        unsafe { CStr::from_ptr(p) }
+            .to_str()
+            .ok()
+            .map(str::to_string)
+    };
+    let (Some(dict), Some(out)) = (read(dict_path), read(out_path)) else {
+        return fail("引数が不正です（NULL または UTF-8 でない文字列）");
+    };
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        nagi_glide::GlideIndex::build_file(std::path::Path::new(&dict), std::path::Path::new(&out))
+    }));
+    match result {
+        Ok(Ok(_)) => std::ptr::null_mut(),
+        Ok(Err(message)) => fail(&message),
+        Err(_) => fail("索引の構築中に内部エラーが起きました"),
     }
 }

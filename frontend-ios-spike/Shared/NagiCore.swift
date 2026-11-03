@@ -10,15 +10,22 @@ class NagiEngine {
     /// エンジンを生成。失敗時は nil を返す
     /// - memoryBudgetMB: このプロセスが OS から課されているメモリ上限（MB）。キーボード拡張では
     ///   `MemoryProbe.processBudgetMB()`。上限が小さい場合、コアは LLM を読み込まず辞書のみで動く
-    init?(dataDir: String, userDir: String? = nil, noLLM: Bool = false, memoryBudgetMB: UInt64 = 0) {
+    /// - glideIndexFileOnly: グライド入力の索引（`data/dict/nagi-glide.bin`）をファイルだけから使う（既定 true）。
+    ///   ファイルが無い間は、辞書から約 39MB の索引をメモリ上に作らずに「グライド利用不可」になる。
+    ///   索引はホストアプリが作る（`GlideIndexBuilder`。decisions.md H-84）。iOS ではどのエンジンも true にしておく
+    init?(
+        dataDir: String, userDir: String? = nil, noLLM: Bool = false, memoryBudgetMB: UInt64 = 0,
+        glideIndexFileOnly: Bool = true
+    ) {
         let noLLMFlag: Int32 = noLLM ? 1 : 0
+        let flags: UInt32 = glideIndexFileOnly ? UInt32(NAGI_FLAG_GLIDE_INDEX_FILE_ONLY) : 0
         self.handle = dataDir.withCString { (dataDirPtr: UnsafePointer<CChar>) -> OpaquePointer? in
             if let userDir = userDir {
                 return userDir.withCString { (userDirPtr: UnsafePointer<CChar>) -> OpaquePointer? in
-                    nagi_server_new_with_budget(dataDirPtr, userDirPtr, noLLMFlag, memoryBudgetMB)
+                    nagi_server_new_with_flags(dataDirPtr, userDirPtr, noLLMFlag, memoryBudgetMB, flags)
                 }
             }
-            return nagi_server_new_with_budget(dataDirPtr, nil, noLLMFlag, memoryBudgetMB)
+            return nagi_server_new_with_flags(dataDirPtr, nil, noLLMFlag, memoryBudgetMB, flags)
         }
 
         guard handle != nil else { return nil }

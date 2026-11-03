@@ -42,6 +42,18 @@ NagiServerHandle nagi_server_new(const char *data_dir, const char *user_dir, int
 /// @return 成功時は不透明なハンドル（nagi_server_free で解放必須）、失敗時は NULL。
 NagiServerHandle nagi_server_new_with_budget(const char *data_dir, const char *user_dir, int no_llm, uint64_t memory_budget_mb);
 
+/// nagi_server_new_with_flags の flags: グライド入力の索引をファイル（<data_dir>/dict/nagi-glide.bin）
+/// だけから使う。ファイルが無い間はグライド入力が使えず（glide_input は consumed=false）、辞書から索引を
+/// メモリ上に作らない（作ると約 1.3 秒・約 39MB。キーボード拡張のメモリ上限・ロックの面で危険）。
+/// 索引は本体アプリが nagi_build_glide_index で作る。
+#define NAGI_FLAG_GLIDE_INDEX_FILE_ONLY 1u
+
+/// サーバーを初期化して返す（メモリ上限とフラグを指定する版。iOS のキーボード拡張が使う）。
+///
+/// @param flags NAGI_FLAG_* の OR（0 は nagi_server_new_with_budget と同じ。未知のビットは無視）
+/// 他の引数と戻り値は nagi_server_new_with_budget と同じ。
+NagiServerHandle nagi_server_new_with_flags(const char *data_dir, const char *user_dir, int no_llm, uint64_t memory_budget_mb, uint32_t flags);
+
 // ---- JSON-RPC 処理 ----
 
 /// JSON-RPC リクエスト行を処理し、応答行を返す。
@@ -128,6 +140,17 @@ char *nagi_optional_data_sources(void);
 ///
 /// @return 成功なら NULL。失敗なら理由（nagi_string_free で解放必須）。
 char *nagi_build_optional_index(const char *kind, const char *archive_path, const char *out_path);
+
+// ---- グライド入力の索引 ----
+
+/// 辞書ファイルから、グライド入力の索引ファイルを作る（本体アプリがバックグラウンドで呼ぶ。
+/// 約 1.6 秒・約 39MB。キーボード拡張では呼ばない）。一時ファイルに書いてから置き換える。
+///
+/// @param dict_path 辞書（nagi-dict.bin）のパス（UTF-8）
+/// @param out_path 出力する索引のパス（UTF-8。通常は <data_dir>/dict/nagi-glide.bin）
+///
+/// @return 成功なら NULL。失敗なら理由（nagi_string_free で解放必須）。
+char *nagi_build_glide_index(const char *dict_path, const char *out_path);
 
 #ifdef __cplusplus
 }

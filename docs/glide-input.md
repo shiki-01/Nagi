@@ -2,7 +2,7 @@
 
 QWERTY のタッチキーボードで、指を離さずに文字の上をなぞって 1 語を入力する機能のコア側の仕様と、
 フロント（iOS / Android）が送る軌跡の形式。計画は `docs/plan-fuzzy-and-glide.md` §2、決定の経緯は
-`docs/decisions.md` H-82。**コア側（G0〜G2）は実装済み。フロントの UI は G4 iOS が実装済み（実機・CI 未確認。H-83）、G3 Android は未着手。**
+`docs/decisions.md` H-82。**コア側（G0〜G2）は実装済み。フロントの UI は G4 iOS が実装済み（実機・CI 未確認。H-83）、iOS への索引の配布も実装済み（H-84）、G3 Android は未着手。**
 合成軌跡での評価だけで、実機の指での精度は未確認。
 
 ## 1. フロントがやること
@@ -57,7 +57,7 @@ QWERTY のタッチキーボードで、指を離さずに文字の上をなぞ�
 | `core/protocol` | `glide_input`（`GlideInputParams` / `GlidePoint`）、`CandidateSource::Glide`。Swift 型は `cargo xtask gen-types` |
 | `core/engine` | `Engine::glide_input`、`ConversionBackend::glide_readings`、`EngineConfig.glide_input` |
 | `core/server` | `glide.rs`（索引と認識器のキャッシュ）、`Pipeline::glide_readings`、JSON-RPC の `glide_input` |
-| FFI / JNI | **変更なし**。JSON-RPC 行をそのまま流す（`nagi_handle_line`）ので、メソッドの追加に C ABI の追加は要らない |
+| FFI / JNI | `glide_input` 自体は JSON-RPC 行を流すだけで C ABI の追加は要らない。索引の配布のため FFI に `nagi_build_glide_index` と `nagi_server_new_with_flags`（H-84）。JNI は変更なし |
 
 ### 認識の流れ（`nagi-glide`）
 
@@ -80,7 +80,15 @@ QWERTY のタッチキーボードで、指を離さずに文字の上をなぞ�
 
 - 辞書（`nagi-dict.bin`）の全読みから作る。`cargo xtask build-glide-index` が `data/dict/nagi-glide.bin` を作り（1.6 秒）、
   サーバーは起動時にこのファイルがあれば mmap で読む。**無ければ最初のなぞり入力のときに辞書から作る**
-  （メモリ上、約 1.3 秒・約 39MB。その間エンジンのロックを持つ。デスクトップ向けの縮退で、モバイルはファイルを配ること）。
+  （メモリ上、約 1.3 秒・約 39MB。その間エンジンのロックを持つ。デスクトップ向けの縮退）。
+  **ファイル専用モード**（`--glide-index-file-only` / FFI の `NAGI_FLAG_GLIDE_INDEX_FILE_ONLY`。iOS 拡張が使う）では
+  辞書から作らず、ファイルが読めるまで「グライド利用不可」（`glide_input` は `consumed = false`）。ファイルは認識のたびに
+  （無い間だけ）探し直すので、後から置かれた索引は次のなぞりから使える。壊れた・書きかけのファイルは使わない。
+- **iOS への配布（H-84）**: ホストアプリが `nagi_build_glide_index(dict_path, out_path)`（FFI。一時ファイル → rename、約 2 秒、
+  ピークのメモリ約 180MB）で App Group の `data/dict/nagi-glide.bin` に作る。辞書との整合は付属ファイル `nagi-glide.meta`
+  （辞書のサイズ・更新時刻・索引のサイズ）で判定し、辞書を更新したら作り直す。自動で作るのは `input.glide` がオンのときだけ
+  （オンにしたとき・ホームを開いたとき・辞書の更新時）。手動のボタンはホームと設定にある。拡張は索引があるときだけなぞりの
+  ジェスチャを有効にする。
 - 形式（`core/glide/src/index.rs` 先頭）: 箱の表、固定長の項目（12 バイト）、読みとキー経路のプール。各配列は要素ごとに読むので
   アラインメント不要で mmap できる。辞書を作り直したら索引も作り直す。
 - サイズ（Mozc OSS 辞書: 745,964 読み → 1,091,631 項目。ヘボン式で先頭キーが変わる・経路が変わる読みは複数の項目）:
@@ -127,7 +135,7 @@ cargo run --release -p nagi-glide --bin nagi-glide-eval -- --data-dir ../data --
 ## 4. 未決・未実装
 
 - G3（Android）: フロントの UI（軌跡の描画、タップ・長押しポップアップ・スペーススライド・フリックとの競合整理、`glide_input` の送信）。G4（iOS）は実装済み（H-83）。
-- iOS への索引 `nagi-glide.bin` の配布（辞書と同じく本体アプリから取り込む）。未実装のため、iOS では最初のなぞりで辞書から索引を作ることになる。
+- iOS への索引 `nagi-glide.bin` の配布は実装済み（H-84。**実機・Swift の CI 未確認**）。Android は未着手（JNI はフラグを渡しておらず、無ければ辞書から作る従来の挙動）。
 - 連続なぞり（複数語）、ライブ変換との併用、学習への反映（グライドの読みの選択履歴を事前確率に足す）、左文脈による読み候補の再採点（G5）。
   現状の左文脈は、読みの変換（zenz）にだけ効く。
 - 実機の軌跡での σ・しきい値の調整。座標の個人化（偏りの補正）は H-25 のプライバシー方針に従い未検討。

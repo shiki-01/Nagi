@@ -54,6 +54,11 @@ pub struct ServerOptions {
     /// 搭載メモリより上限がはるかに小さい環境で、フロントエンドが `phys_footprint + 残り` として渡す。
     /// [`MIN_MEMORY_BUDGET_FOR_LLM_MB`] 未満なら LLM を読み込まない。`None` なら上限なし（デスクトップなど）
     pub memory_budget_mb: Option<u64>,
+    /// グライド入力の索引を `<data_dir>/dict/nagi-glide.bin` のファイルだけから使う（`--glide-index-file-only`）。
+    /// ファイルが無い間はグライド入力が使えず（`glide_input` は `consumed = false`）、辞書から索引をメモリ上に
+    /// 作らない（作ると約 1.3 秒・約 39MB を、エンジンのロックを持ったまま使う）。iOS のキーボード拡張向け。
+    /// `false`（既定。デスクトップ）なら、無ければ最初のなぞりで辞書から作る
+    pub glide_index_file_only: bool,
 }
 
 impl Default for ServerOptions {
@@ -66,12 +71,13 @@ impl Default for ServerOptions {
             sync_budget_ms: None,
             async_model_load: false,
             memory_budget_mb: None,
+            glide_index_file_only: false,
         }
     }
 }
 
 /// 引数から起動オプションを作る（`--data-dir` `--user-dir` `--config` `--no-llm` `--sync-budget-ms`
-/// `--memory-budget-mb`、
+/// `--memory-budget-mb` `--glide-index-file-only`、
 /// 環境変数 `NAGI_DATA_DIR`）
 pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<ServerOptions, String> {
     let mut options = ServerOptions {
@@ -88,6 +94,7 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<ServerOptio
             "--user-dir" => options.user_dir = Some(PathBuf::from(value("--user-dir")?)),
             "--config" => options.config_path = Some(PathBuf::from(value("--config")?)),
             "--no-llm" => options.use_llm = false,
+            "--glide-index-file-only" => options.glide_index_file_only = true,
             "--sync-budget-ms" => {
                 let v = value("--sync-budget-ms")?;
                 options.sync_budget_ms = Some(
@@ -671,15 +678,31 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
                 .to_string(),
         ),
     }
-    // グライド入力の索引（任意。`cargo xtask build-glide-index`）。無ければ最初の認識で辞書から作る
+    // グライド入力の索引（任意。`cargo xtask build-glide-index`）。無ければ最初の認識で辞書から作る。
+    // ファイル専用（iOS 拡張）なら作らず、無い間はグライド利用不可（後から置かれたら次のなぞりで読む）
+    if options.glide_index_file_only {
+        pipeline.set_glide_file_only(
+            options
+                .data_dir
+                .as_ref()
+                .map(|d| d.join("dict").join(GLIDE_INDEX_FILE)),
+        );
+    }
     match load_glide_index(options.data_dir.as_deref()) {
         Some(Ok(index)) => {
             notes.push(format!("グライド索引: OK ({} entries)", index.len()));
             pipeline.set_glide_index(Some(Arc::new(index)));
         }
+        Some(Err(e)) if options.glide_index_file_only => {
+            notes.push(format!("{e}（グライド入力は索引を作り直すまで使えません）"))
+        }
         Some(Err(e)) => notes.push(format!(
             "{e}（グライド入力は最初の使用時に辞書から索引を作ります）"
         )),
+        None if options.glide_index_file_only => notes.push(
+            "グライド索引が見つかりません（グライド入力は索引を作成するまで使えません）"
+                .to_string(),
+        ),
         None => {}
     }
     let pipeline = Arc::new(pipeline);

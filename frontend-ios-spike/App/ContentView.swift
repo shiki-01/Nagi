@@ -35,6 +35,9 @@ struct ContentView: View {
                     // 英語の語彙・カタカナ語の原語データ（任意。入れると英語の自動判定・原語の候補が働く）
                     NagiOptionalDataSection(onChanged: { dataReloadToken += 1 })
 
+                    // グライド入力（なぞり入力）の索引。辞書から作る（拡張はメモリ上に作らず、このファイルだけを読む）
+                    NagiGlideIndexSection()
+
                     Section("ユーザー辞書") {
                         NavigationLink("ユーザー辞書・スニペット") { NagiUserDictionaryView() }
                     }
@@ -400,6 +403,8 @@ struct ContentView: View {
             alertMessage = "辞書をコピーしました"
             showingAlert = true
             updateDataStatus()
+            // 辞書が変わったので、なぞり入力の索引も作り直す（オンのとき）
+            Task { @MainActor in GlideIndexBuilder.shared.dictionaryChanged() }
         } catch {
             alertMessage = "コピー失敗: \(error.localizedDescription)"
             showingAlert = true
@@ -468,6 +473,8 @@ struct ContentView: View {
                     alertMessage = "モデルをインポートしました: \(fileName) (\(formatBytes(size)))\(dictNote)"
                     showingAlert = true
                     updateDataStatus()
+                    // 辞書をバンドルから補ったときのため（索引が無い・古ければ、なぞり入力がオンのとき作る）
+                    Task { @MainActor in GlideIndexBuilder.shared.dictionaryChanged() }
                 }
             } catch {
                 try? fileManager.removeItem(at: tempURL)

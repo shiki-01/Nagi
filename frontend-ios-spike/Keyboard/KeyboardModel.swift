@@ -84,6 +84,10 @@ final class KeyboardModel: ObservableObject {
     let glideTrail = GlideTrailState()
     /// コアの設定 `input.glide`（既定 false）。`refreshGlideSettingIfNeeded` が `get_settings` で読む
     @Published private(set) var glideSetting = false
+    /// グライド入力の索引ファイル（`data/dict/nagi-glide.bin`）があるか。索引はホストアプリが作り、拡張は
+    /// 読むだけでメモリ上には作らない（コアは `glideIndexFileOnly`。decisions.md H-84）。
+    /// 無い間は `input.glide` がオンでもなぞりのジェスチャを無効のままにする（focusIn のたびに確かめる）
+    @Published private(set) var glideIndexAvailable = false
     /// `glideSetting` を読み直す必要があるか（セッションを作り直した・`config.toml` を読み直したとき）
     private var glideSettingStale = true
     /// 進行中のストローク（指を置いてから離すまで）の軌跡。なぞりの対象でなければ nil
@@ -1089,6 +1093,7 @@ final class KeyboardModel: ObservableObject {
         captureClipboardHistory()
         applyCoreSettingsChanges()
         refreshGlideSettingIfNeeded()
+        refreshGlideIndexAvailability()
         glideSwallowsRelease = false
         reportEnvironment(reason: "focusIn")
         // レイアウトのファイルが変わっていても追随する（ホストアプリでの割り当て・取り込み）
@@ -1198,10 +1203,25 @@ final class KeyboardModel: ObservableObject {
         DiagLog.log("glide setting enabled=\(enabled)")
     }
 
-    /// 表示中のレイアウトでなぞり入力を受け付けるか。設定 `input.glide` がオン、かなモードの QWERTY、
-    /// コアあり、パスワード欄でないときだけ。それ以外は従来のタップ・長押し・フリックのまま
+    /// 索引ファイルの有無を読み直す。設定がオンのときだけ見る（オフなら stat もしない）。
+    /// コアも認識のたびに（索引が無い間だけ）ファイルを探し直すので、ホストアプリが後から置いた索引は
+    /// キーボードを開き直さなくても次のなぞりから使える
+    private func refreshGlideIndexAvailability() {
+        guard glideSetting, let dir = store.dataDir().path else {
+            if glideIndexAvailable { glideIndexAvailable = false }
+            return
+        }
+        let available = GlideIndexStatus.indexExists(dataDir: URL(fileURLWithPath: dir, isDirectory: true))
+        if available != glideIndexAvailable {
+            glideIndexAvailable = available
+            DiagLog.log("glide index available=\(available)")
+        }
+    }
+
+    /// 表示中のレイアウトでなぞり入力を受け付けるか。設定 `input.glide` がオン、索引ファイルがある、
+    /// かなモードの QWERTY、コアあり、パスワード欄でないときだけ。それ以外は従来のタップ・長押し・フリックのまま
     var isGlideAvailable: Bool {
-        glideSetting && session != nil && LayoutGeometry.supportsGlide(layout: layoutDef) && !(host?.hostIsSecure() ?? false)
+        glideSetting && glideIndexAvailable && session != nil && LayoutGeometry.supportsGlide(layout: layoutDef) && !(host?.hostIsSecure() ?? false)
     }
 
     /// ストローク中の指の位置（キー領域のローカル座標 = `set_layout_geometry` のキー矩形と同じ座標系）。

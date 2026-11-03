@@ -965,7 +965,9 @@ dependencies = [
 name = "nagi-ffi"
 version = "0.1.8"
 dependencies = [
+ "nagi-dict",
  "nagi-english",
+ "nagi-glide",
  "nagi-loanword",
  "nagi-server",
  "serde_json",

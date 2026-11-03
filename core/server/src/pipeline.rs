@@ -294,6 +294,12 @@ impl Pipeline {
         self.glide.set_index(index);
     }
 
+    /// グライド入力の索引をファイル専用にする（無ければグライド利用不可。辞書からメモリ上に作らない）。
+    /// `path` は索引ファイルの場所（`None` なら常に利用不可）
+    pub fn set_glide_file_only(&mut self, path: Option<std::path::PathBuf>) {
+        self.glide.set_file_only(path);
+    }
+
     /// 英単語の語彙を取り付ける（英語の自動判定）。`None` なら特徴量だけで判定する（劣化動作）
     pub fn set_english_lexicon(&mut self, lexicon: Option<Arc<nagi_english::Lexicon>>) {
         self.english = nagi_english::Judge::standard(lexicon);

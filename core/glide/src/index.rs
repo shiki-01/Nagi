@@ -172,6 +172,8 @@ impl IndexBuilder {
 
     /// バイナリ形式のバイト列にする
     pub fn build_bytes(mut self) -> Vec<u8> {
+        // 読みの重複検査用の表は、ここから先は要らない（ピークのメモリを減らす）
+        self.seen = HashMap::new();
         // 箱ごとに並べる（箱の中は語コストの小さい順にしておくと、同点の扱いが決定的になる）
         self.entries
             .sort_by_key(|&(b, rd_off, _, path_off, _, cost)| (b, cost, rd_off, path_off));
@@ -232,6 +234,31 @@ impl GlideIndex {
             b.add(reading, cost);
         });
         b.build_bytes()
+    }
+
+    /// 辞書ファイル（`nagi-dict.bin`）から索引ファイルを作る（iOS の本体アプリなど、xtask を使えない環境向け）。
+    /// 一時ファイルに書いてから rename するので、読み込み中の索引ファイルを壊さず、途中で失敗しても
+    /// 既存の索引は残る。書き出したあとに読み直して検査し、項目数を返す
+    pub fn build_file(dict_path: &Path, out_path: &Path) -> Result<usize, String> {
+        let dictionary = Dictionary::load(dict_path)
+            .map_err(|e| format!("辞書を読み込めません {}: {e}", dict_path.display()))?;
+        let bytes = Self::dictionary_bytes(&dictionary);
+        drop(dictionary);
+        if let Some(dir) = out_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("保存先を作れません {}: {e}", dir.display()))?;
+        }
+        let tmp = out_path.with_extension("tmp");
+        let result = std::fs::write(&tmp, &bytes)
+            .and_then(|()| std::fs::rename(&tmp, out_path))
+            .map_err(|e| format!("索引を書き出せません {}: {e}", out_path.display()));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result?;
+        drop(bytes);
+        let index = Self::load(out_path).map_err(|e| format!("書き出した索引が不正です: {e}"))?;
+        Ok(index.len())
     }
 
     /// `(読み, コスト)` の列から索引を作る（メモリ上。テスト・評価用）

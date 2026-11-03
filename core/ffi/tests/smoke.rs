@@ -242,3 +242,71 @@ fn optional_data_sources_and_index_build() {
     assert_eq!(index.lookup("アルバイト", true)[0].spelling, "Arbeit");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn glide_index_build_and_file_only_server() {
+    let dir = std::env::temp_dir().join(format!("nagi-ffi-glide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("dict")).unwrap();
+    let dict = dir.join("dict").join("nagi-dict.bin");
+    let out = dir.join("dict").join("nagi-glide.bin");
+    let c = |p: &std::path::Path| CString::new(p.to_str().unwrap()).unwrap();
+
+    // 辞書が無ければ理由が返り、索引も一時ファイルも残らない
+    let failure = unsafe { nagi_build_glide_index(c(&dict).as_ptr(), c(&out).as_ptr()) };
+    assert!(!failure.is_null());
+    unsafe { nagi_string_free(failure) };
+    assert!(!out.exists() && !out.with_extension("tmp").exists());
+    // NULL 引数は安全
+    let failure = unsafe { nagi_build_glide_index(std::ptr::null(), std::ptr::null()) };
+    assert!(!failure.is_null());
+    unsafe { nagi_string_free(failure) };
+
+    // 辞書を作って索引を組み立てる（成功なら NULL）
+    let mut b = nagi_dict::DictionaryBuilder::new();
+    b.add_dictionary_text(
+        "t",
+        "がっこう\t1\t1\t3000\t学校\nかんじ\t1\t1\t3000\t漢字\n",
+    )
+    .unwrap();
+    b.set_pos_defs_text("0 BOS/EOS,*,*,*,*,*,*\n1 名詞,一般,*,*,*,*,*")
+        .unwrap();
+    b.set_connection_text("2\n0\n0\n0\n0", nagi_dict::ConnectionLayout::RidMajor)
+        .unwrap();
+    std::fs::write(&dict, b.build().unwrap().to_bytes()).unwrap();
+    let failure = unsafe { nagi_build_glide_index(c(&dict).as_ptr(), c(&out).as_ptr()) };
+    assert!(failure.is_null());
+    assert!(out.is_file() && !out.with_extension("tmp").exists());
+    let index = nagi_glide::GlideIndex::load(&out).unwrap();
+    assert!(index.len() >= 2, "{}", index.len());
+
+    // 壊れた辞書では失敗し、既存の索引は残る
+    std::fs::write(&dict, b"broken").unwrap();
+    let before = std::fs::read(&out).unwrap();
+    let failure = unsafe { nagi_build_glide_index(c(&dict).as_ptr(), c(&out).as_ptr()) };
+    assert!(!failure.is_null());
+    unsafe { nagi_string_free(failure) };
+    assert_eq!(std::fs::read(&out).unwrap(), before);
+
+    // フラグつきの起動（索引ファイル専用）。通常の入力は動く
+    let data = c(&dir);
+    unsafe {
+        let handle = nagi_server_new_with_flags(
+            data.as_ptr(),
+            data.as_ptr(),
+            1,
+            0,
+            NAGI_FLAG_GLIDE_INDEX_FILE_ONLY,
+        );
+        assert!(!handle.is_null());
+        send(handle, INIT);
+        let key = send(handle, KEY_A);
+        assert!(key.contains("あ"), "{key}");
+        let notes = nagi_last_notes(handle);
+        let text = CStr::from_ptr(notes).to_str().unwrap().to_string();
+        nagi_string_free(notes);
+        assert!(text.contains("グライド索引: OK"), "{text}");
+        nagi_server_free(handle);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
