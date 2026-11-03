@@ -140,7 +140,8 @@ class NagiImeService : InputMethodService(), KeyboardListener {
             ic.commitText(text, 1)
             return
         }
-        engine.insertText(text) { r -> apply(r, null) }
+        // コアが使えないときは、押した文字をそのまま入れる（入力を失わない）
+        engine.insertText(text) { r -> apply(r) { currentInputConnection?.commitText(text, 1) } }
     }
 
     override fun onSpace() {
