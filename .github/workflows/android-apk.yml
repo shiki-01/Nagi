@@ -233,6 +233,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
+          # タグが無いときは、このビルドのコミットにタグを作る（手動実行でも、ビルドした内容とタグを一致させる）
+          target_commitish: ${{ github.sha }}
           files: dist/*
           # タグ push は公開リリース。手動実行は prerelease 入力に従う（true なら実機で確認するまで公開しない）
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease }}
