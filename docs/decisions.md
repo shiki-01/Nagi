@@ -1896,3 +1896,4 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **キーの色**: 既定の `@key` は `UIColor.systemBackground` で、ダーク外観では純粋な黒になっていた（スタイル仕様の導入前から同じ。キーボード全体の背景を塗らなくなった H-61 以降は、システムの背景の上に黒いキーが並ぶ見た目）。標準のキーボード（ダークは灰色のキー）に寄せ、ダークだけ `UIColor.systemGray2` にした（機能キーの `systemGray4` より明るく、区別がつく）。ライトは白のまま。レイアウトの `look` で色を指定していればそちらが優先される
 - **フリック先の文字**: これまでフリックキーには中央の文字だけを描いていた。上下左右にフリック先の文字を 9pt・`secondaryLabel` で重ねる（`FlickHints`。当たり判定を広げた分は差し引く）。設定 `flick.hints`（既定オン。ユーザー指示「設定で切り替えられるように」）でオフにできる
 - **未確認**: 実機での見え方（ライト/ダーク・キーの大きさ・レイアウトの背景画像の上）、Swift のビルド（CI）
+- **CI の確認結果（2026-11-03）**: `android-apk`（llama 無し）成功。`llama=true` は `cargo ndk` の既定 API 21 では llama.cpp の `posix_madvise` が未宣言でビルド失敗 → `--platform 26`（minSdk と同じ）に直して成功（run 3）。ただし llama 入りの APK が端末で動くか（メモリ・速度）は未確認。Kotlin だけを素早く確認する `android-check.yml`（`frontend-android/**` の push で `compileReleaseKotlin` + unit test）を追加し、成功
