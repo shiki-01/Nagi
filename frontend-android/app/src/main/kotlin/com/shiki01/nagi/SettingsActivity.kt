@@ -26,6 +26,7 @@ class SettingsActivity : Activity() {
     private lateinit var dictRow: UiRow
     private lateinit var modelRow: UiRow
     private lateinit var keyboardRow: UiRow
+    private lateinit var layoutRow: UiRow
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,6 +54,9 @@ class SettingsActivity : Activity() {
         root.addSection("状態", card(coreRow, dictRow, modelRow, keyboardRow, memoryRow))
 
         // はじめる
+        layoutRow = navRow("キーボードのレイアウト", "サイトで作ったレイアウトを取り込めます") {
+            openScreen(LayoutManagerActivity::class.java)
+        }
         val test: EditText = inputField("ここで入力を試す")
         test.minLines = 3
         test.gravity = android.view.Gravity.TOP
@@ -67,6 +71,7 @@ class SettingsActivity : Activity() {
                 },
                 cardBody(test),
                 navRow("使い始めの手順", "有効化から入力テストまで") { openScreen(OnboardingActivity::class.java) },
+                layoutRow,
             ),
         )
 
@@ -74,8 +79,7 @@ class SettingsActivity : Activity() {
         root.addSection(
             "設定",
             card(
-                navRow("入力設定", "レイアウト・フリック・見た目") { openScreen(KeyboardInputSettingsActivity::class.java) },
-                navRow("キーボードのレイアウト", "割り当て・取り込み・書き出し") { openScreen(LayoutManagerActivity::class.java) },
+                navRow("入力設定", "フリック・見た目・操作") { openScreen(KeyboardInputSettingsActivity::class.java) },
                 navRow("変換の設定", "変換・予測・学習・表記") { openScreen(SettingsFormActivity::class.java) },
                 navRow("ユーザー辞書", "単語とスニペットの登録") { openScreen(UserDictActivity::class.java) },
                 navRow("変換モデル", "ダウンロード・取り込み・選択") { openScreen(ModelActivity::class.java) },
@@ -146,7 +150,18 @@ class SettingsActivity : Activity() {
         super.onResume()
         devSection.visibility = if (AppPrefs.developerMode(this)) View.VISIBLE else View.GONE
         refreshStatus()
+        refreshLayoutRow()
         checkUpdateIfDue()
+    }
+
+    /** 現在の割り当て（かな: ○○ / 英字: ○○）を補足に出す */
+    private fun refreshLayoutRow() {
+        Thread {
+            val text = loadAssignmentSummary() + "。サイトで作ったレイアウトを取り込めます"
+            runOnUiThread {
+                if (!isDestroyed) layoutRow.setSubtitle(text)
+            }
+        }.start()
     }
 
     private fun openScreen(cls: Class<*>) {

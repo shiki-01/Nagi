@@ -57,6 +57,7 @@ class LayoutManagerActivity : Activity() {
 
     private lateinit var scroll: ScrollView
     private lateinit var errorBanner: UiBanner
+    private lateinit var importBox: LinearLayout
     private lateinit var assignBox: LinearLayout
     private lateinit var presetBox: LinearLayout
     private lateinit var userBox: LinearLayout
@@ -73,12 +74,15 @@ class LayoutManagerActivity : Activity() {
         errorBanner = banner("", Tone.ERROR)
         errorBanner.visibility = View.GONE
         root.addView(errorBanner)
+        importBox = verticalBox()
         assignBox = verticalBox()
         presetBox = verticalBox()
         userBox = verticalBox()
+        root.addView(importBox)
         root.addView(assignBox)
         root.addView(presetBox)
         root.addView(userBox)
+        renderImport()
         setContentView(parts.root)
 
         // 外部（ブラウザ等）から開かれたときだけ。画面の作り直しでは確認を出し直さない
@@ -130,6 +134,17 @@ class LayoutManagerActivity : Activity() {
     }
 
     // ---- 一覧の読み込みと描画 ----
+
+    /** 取り込みの入口（常設）。FAB は同じ選択肢を出すショートカット */
+    private fun renderImport() {
+        importBox.removeAllViews()
+        val c = card()
+        c.add(actionRow("クリップボードから取り込む", "サイトで作った JSON やリンクをコピーしてからタップします") { importFromClipboard() })
+        c.add(actionRow("ファイルから取り込む", "JSON ファイル（.json）を選びます") { pickFile() })
+        c.add(actionRow("JSON を貼り付ける", "入力欄に貼り付けて取り込みます") { openPasteScreen() })
+        c.add(actionRow("リンクから取り込む", "nagi://layout のリンクを貼り付けます") { showLinkInput() })
+        importBox.addSection("取り込み", c, "サイト（${LayoutClipboard.SITE_URL}）でレイアウトを作れます")
+    }
 
     private fun reload() {
         background({
@@ -220,7 +235,7 @@ class LayoutManagerActivity : Activity() {
                 cardBody(
                     emptyState(
                         "自分のレイアウトはまだありません",
-                        "web のエディタで作って取り込めます。右下の＋から、ファイル・貼り付け・リンクで取り込みます",
+                        "上の「クリップボードから取り込む」か「ファイルから取り込む」で、サイトで作ったレイアウトを入れられます",
                     ),
                     button,
                 ),
@@ -488,14 +503,37 @@ class LayoutManagerActivity : Activity() {
     // ---- 取り込み ----
 
     private fun showImportMenu() {
-        val labels = listOf("ファイルから（.json）", "テキストを貼り付け", "リンクから（nagi://layout）")
+        val labels = listOf("クリップボードから", "ファイルから（.json）", "JSON を貼り付ける", "リンクから（nagi://layout）")
         choiceDialog("レイアウトを取り込む", labels, -1) { i ->
             when (i) {
-                0 -> pickFile()
-                1 -> showTextInput("JSON を貼り付け", "レイアウトの JSON", 8) { text -> startPasted(text) }
-                2 -> showTextInput("リンクを貼り付け", "nagi://layout?data=...", 3) { text -> startPastedLink(text) }
+                0 -> importFromClipboard()
+                1 -> pickFile()
+                2 -> openPasteScreen()
+                3 -> showLinkInput()
                 else -> Unit
             }
+        }
+    }
+
+    private fun showLinkInput() {
+        showTextInput("リンクを貼り付け", "nagi://layout?data=...", 3) { text -> startPastedLink(text) }
+    }
+
+    private fun openPasteScreen() {
+        @Suppress("DEPRECATION")
+        startActivityForResult(Intent(this, LayoutPasteActivity::class.java), REQUEST_PASTE)
+    }
+
+    /** ユーザーが「クリップボードから取り込む」をタップしたときだけクリップボードを読む */
+    private fun importFromClipboard() {
+        val text = LayoutClipboardReader.readText(this)
+        when (LayoutClipboard.classify(text)) {
+            ClipboardKind.EMPTY, ClipboardKind.OTHER -> {
+                errorBanner.show(LayoutClipboard.NOT_FOUND, Tone.WARNING)
+                scroll.smoothScrollTo(0, 0)
+            }
+            ClipboardKind.LINK -> if (text != null) startPastedLink(text)
+            ClipboardKind.JSON -> if (text != null) startImport(text, viaLink = false)
         }
     }
 
@@ -513,17 +551,6 @@ class LayoutManagerActivity : Activity() {
             .setPositiveButton("確認") { _, _ -> onOk(field.text.toString()) }
             .setNegativeButton("キャンセル", null)
             .show()
-    }
-
-    /** 貼り付けたテキスト。JSON のほか、nagi:// のリンクが貼られたときもリンクとして扱う */
-    private fun startPasted(text: String) {
-        if (text.isBlank()) {
-            showError("テキストが空です")
-        } else if (LayoutIntake.looksLikeLink(text)) {
-            startPastedLink(text)
-        } else {
-            startImport(text, viaLink = false)
-        }
     }
 
     private fun startPastedLink(text: String) {
@@ -550,6 +577,17 @@ class LayoutManagerActivity : Activity() {
     @Deprecated("Activity Result API を使わない素の Activity のため")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_PASTE) {
+            // 貼り付け画面で取り込み済み。割り当てを尋ねる
+            val id = data?.getStringExtra(LayoutPasteActivity.EXTRA_LAYOUT_ID)
+            if (resultCode == RESULT_OK && id != null) {
+                background({ LayoutStore.load(this, id) }) { layout ->
+                    reload()
+                    if (layout != null) offerAssign(layout.id, layout.name, layout.mode)
+                }
+            }
+            return
+        }
         if (requestCode != REQUEST_FILE || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         background({ readLimited(uri) }) { r ->
@@ -637,8 +675,22 @@ class LayoutManagerActivity : Activity() {
                     errorBanner.hide()
                     toast(LayoutImportText.success(r.candidate.layout.name, r.candidate.replaces))
                     reload()
+                    offerAssign(r.candidate.layout.id, r.candidate.layout.name, r.candidate.layout.mode)
                 }
                 is ImportResult.Failure -> showError(r.reason)
+            }
+        }
+    }
+
+    /** 取り込み後に「かな / 英字で使う」を尋ねる。割り当て対象外のモード（数字・記号・絵文字）では出さない */
+    private fun offerAssign(id: String, name: String, mode: LayoutMode?) {
+        val options = PostImportChoices.build(mode)
+        if (options.isEmpty()) return
+        choiceDialog(PostImportChoices.title(name), options.map { it.label }, -1) { i ->
+            val slot = options.getOrNull(i)?.slot ?: return@choiceDialog
+            background({ LayoutStore.assign(this, slot, id) }) { ok ->
+                if (ok) toast(PostImportChoices.ASSIGNED) else toast("このレイアウトは使えません")
+                reload()
             }
         }
     }
@@ -653,6 +705,7 @@ class LayoutManagerActivity : Activity() {
 
     companion object {
         private const val REQUEST_FILE = 41
+        private const val REQUEST_PASTE = 42
 
         /** web のレイアウトエディタ（`web/src/routes/custom-keyboard`） */
         private const val EDITOR_URL = "https://nagi.shiki-01.com/custom-keyboard"

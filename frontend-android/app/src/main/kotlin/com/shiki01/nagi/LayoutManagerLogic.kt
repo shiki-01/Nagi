@@ -256,3 +256,73 @@ internal object LayoutCopy {
         null
     }
 }
+
+/** クリップボードの文字列の種類 */
+internal enum class ClipboardKind {
+    /** 空・空白のみ・テキストでない */
+    EMPTY,
+
+    /** `nagi://layout` のリンク */
+    LINK,
+
+    /** Nagi のレイアウト JSON に見えるもの（`id` と `rows` を持つ JSON オブジェクト） */
+    JSON,
+
+    /** それ以外 */
+    OTHER,
+}
+
+/** クリップボードの内容の判定（android.* に依存しない。中身の本格的な検証は [LayoutImporter.inspect] が行う） */
+internal object LayoutClipboard {
+    const val SITE_URL = "nagi.shiki-01.com/custom-keyboard"
+
+    /** 取り込める内容が無いときの案内 */
+    const val NOT_FOUND = "クリップボードにレイアウトがありません。サイト（$SITE_URL）で作った JSON をコピーしてください"
+
+    fun classify(text: String?): ClipboardKind {
+        if (text == null || text.isBlank()) return ClipboardKind.EMPTY
+        if (LayoutIntake.looksLikeLink(text)) {
+            return if (LayoutIntake.classifyUrl(text) is IntakeResult.Accept) ClipboardKind.LINK else ClipboardKind.OTHER
+        }
+        val t = text.trim().removePrefix("﻿")
+        if (!t.startsWith("{")) return ClipboardKind.OTHER
+        return try {
+            val o = JSONObject(t)
+            if (o.has("id") && o.has("rows")) ClipboardKind.JSON else ClipboardKind.OTHER
+        } catch (e: Exception) {
+            ClipboardKind.OTHER
+        }
+    }
+}
+
+/** 取り込み後の「このレイアウトを使いますか」の選択肢。[slot] が null のものは「あとで」 */
+internal class PostImportOption(val slot: AssignSlot?, val label: String)
+
+internal object PostImportChoices {
+    const val LATER = "あとで"
+    const val ASSIGNED = "割り当てました。キーボードを開き直すと反映されます"
+
+    /**
+     * モード別の選択肢。かな = 「かな入力で使う」のみ、英字 = 「英字入力で使う」のみ、カスタム = 両方、
+     * それに「あとで」。数字・記号・絵文字・不明は割り当て対象外なので空（ダイアログを出さない）
+     */
+    fun build(mode: LayoutMode?): List<PostImportOption> {
+        val slots = LayoutTexts.slotsFor(mode)
+        if (slots.isEmpty()) return emptyList()
+        val list = ArrayList<PostImportOption>()
+        for (s in slots) list.add(PostImportOption(s, LayoutTexts.slotLabel(s)))
+        list.add(PostImportOption(null, LATER))
+        return list
+    }
+
+    /** ダイアログの見出し */
+    fun title(name: String): String = "「$name」を取り込みました。使いますか？"
+}
+
+/** 「かな: ○○ / 英字: ○○」の補足行 */
+internal object LayoutAssignSummary {
+    fun text(kanaName: String, alphaName: String): String = "かな: $kanaName / 英字: $alphaName"
+
+    /** 名前が分かればそれ、読めなければ id */
+    fun nameOrId(id: String, name: String?): String = name ?: id
+}

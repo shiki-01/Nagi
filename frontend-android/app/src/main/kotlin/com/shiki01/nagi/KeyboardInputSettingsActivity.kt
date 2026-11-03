@@ -1,6 +1,7 @@
 package com.shiki01.nagi
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -20,10 +21,26 @@ class KeyboardInputSettingsActivity : Activity() {
 
     private val resetRows = ArrayList<ResetRow>()
     private var scrollHost: android.widget.ScrollView? = null
+    private var layoutRow: UiRow? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         render()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 管理画面で割り当てを変えて戻ってきたときに、補足の「かな: ○○ / 英字: ○○」を更新する
+        refreshLayoutSummary()
+    }
+
+    private fun refreshLayoutSummary() {
+        Thread {
+            val text = loadAssignmentSummary()
+            runOnUiThread {
+                if (!isDestroyed) layoutRow?.setSubtitle(text)
+            }
+        }.start()
     }
 
     /** 画面を組み立て直す。「既定に戻す」・プリセットの選択のあとに、スクロール位置を保って呼ぶ */
@@ -35,6 +52,10 @@ class KeyboardInputSettingsActivity : Activity() {
 
     private fun render(): android.widget.ScrollView {
         resetRows.clear()
+        val layoutNav = navRow("キーボードのレイアウト", "かな・英字のレイアウトを選ぶ・取り込む") {
+            startActivity(Intent(this, LayoutManagerActivity::class.java))
+        }
+        layoutRow = layoutNav
         val parts = screenParts("入力設定")
         scrollHost = parts.scroll
         val root = parts.content
@@ -49,21 +70,7 @@ class KeyboardInputSettingsActivity : Activity() {
         root.addSection(
             "入力",
             card(
-                resettable(
-                    "レイアウト",
-                    "12 キー（フリック）",
-                    selectRow(
-                        "レイアウト",
-                        "12 キー（フリック）か、ローマ字入力（QWERTY）かを選びます。",
-                        listOf("flick" to "12 キー（フリック）", "qwerty" to "QWERTY（ローマ字）"),
-                        KeyboardPrefs.layout(this),
-                    ) {
-                        KeyboardPrefs.setLayout(this, it)
-                        refreshResets()
-                    },
-                    isDefault = { KeyboardPrefs.kanaLayoutId(this) == LayoutIds.DEFAULT_KANA },
-                    reset = { KeyboardPrefs.setKanaLayoutId(this, null) },
-                ),
+                layoutNav,
                 resettable(
                     "トグル入力",
                     "オフ",
@@ -454,6 +461,7 @@ class KeyboardInputSettingsActivity : Activity() {
 
         setContentView(parts.root)
         refreshResets()
+        refreshLayoutSummary()
         return parts.scroll
     }
 

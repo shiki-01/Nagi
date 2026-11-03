@@ -50,6 +50,13 @@
                     android:scheme="nagi" />
             </intent-filter>
         </activity>
+        <!-- JSON の貼り付け取り込み。回転で作り直さない（入力内容を保つ） -->
+        <activity
+            android:name=".LayoutPasteActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="JSON を貼り付け"
+            android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".UserDictActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
