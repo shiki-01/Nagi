@@ -1,4 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#2F6F8F</color>
+
+    <!-- 本体アプリのデザインシステム（ライト）。ダークは values-night/colors.xml -->
+    <color name="nagi_bg">#F2F4F7</color>
+    <color name="nagi_card">#FFFFFF</color>
+    <color name="nagi_text">#1B1F24</color>
+    <color name="nagi_text_secondary">#6B7280</color>
+    <color name="nagi_divider">#E6E8EC</color>
+    <color name="nagi_accent">#2F6F8F</color>
+    <color name="nagi_on_accent">#FFFFFF</color>
+    <color name="nagi_accent_soft">#E1EEF4</color>
+    <color name="nagi_danger">#C62828</color>
+    <color name="nagi_danger_soft">#FDECEA</color>
+    <color name="nagi_success">#2E7D32</color>
+    <color name="nagi_success_soft">#E6F4EA</color>
+    <color name="nagi_warning">#A85200</color>
+    <color name="nagi_warning_soft">#FFF1D6</color>
+    <color name="nagi_neutral">#9CA3AF</color>
+    <color name="nagi_ripple">#1F000000</color>
 </resources>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Nagi" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/nagi_bg</item>
+        <item name="android:colorBackground">@color/nagi_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorAccent">@color/nagi_accent</item>
+        <item name="android:colorControlActivated">@color/nagi_accent</item>
+        <item name="android:textColorPrimary">@color/nagi_text</item>
+        <item name="android:textColorSecondary">@color/nagi_text_secondary</item>
+        <item name="android:alertDialogTheme">@style/Theme.Nagi.Dialog</item>
+    </style>
+
+    <style name="Theme.Nagi.Dialog" parent="@android:style/Theme.DeviceDefault.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/nagi_dialog_bg</item>
+        <item name="android:colorAccent">@color/nagi_accent</item>
+        <item name="android:colorControlActivated">@color/nagi_accent</item>
+        <item name="android:textColorPrimary">@color/nagi_text</item>
+        <item name="android:textColorSecondary">@color/nagi_text_secondary</item>
+    </style>
+</resources>

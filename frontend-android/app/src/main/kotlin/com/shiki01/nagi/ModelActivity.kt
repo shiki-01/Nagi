@@ -2,7 +2,6 @@ package com.shiki01.nagi
 
 import android.app.Activity
 import android.app.ActivityManager
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,10 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
 import org.json.JSONObject
 import java.io.File
 
@@ -25,15 +21,12 @@ import java.io.File
 class ModelActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
 
-    private lateinit var statusView: TextView
+    private lateinit var statusBanner: UiBanner
     private lateinit var llmBox: LinearLayout
     private lateinit var listBox: LinearLayout
     private lateinit var catalogBox: LinearLayout
-    private lateinit var progressPanel: LinearLayout
-    private lateinit var progressText: TextView
-    private lateinit var progressBar: ProgressBar
-    private lateinit var cancelButton: Button
-    private lateinit var importButton: Button
+    private lateinit var progress: UiProgress
+    private lateinit var importButton: UiButton
 
     private var token: DataDownloader.Token? = null
 
@@ -47,7 +40,8 @@ class ModelActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val (scroll, root) = screen("変換モデル（LLM）")
+        val parts = screenParts("変換モデル")
+        val root = parts.content
 
         root.addView(
             body(
@@ -56,55 +50,47 @@ class ModelActivity : Activity() {
                 secondary = true,
             ),
         )
-        statusView = body("")
-        root.addView(statusView)
+        statusBanner = banner("", Tone.INFO)
+        root.addView(statusBanner)
 
         llmBox = LinearLayout(this)
         llmBox.orientation = LinearLayout.VERTICAL
         root.addView(llmBox)
 
-        root.addView(heading("インストール済みのモデル"))
+        progress = UiProgress(this, "処理中はこの画面を閉じないでください。") { token?.cancel() }
+        root.addView(progress)
+
+        root.addView(sectionHeader("インストール済み"))
         listBox = LinearLayout(this)
         listBox.orientation = LinearLayout.VERTICAL
         root.addView(listBox)
 
-        progressPanel = LinearLayout(this)
-        progressPanel.orientation = LinearLayout.VERTICAL
-        progressPanel.visibility = View.GONE
-        progressText = body("")
-        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
-        progressBar.max = 1000
-        cancelButton = button("キャンセル") { token?.cancel() }
-        progressPanel.addView(progressText)
-        progressPanel.addView(progressBar)
-        progressPanel.addView(cancelButton)
-        progressPanel.addView(body("処理中はこの画面を閉じないでください。", secondary = true))
-        root.addView(progressPanel)
-
-        root.addView(heading("ダウンロード"))
+        root.addView(sectionHeader("ダウンロード"))
         catalogBox = LinearLayout(this)
         catalogBox.orientation = LinearLayout.VERTICAL
         root.addView(catalogBox)
 
-        root.addView(heading("ファイルから追加"))
-        root.addView(
-            body("zenz の GGUF ファイル（.gguf）を選んで取り込みます。同じ名前のファイルは置き換えます。", secondary = true),
-        )
-        importButton = button("モデルをインポート（.gguf を選択）") { pickFile() }
-        root.addView(importButton)
-
-        root.addView(heading("再起動"))
-        root.addView(
-            body("モデルを変更すると自動でエンジンを再起動します。反映されないときは手動で再起動できます。", secondary = true),
-        )
-        root.addView(
-            button("エンジンを再起動") {
-                NagiRuntime.restart(this)
-                toast("エンジンを再起動しました")
-            },
+        importButton = tonalButton("ファイルから追加（.gguf）") { pickFile() }
+        root.addSection(
+            "ファイルから追加",
+            cardBody(
+                body("zenz の GGUF ファイル（.gguf）を選んで取り込みます。同じ名前のファイルは置き換えます。", secondary = true),
+                importButton,
+            ).also { it.background = rounded(cCard, UiSize.CARD_RADIUS_DP) },
         )
 
-        setContentView(scroll)
+        root.addSection(
+            "再起動",
+            cardBody(
+                body("モデルを変更すると自動でエンジンを再起動します。反映されないときは手動で再起動できます。", secondary = true),
+                tonalButton("エンジンを再起動") {
+                    NagiRuntime.restart(this)
+                    toast("エンジンを再起動しました")
+                },
+            ).also { it.background = rounded(cCard, UiSize.CARD_RADIUS_DP) },
+        )
+
+        setContentView(parts.root)
         renderAll()
     }
 
@@ -141,6 +127,36 @@ class ModelActivity : Activity() {
         }
     }
 
+    private fun modelCard(
+        title: String,
+        subtitle: String,
+        badgeView: View?,
+        warning: String?,
+        vararg buttons: View,
+    ): UiCard {
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = android.view.Gravity.CENTER_VERTICAL
+        head.addView(textOf(title, UiSize.BODY_SP, cText, bold = true), LinearLayout.LayoutParams(0, LP_WRAP, 1f))
+        if (badgeView != null) head.addView(badgeView)
+        val sub = textOf(subtitle, UiSize.NOTE_SP, cTextSecondary)
+        sub.setPadding(0, dp(4), 0, 0)
+        val box = cardBody(head, sub)
+        if (warning != null) {
+            val w = textOf(warning, UiSize.NOTE_SP, cWarning)
+            w.setPadding(0, dp(6), 0, 0)
+            box.addView(w)
+        }
+        val actions = buttonRow(*buttons)
+        val alp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+        alp.topMargin = dp(12)
+        box.addView(actions, alp)
+        val c = UiCard(this)
+        c.add(box)
+        (c.layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(12)
+        return c
+    }
+
     private fun renderAll() {
         val installed = ModelStore.list(this)
         val effective = ModelStore.effective(this, configuredModel)
@@ -152,60 +168,68 @@ class ModelActivity : Activity() {
         val summary = ModelRecommendation.summary(budget, ModelRecommendation.CATALOG.map { ModelSpec(it.fileName, it.sizeBytes) })
         if (summary.isNotEmpty()) sb.append(summary).append('\n')
         sb.append("使用中のモデル: ").append(effective?.let { ModelRecommendation.label(it.name) } ?: "なし")
-        statusView.text = sb.toString()
         val dictOnly = ModelRecommendation.dictionaryOnlyReason(effective != null, useLlm, budget)
         if (dictOnly != null) {
-            statusView.append("\n" + dictOnly)
-            statusView.setTextColor(COLOR_WARNING)
+            statusBanner.show(sb.toString() + "\n" + dictOnly, Tone.WARNING)
         } else {
-            statusView.setTextColor(0xFF000000.toInt())
+            statusBanner.show(sb.toString(), Tone.INFO)
         }
 
         llmBox.removeAllViews()
         if (settingsLoaded) {
             llmBox.addView(
-                switchRow("LLM を使う", "オフにすると、モデルがあっても辞書のみで変換します。", useLlm) { v ->
-                    updateSetting("conversion.use_llm", SettingType.BOOL, v) { ok ->
-                        if (ok) {
-                            useLlm = v
-                            if (llmRequiresRestart) NagiRuntime.restart(this)
+                card(
+                    switchRow("LLM を使う", "オフにすると、モデルがあっても辞書のみで変換します。", useLlm) { v ->
+                        updateSetting("conversion.use_llm", SettingType.BOOL, v) { ok ->
+                            if (ok) {
+                                useLlm = v
+                                if (llmRequiresRestart) NagiRuntime.restart(this)
+                            }
+                            renderAll()
                         }
-                        renderAll()
-                    }
-                },
+                    },
+                ),
             )
         }
 
         // インストール済み
         listBox.removeAllViews()
         if (installed.isEmpty()) {
-            listBox.addView(body("モデルはありません（辞書のみで動作します）。", secondary = true))
+            val c = UiCard(this)
+            c.add(emptyState("モデルはありません", "辞書のみで動作します。下からダウンロードできます。"))
+            listBox.addView(c)
         }
         for (m in installed) {
             val inUse = effective?.file?.absolutePath == m.file.absolutePath
-            val title = ModelRecommendation.label(m.name) + if (inUse) "（使用中）" else ""
-            listBox.addView(body(title))
-            listBox.addView(body("${m.name} / ${DataDownloader.formatBytes(m.sizeBytes)}", secondary = true))
-            if (!ModelRecommendation.fits(m.spec, budget)) {
-                listBox.addView(body("この端末の現在のメモリでは余裕がない見込みです。", secondary = true, color = COLOR_WARNING))
-            }
             val buttons = ArrayList<View>()
-            if (!inUse) buttons.add(button("使う") { selectModel(m) })
-            buttons.add(button("削除") { confirmDelete(m) })
-            val line = row(*buttons.toTypedArray())
-            listBox.addView(line)
-            listBox.addView(divider())
+            if (!inUse) buttons.add(filledButton("使う") { selectModel(m) })
+            buttons.add(destructiveButton("削除") { confirmDelete(m) })
+            listBox.addView(
+                modelCard(
+                    ModelRecommendation.label(m.name),
+                    "${m.name} / ${DataDownloader.formatBytes(m.sizeBytes)}",
+                    if (inUse) badge("使用中", Tone.SUCCESS) else null,
+                    if (!ModelRecommendation.fits(m.spec, budget)) "この端末の現在のメモリでは余裕がない見込みです。" else null,
+                    *buttons.toTypedArray(),
+                ),
+            )
         }
 
         // ダウンロード
         catalogBox.removeAllViews()
         for (src in ModelRecommendation.CATALOG) {
             val have = installed.any { it.name == src.fileName }
-            catalogBox.addView(body(src.label))
-            catalogBox.addView(body("${src.fileName} / 約 ${DataDownloader.formatBytes(src.sizeBytes)}", secondary = true))
-            val b = button(if (have) "再取得" else "ダウンロード") { startDownload(src) }
+            val b = if (have) tonalButton("再取得") { startDownload(src) } else filledButton("ダウンロード") { startDownload(src) }
             b.isEnabled = !busy
-            catalogBox.addView(b)
+            catalogBox.addView(
+                modelCard(
+                    src.label,
+                    "${src.fileName} / 約 ${DataDownloader.formatBytes(src.sizeBytes)}",
+                    if (have) badge("取得済み", Tone.NEUTRAL) else null,
+                    null,
+                    b,
+                ),
+            )
         }
         importButton.isEnabled = !busy
     }
@@ -243,12 +267,12 @@ class ModelActivity : Activity() {
     }
 
     private fun confirmDelete(m: InstalledModel) {
-        AlertDialog.Builder(this)
-            .setTitle("モデルを削除")
-            .setMessage("${m.name}（${DataDownloader.formatBytes(m.sizeBytes)}）を削除します。")
-            .setPositiveButton("削除") { _, _ -> deleteModel(m) }
-            .setNegativeButton("キャンセル", null)
-            .show()
+        confirmDialog(
+            "モデルを削除",
+            "${m.name}（${DataDownloader.formatBytes(m.sizeBytes)}）を削除します。",
+            "削除",
+            destructive = true,
+        ) { deleteModel(m) }
     }
 
     private fun deleteModel(m: InstalledModel) {
@@ -273,23 +297,17 @@ class ModelActivity : Activity() {
 
     // ---- ダウンロード / インポート ----
 
-    private fun showProgress(text: String, cancellable: Boolean) {
-        progressPanel.visibility = View.VISIBLE
-        progressText.text = text
-        progressBar.isIndeterminate = true
-        cancelButton.visibility = if (cancellable) View.VISIBLE else View.GONE
-    }
-
     private fun updateProgress(label: String, done: Long, total: Long) {
         if (isDestroyed) return
-        if (total > 0) {
-            progressBar.isIndeterminate = false
-            progressBar.progress = (done * 1000 / total).toInt().coerceIn(0, 1000)
-            progressText.text = "$label ${DataDownloader.formatBytes(done)} / ${DataDownloader.formatBytes(total)}"
-        } else {
-            progressBar.isIndeterminate = true
-            progressText.text = "$label ${DataDownloader.formatBytes(done)}"
-        }
+        progress.report(
+            if (total > 0) {
+                "$label ${DataDownloader.formatBytes(done)} / ${DataDownloader.formatBytes(total)}"
+            } else {
+                "$label ${DataDownloader.formatBytes(done)}"
+            },
+            done,
+            total,
+        )
     }
 
     private fun startDownload(src: ModelSource) {
@@ -303,7 +321,7 @@ class ModelActivity : Activity() {
         busy = true
         val t = DataDownloader.Token()
         token = t
-        showProgress("${ModelRecommendation.label(src.fileName)} をダウンロード中…", true)
+        progress.begin("${ModelRecommendation.label(src.fileName)} をダウンロード中…", true)
         renderAll()
         val dest = File(dir, src.fileName)
         Thread {
@@ -343,7 +361,7 @@ class ModelActivity : Activity() {
         if (busy) return
         busy = true
         token = null
-        showProgress("取り込み中…", false)
+        progress.begin("取り込み中…", false)
         renderAll()
         val app = applicationContext
         Thread {
@@ -365,7 +383,7 @@ class ModelActivity : Activity() {
         busy = false
         token = null
         if (isDestroyed) return
-        progressPanel.visibility = View.GONE
+        progress.end()
         when {
             cancelled -> toast("キャンセルしました")
             error != null -> toast("失敗しました: $error")

@@ -14,13 +14,11 @@ import android.text.TextWatcher
 import android.util.Base64
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ArrayAdapter
 import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.TextView
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -64,39 +62,9 @@ class UserDictActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val pad = dp(16)
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.setPadding(pad, pad, pad, 0)
-        @Suppress("DEPRECATION")
-        root.setOnApplyWindowInsetsListener { v, insets ->
-            v.setPadding(pad, pad + insets.systemWindowInsetTop, pad, insets.systemWindowInsetBottom)
-            insets
-        }
-
-        val title = TextView(this)
-        title.text = "ユーザー辞書"
-        title.textSize = 24f
-        title.setTypeface(null, android.graphics.Typeface.BOLD)
-        title.setPadding(0, pad / 2, 0, pad / 2)
-        root.addView(title)
-
-        val search = EditText(this)
-        search.hint = "検索（読み・単語・コメント）"
-        search.setSingleLine(true)
-        search.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-
-            override fun afterTextChanged(s: Editable?) {
-                query = s?.toString() ?: ""
-                rebuild()
-            }
-        })
-        root.addView(search)
-
         list = ListView(this)
+        val fab = FabView(this, "単語を追加") { showEditDialog(null, -1, false) }
+        val root = listScreen("ユーザー辞書", list, fab, buildSearch())
         list.addHeaderView(buildHeader(), null, false)
         adapter = ItemAdapter()
         list.adapter = adapter
@@ -104,7 +72,6 @@ class UserDictActivity : Activity() {
             val row = items.getOrNull(position - list.headerViewsCount)
             if (row is RowItem.Own) showEditDialog(row.entry, row.index, false)
         }
-        root.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
     }
 
@@ -121,6 +88,23 @@ class UserDictActivity : Activity() {
 
     // ---- 画面の部品 ----
 
+    private fun buildSearch(): EditText {
+        val search = inputField("検索（読み・単語・コメント）")
+        search.setSingleLine(true)
+        search.background = rounded(cCard, UiSize.FIELD_RADIUS_DP)
+        search.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+
+            override fun afterTextChanged(s: Editable?) {
+                query = s?.toString() ?: ""
+                rebuild()
+            }
+        })
+        return search
+    }
+
     private fun buildHeader(): View {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
@@ -131,33 +115,22 @@ class UserDictActivity : Activity() {
                 secondary = true,
             ),
         )
-        box.addView(
-            body(
-                "注意: ユーザー辞書は、システム辞書が読み込めているときだけ変換に反映されます。",
-                secondary = true,
-                color = COLOR_WARNING,
-            ),
-        )
         if (!DataInstaller.dictFile(this).exists()) {
-            box.addView(
-                body(
-                    "いまシステム辞書が見つからないため、登録しても変換には反映されません。",
-                    color = COLOR_ERROR,
-                ),
-            )
+            box.addView(banner("システム辞書が見つからないため、登録しても変換には反映されません。", Tone.ERROR))
+        } else {
+            box.addView(banner("ユーザー辞書は、システム辞書が読み込めているときだけ変換に反映されます。", Tone.WARNING))
         }
-        countView = body("")
+
+        countView = textOf("", UiSize.NOTE_SP, cTextSecondary)
+        countView.setPadding(dp(UiSize.ROW_PAD_DP), dp(12), dp(UiSize.ROW_PAD_DP), 0)
         box.addView(countView)
+
+        box.addView(sectionHeader("操作"))
         box.addView(
-            row(
-                button("追加") { showEditDialog(null, -1, false) }.also { it.layoutParams = weight1() },
-                button("スニペット追加") { showEditDialog(null, -1, true) }.also { it.layoutParams = weight1() },
-            ),
-        )
-        box.addView(
-            row(
-                button("インポート") { pickImport() }.also { it.layoutParams = weight1() },
-                button("エクスポート") { startExport() }.also { it.layoutParams = weight1() },
+            card(
+                actionRow("スニペットを追加", "短い読みから定型文を出します") { showEditDialog(null, -1, true) },
+                actionRow("インポート", "Mozc TSV などの辞書を取り込みます") { pickImport() },
+                actionRow("エクスポート", "Mozc TSV で書き出します") { startExport() },
             ),
         )
         return box
@@ -172,29 +145,46 @@ class UserDictActivity : Activity() {
 
         override fun isEnabled(position: Int): Boolean = items[position] is RowItem.Own
 
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View =
-            when (val item = items[position]) {
-                is RowItem.Heading -> heading(item.text)
-                is RowItem.Note -> body(item.text, secondary = true)
-                is RowItem.Own -> entryView(item.entry)
-                is RowItem.ReadOnly -> entryView(item.entry).also { it.alpha = 0.7f }
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val top = position == 0 || !isEntry(items[position - 1])
+            val bottom = position == items.size - 1 || !isEntry(items[position + 1])
+            return when (val item = items[position]) {
+                is RowItem.Heading -> sectionHeader(item.text)
+                is RowItem.Note -> note(item.text)
+                is RowItem.Own -> entryView(item.entry, top, bottom, true)
+                is RowItem.ReadOnly -> entryView(item.entry, top, bottom, false).also { it.alpha = 0.7f }
             }
+        }
     }
 
-    private fun entryView(e: UserDictEntry): View {
+    private fun isEntry(item: RowItem): Boolean = item is RowItem.Own || item is RowItem.ReadOnly
+
+    private fun entryView(e: UserDictEntry, top: Boolean, bottom: Boolean, editable: Boolean): View {
+        val outer = LinearLayout(this)
+        outer.orientation = LinearLayout.VERTICAL
+        outer.background = groupedRowBackground(top, bottom, editable)
+
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
-        col.setPadding(0, dp(8), 0, dp(8))
+        col.minimumHeight = dp(56)
+        col.gravity = android.view.Gravity.CENTER_VERTICAL
+        col.setPadding(dp(UiSize.ROW_PAD_DP), dp(10), dp(UiSize.ROW_PAD_DP), dp(10))
         val firstLine = e.surface.lineSequence().firstOrNull() ?: ""
         val multi = e.surface.contains('\n')
-        val line = TextView(this)
-        line.textSize = 16f
-        line.text = "${e.reading}  →  $firstLine" + if (multi) " …" else ""
-        col.addView(line)
+        col.addView(textOf("${e.reading}  →  $firstLine" + if (multi) " …" else "", UiSize.BODY_SP, cText))
         val sub = StringBuilder(if (e.isSnippet) "スニペット" else e.pos)
         if (e.comment.isNotEmpty()) sub.append(" / ").append(e.comment)
-        col.addView(body(sub.toString(), secondary = true))
-        return col
+        col.addView(textOf(sub.toString(), UiSize.NOTE_SP, cTextSecondary))
+        outer.addView(col)
+
+        if (!bottom) {
+            val line = View(this)
+            line.setBackgroundColor(cDivider)
+            val lp = LinearLayout.LayoutParams(LP_MATCH, Math.max(1, dp(1) / 2))
+            lp.marginStart = dp(UiSize.ROW_PAD_DP)
+            outer.addView(line, lp)
+        }
+        return outer
     }
 
     // ---- 一覧の組み立て ----
@@ -212,9 +202,9 @@ class UserDictActivity : Activity() {
         }
         if (limit != null && total > limit) {
             countView.append("\n上限を超えています。超えた分はコアが読み込みません。不要な登録を削除してください。")
-            countView.setTextColor(COLOR_ERROR)
+            countView.setTextColor(cDanger)
         } else {
-            countView.setTextColor(0xFF000000.toInt())
+            countView.setTextColor(cTextSecondary)
         }
         if (!loaded) {
             out.add(RowItem.Note("読み込んでいます…"))
@@ -360,15 +350,18 @@ class UserDictActivity : Activity() {
         val form = LinearLayout(this)
         form.orientation = LinearLayout.VERTICAL
         form.setPadding(pad, pad / 2, pad, 0)
+        fun fieldLp(): LinearLayout.LayoutParams {
+            val lp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+            lp.topMargin = dp(8)
+            return lp
+        }
 
-        val reading = EditText(this)
-        reading.hint = "読み（ひらがな）"
+        val reading = inputField("読み（ひらがな）")
         reading.setSingleLine(true)
         reading.setText(existing?.reading ?: "")
-        form.addView(reading)
+        form.addView(reading, fieldLp())
 
-        val surface = EditText(this)
-        surface.hint = if (snippet) "本文（改行できます。${MozcTsv.MAX_SNIPPET_CHARS} 文字まで）" else "単語"
+        val surface = inputField(if (snippet) "本文（改行できます。${MozcTsv.MAX_SNIPPET_CHARS} 文字まで）" else "単語")
         if (snippet) {
             surface.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             surface.minLines = 3
@@ -377,28 +370,28 @@ class UserDictActivity : Activity() {
             surface.setSingleLine(true)
         }
         surface.setText(existing?.surface ?: "")
-        form.addView(surface)
+        form.addView(surface, fieldLp())
 
-        var posSpinner: Spinner? = null
+        var posValue = "名詞"
         if (!snippet) {
             val choices = ArrayList(MozcTsv.POS_CHOICES)
             val current = existing?.pos
             if (current != null && current !in choices) choices.add(0, current)
-            val sp = Spinner(this)
-            sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, choices)
-            sp.setSelection(if (current != null) choices.indexOf(current).coerceAtLeast(0) else 0)
-            form.addView(body("品詞", secondary = true))
-            form.addView(sp)
-            posSpinner = sp
+            val selectedIndex = if (current != null) choices.indexOf(current).coerceAtLeast(0) else 0
+            posValue = choices.getOrNull(selectedIndex) ?: "名詞"
+            form.addView(note("品詞").also { it.setPadding(0, dp(12), 0, 0) })
+            form.addView(
+                selectField("品詞", choices, selectedIndex) { i -> posValue = choices[i] },
+                fieldLp(),
+            )
         }
 
-        val comment = EditText(this)
-        comment.hint = "コメント（任意）"
+        val comment = inputField("コメント（任意）")
         comment.setSingleLine(true)
         comment.setText(existing?.comment ?: "")
-        form.addView(comment)
+        form.addView(comment, fieldLp())
 
-        val errorView = body("", color = COLOR_ERROR)
+        val errorView = body("", color = cDanger)
         form.addView(errorView)
 
         val scroll = ScrollView(this)
@@ -425,7 +418,7 @@ class UserDictActivity : Activity() {
                 UserDictEntry(
                     reading = reading.text.toString(),
                     surface = surface.text.toString(),
-                    pos = if (snippet) MozcTsv.SNIPPET_POS else (posSpinner?.selectedItem as? String ?: "名詞"),
+                    pos = if (snippet) MozcTsv.SNIPPET_POS else posValue,
                     comment = comment.text.toString(),
                 ),
             )
@@ -463,18 +456,18 @@ class UserDictActivity : Activity() {
     }
 
     private fun confirmDelete(index: Int, e: UserDictEntry) {
-        AlertDialog.Builder(this)
-            .setTitle("登録を削除")
-            .setMessage("「${e.reading} → ${e.surface.lineSequence().firstOrNull() ?: ""}」を削除します。")
-            .setPositiveButton("削除") { _, _ ->
-                if (index in own.indices) {
-                    own.removeAt(index)
-                    rebuild()
-                    saveOwn()
-                }
+        confirmDialog(
+            "登録を削除",
+            "「${e.reading} → ${e.surface.lineSequence().firstOrNull() ?: ""}」を削除します。",
+            "削除",
+            destructive = true,
+        ) {
+            if (index in own.indices) {
+                own.removeAt(index)
+                rebuild()
+                saveOwn()
             }
-            .setNegativeButton("キャンセル", null)
-            .show()
+        }
     }
 
     // ---- インポート / エクスポート ----
@@ -601,7 +594,7 @@ class UserDictActivity : Activity() {
     }
 
     private fun showMessage(title: String, message: String) {
-        AlertDialog.Builder(this).setTitle(title).setMessage(message).setPositiveButton("閉じる", null).show()
+        messageDialog(title, message)
     }
 
     companion object {

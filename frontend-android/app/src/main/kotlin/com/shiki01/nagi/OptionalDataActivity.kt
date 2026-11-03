@@ -1,15 +1,11 @@
 package com.shiki01.nagi
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
 import com.shiki01.nagi.core.NagiCore
 import org.json.JSONObject
 import java.io.File
@@ -32,10 +28,7 @@ class OptionalDataActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
 
     private lateinit var listBox: LinearLayout
-    private lateinit var progressPanel: LinearLayout
-    private lateinit var progressText: TextView
-    private lateinit var progressBar: ProgressBar
-    private lateinit var cancelButton: Button
+    private lateinit var progress: UiProgress
 
     private var sources: List<OptionalSource> = emptyList()
     private var loadError: String? = null
@@ -46,7 +39,8 @@ class OptionalDataActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val (scroll, root) = screen("英語・カタカナ語データ")
+        val parts = screenParts("英語・カタカナ語データ")
+        val root = parts.content
         root.addView(
             body(
                 "英単語・カタカナ語（外来語）の変換を強くする、任意のデータです。取得しなくても通常の変換は使えます。" +
@@ -55,24 +49,14 @@ class OptionalDataActivity : Activity() {
             ),
         )
 
+        progress = UiProgress(this, "処理中はこの画面を閉じないでください。") { token?.cancel() }
+        root.addView(progress)
+
         listBox = LinearLayout(this)
         listBox.orientation = LinearLayout.VERTICAL
         root.addView(listBox)
 
-        progressPanel = LinearLayout(this)
-        progressPanel.orientation = LinearLayout.VERTICAL
-        progressPanel.visibility = View.GONE
-        progressText = body("")
-        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
-        progressBar.max = 1000
-        cancelButton = button("キャンセル") { token?.cancel() }
-        progressPanel.addView(progressText)
-        progressPanel.addView(progressBar)
-        progressPanel.addView(cancelButton)
-        progressPanel.addView(body("処理中はこの画面を閉じないでください。", secondary = true))
-        root.addView(progressPanel)
-
-        setContentView(scroll)
+        setContentView(parts.root)
         loadSources()
         render()
     }
@@ -128,64 +112,79 @@ class OptionalDataActivity : Activity() {
         listBox.removeAllViews()
         val err = loadError
         if (err != null) {
-            listBox.addView(body(err, color = COLOR_ERROR))
+            listBox.addView(banner(err, Tone.ERROR))
             return
         }
         for (s in sources) {
             val idx = indexFileOf(s)
-            listBox.addView(heading(titleOf(s)))
-            listBox.addView(body(description(s), secondary = true))
-            if (idx.exists()) {
-                listBox.addView(body("状態: 取得済み（${DataDownloader.formatBytes(idx.length())}）"))
-            } else {
-                listBox.addView(body("状態: 未取得"))
-            }
-            val get = button(if (idx.exists()) "再取得" else "取得") { startInstall(s) }
+            val have = idx.exists()
+
+            val head = LinearLayout(this)
+            head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = android.view.Gravity.CENTER_VERTICAL
+            head.addView(textOf(titleOf(s), UiSize.BODY_SP, cText, bold = true), LinearLayout.LayoutParams(0, LP_WRAP, 1f))
+            head.addView(
+                if (have) badge("取得済み", Tone.SUCCESS) else badge("未取得", Tone.NEUTRAL),
+            )
+
+            val desc = textOf(description(s), UiSize.NOTE_SP, cTextSecondary)
+            desc.setPadding(0, dp(6), 0, 0)
+
+            val get = (if (have) tonalButton("再取得") { startInstall(s) } else filledButton("取得") { startInstall(s) })
             get.isEnabled = !busy
-            val items = ArrayList<View>()
-            items.add(get)
-            if (idx.exists()) {
-                val del = button("削除") { confirmDelete(s) }
+            val buttons = ArrayList<View>()
+            buttons.add(get)
+            if (have) {
+                val del = destructiveButton("削除") { confirmDelete(s) }
                 del.isEnabled = !busy
-                items.add(del)
+                buttons.add(del)
             }
-            listBox.addView(row(*items.toTypedArray()))
-            listBox.addView(divider())
+            val actions = buttonRow(*buttons.toTypedArray())
+            val alp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+            alp.topMargin = dp(12)
+
+            val box = cardBody(head, desc)
+            if (have) {
+                val size = textOf("サイズ ${DataDownloader.formatBytes(idx.length())}", UiSize.NOTE_SP, cTextSecondary)
+                size.setPadding(0, dp(4), 0, 0)
+                box.addView(size)
+            }
+            box.addView(actions, alp)
+
+            val c = UiCard(this)
+            c.add(box)
+            val clp = c.layoutParams as LinearLayout.LayoutParams
+            clp.topMargin = dp(12)
+            listBox.addView(c)
         }
     }
 
     private fun confirmDelete(s: OptionalSource) {
-        AlertDialog.Builder(this)
-            .setTitle("${titleOf(s)}を削除")
-            .setMessage("取得したデータを削除します。あとで再取得できます。")
-            .setPositiveButton("削除") { _, _ ->
-                indexFileOf(s).delete()
-                File(File(DataInstaller.dataDir(this), s.dir), s.file).delete()
-                NagiRuntime.restart(this)
-                toast("削除しました（エンジンを再起動しました）")
-                render()
-            }
-            .setNegativeButton("キャンセル", null)
-            .show()
-    }
-
-    private fun showProgress(text: String, cancellable: Boolean) {
-        progressPanel.visibility = View.VISIBLE
-        progressText.text = text
-        progressBar.isIndeterminate = true
-        cancelButton.visibility = if (cancellable) View.VISIBLE else View.GONE
+        confirmDialog(
+            "${titleOf(s)}を削除",
+            "取得したデータを削除します。あとで再取得できます。",
+            "削除",
+            destructive = true,
+        ) {
+            indexFileOf(s).delete()
+            File(File(DataInstaller.dataDir(this), s.dir), s.file).delete()
+            NagiRuntime.restart(this)
+            toast("削除しました（エンジンを再起動しました）")
+            render()
+        }
     }
 
     private fun updateProgress(label: String, done: Long, total: Long) {
         if (isDestroyed || !busy) return
-        if (total > 0) {
-            progressBar.isIndeterminate = false
-            progressBar.progress = (done * 1000 / total).toInt().coerceIn(0, 1000)
-            progressText.text = "$label ${DataDownloader.formatBytes(done)} / ${DataDownloader.formatBytes(total)}"
-        } else {
-            progressBar.isIndeterminate = true
-            progressText.text = "$label ${DataDownloader.formatBytes(done)}"
-        }
+        progress.report(
+            if (total > 0) {
+                "$label ${DataDownloader.formatBytes(done)} / ${DataDownloader.formatBytes(total)}"
+            } else {
+                "$label ${DataDownloader.formatBytes(done)}"
+            },
+            done,
+            total,
+        )
     }
 
     private fun startInstall(s: OptionalSource) {
@@ -199,7 +198,7 @@ class OptionalDataActivity : Activity() {
         busy = true
         val t = DataDownloader.Token()
         token = t
-        showProgress("${titleOf(s)} をダウンロード中…", true)
+        progress.begin("${titleOf(s)} をダウンロード中…", true)
         render()
         val archive = File(dir, s.file)
         val out = indexFileOf(s)
@@ -213,9 +212,7 @@ class OptionalDataActivity : Activity() {
                 // 検証済み。索引を作る（失敗しても既存の索引は残る: コアは一時ファイル経由で置き換える）
                 main.post {
                     if (!isDestroyed) {
-                        progressBar.isIndeterminate = true
-                        progressText.text = "索引を作成中…（数十秒かかることがあります）"
-                        cancelButton.visibility = View.GONE
+                        progress.begin("索引を作成中…（数十秒かかることがあります）", false)
                     }
                 }
                 val reason = NagiCore.nativeBuildOptionalIndex(s.kind, archive.absolutePath, out.absolutePath)
@@ -236,7 +233,7 @@ class OptionalDataActivity : Activity() {
         busy = false
         token = null
         if (isDestroyed) return
-        progressPanel.visibility = View.GONE
+        progress.end()
         when {
             cancelled -> toast("キャンセルしました")
             error != null -> toast("失敗しました: $error")

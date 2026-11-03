@@ -5,10 +5,7 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.View
 import android.view.inputmethod.EditorInfo
-import android.widget.Button
-import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.TextView
 import org.json.JSONObject
 
 /**
@@ -17,8 +14,8 @@ import org.json.JSONObject
  */
 class SettingsFormActivity : Activity() {
     private lateinit var content: LinearLayout
-    private lateinit var banner: TextView
-    private lateinit var restartButton: Button
+    private lateinit var errorBanner: UiBanner
+    private lateinit var restartButton: UiButton
 
     private var items: List<SettingDef> = emptyList()
     private var showDetail = false
@@ -27,33 +24,38 @@ class SettingsFormActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val (scroll, root) = screen("変換の設定")
+        val parts = screenParts("変換の設定")
+        val root = parts.content
 
-        banner = body("", color = COLOR_ERROR)
-        banner.visibility = View.GONE
-        root.addView(banner)
+        errorBanner = banner("", Tone.ERROR)
+        errorBanner.visibility = View.GONE
+        root.addView(errorBanner)
 
         root.addView(
-            switchRow("詳細設定を表示", "ふだん変更する必要のない項目も表示します", false) {
-                showDetail = it
-                render()
-            },
+            card(
+                switchRow("詳細設定を表示", "ふだん変更する必要のない項目も表示します", false) {
+                    showDetail = it
+                    render()
+                },
+            ),
         )
 
-        restartButton = button("変更を反映する（エンジンを再起動）") {
+        restartButton = filledButton("変更を反映する（エンジンを再起動）") {
             NagiRuntime.restart(this)
             restartButton.visibility = View.GONE
             toast("エンジンを再起動しました")
         }
         restartButton.visibility = View.GONE
-        root.addView(restartButton)
+        val rlp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+        rlp.topMargin = dp(16)
+        root.addView(restartButton, rlp)
 
         content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
         root.addView(content)
-        content.addView(body("読み込んでいます…", secondary = true))
+        content.addView(emptyState("読み込んでいます…"))
 
-        setContentView(scroll)
+        setContentView(parts.root)
     }
 
     override fun onResume() {
@@ -65,7 +67,9 @@ class SettingsFormActivity : Activity() {
         NagiRuntime.get(this).call("get_settings") { r ->
             if (r == null) {
                 content.removeAllViews()
-                content.addView(body("コアを起動できないため、設定を読み込めませんでした。", color = COLOR_ERROR))
+                content.addView(
+                    banner("コアを起動できないため、設定を読み込めませんでした。", Tone.ERROR),
+                )
                 return@call
             }
             applySnapshot(r)
@@ -78,10 +82,9 @@ class SettingsFormActivity : Activity() {
         loaded = true
         val err = snapshot.optString("error", "")
         if (err.isNotEmpty()) {
-            banner.text = "設定ファイルを読めませんでした（既定値を表示しています。ここでの変更は保存されません）\n$err"
-            banner.visibility = View.VISIBLE
+            errorBanner.show("設定ファイルを読めませんでした（既定値を表示しています。ここでの変更は保存されません）\n$err", Tone.ERROR)
         } else {
-            banner.visibility = View.GONE
+            errorBanner.hide()
         }
     }
 
@@ -91,16 +94,17 @@ class SettingsFormActivity : Activity() {
         if (!loaded) return
         val shown = SettingsSchema.visible(items, showDetail)
         if (shown.isEmpty()) {
-            content.addView(body("表示できる設定がありません。", secondary = true))
+            content.addView(emptyState("表示できる設定がありません"))
             return
         }
         for ((group, defs) in SettingsSchema.groups(shown)) {
-            content.addView(heading(group))
+            val groupCard = UiCard(this)
             for (d in defs) {
                 val v = buildRow(d)
                 rows[d.key] = v
-                content.addView(v)
+                groupCard.add(v)
             }
+            content.addSection(group, groupCard)
         }
     }
 
@@ -145,11 +149,10 @@ class SettingsFormActivity : Activity() {
     private fun buildRow(d: SettingDef): View {
         val box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
-        box.setPadding(0, dp(4), 0, dp(4))
 
         val control: View = when (d.type) {
             SettingType.BOOL -> switchRow(d.label, d.description, (d.value as? Boolean) ?: false) { send(d, it) }
-            SettingType.CHOICE -> spinnerRow(
+            SettingType.CHOICE -> selectRow(
                 d.label,
                 d.description,
                 d.choices.map { it.value to it.label },
@@ -163,31 +166,29 @@ class SettingsFormActivity : Activity() {
         val notes = ArrayList<String>()
         if (d.requiresRestart) notes.add("次回起動で反映")
         if (d.value == null) notes.add("プロファイルに従う")
-        if (notes.isNotEmpty()) box.addView(body(notes.joinToString(" / "), secondary = true, color = COLOR_WARNING))
+        if (notes.isNotEmpty()) {
+            val n = textOf(notes.joinToString(" / "), UiSize.NOTE_SP, cWarning)
+            n.setPadding(dp(UiSize.ROW_PAD_DP), 0, dp(UiSize.ROW_PAD_DP), dp(8))
+            box.addView(n)
+        }
 
         if (d.explicit) {
-            val reset = button("既定に戻す") { send(d, null) }
-            reset.textSize = 13f
-            box.addView(reset)
+            val reset = textButton("既定に戻す") { send(d, null) }
+            val lp = LinearLayout.LayoutParams(LP_WRAP, LP_WRAP)
+            lp.marginStart = dp(8)
+            box.addView(reset, lp)
         }
         return box
     }
 
     private fun numberRow(d: SettingDef): View {
-        val col = LinearLayout(this)
-        col.orientation = LinearLayout.VERTICAL
-        col.setPadding(0, dp(8), 0, dp(8))
-        col.addView(body(d.label))
-        if (d.description.isNotEmpty()) col.addView(body(d.description, secondary = true))
-
-        val edit = EditText(this)
+        val edit = inputField()
         edit.inputType = InputType.TYPE_CLASS_NUMBER or
             (if (d.type == SettingType.FLOAT) InputType.TYPE_NUMBER_FLAG_DECIMAL else 0) or
             (if (d.min < 0) InputType.TYPE_NUMBER_FLAG_SIGNED else 0)
         edit.setSingleLine(true)
         edit.imeOptions = EditorInfo.IME_ACTION_DONE
         edit.setText(SettingsSchema.formatNumber(d, SettingsSchema.numberOf(d)))
-        edit.minEms = 5
 
         fun commit(raw: Any?) {
             if (raw == null) {
@@ -227,29 +228,17 @@ class SettingsFormActivity : Activity() {
             }
         }
 
-        val minus = button("−") { step(-1) }
-        val plus = button("＋") { step(+1) }
-        val line = row(minus, edit.also { it.layoutParams = weight1() }, plus)
-        col.addView(line)
-        if (d.max > d.min) {
-            col.addView(
-                body(
-                    "範囲 ${SettingsSchema.formatNumber(d, d.min)}〜${SettingsSchema.formatNumber(d, d.max)}" +
-                        "（刻み ${SettingsSchema.formatNumber(d, d.step)}）",
-                    secondary = true,
-                ),
-            )
+        val footnote = if (d.max > d.min) {
+            "範囲 ${SettingsSchema.formatNumber(d, d.min)}〜${SettingsSchema.formatNumber(d, d.max)}" +
+                "（刻み ${SettingsSchema.formatNumber(d, d.step)}）"
+        } else {
+            null
         }
-        return col
+        return stepperRow(d.label, d.description, edit, footnote) { dir -> step(dir) }
     }
 
     private fun textRow(d: SettingDef): View {
-        val col = LinearLayout(this)
-        col.orientation = LinearLayout.VERTICAL
-        col.setPadding(0, dp(8), 0, dp(8))
-        col.addView(body(d.label))
-        if (d.description.isNotEmpty()) col.addView(body(d.description, secondary = true))
-        val edit = EditText(this)
+        val edit = inputField()
         edit.setSingleLine(true)
         edit.imeOptions = EditorInfo.IME_ACTION_DONE
         edit.setText((d.value as? String) ?: "")
@@ -270,7 +259,6 @@ class SettingsFormActivity : Activity() {
             }
         }
         edit.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) commit() }
-        col.addView(edit)
-        return col
+        return textFieldRow(d.label, d.description, edit)
     }
 }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="nagi_bg">#0F1114</color>
+    <color name="nagi_card">#1C1F24</color>
+    <color name="nagi_text">#E8EAED</color>
+    <color name="nagi_text_secondary">#9AA0A8</color>
+    <color name="nagi_divider">#2C3036</color>
+    <color name="nagi_accent">#6DB6D6</color>
+    <color name="nagi_on_accent">#08222E</color>
+    <color name="nagi_accent_soft">#23414F</color>
+    <color name="nagi_danger">#FF8A80</color>
+    <color name="nagi_danger_soft">#4A2523</color>
+    <color name="nagi_success">#81C995</color>
+    <color name="nagi_success_soft">#1F3A28</color>
+    <color name="nagi_warning">#FFB74D</color>
+    <color name="nagi_warning_soft">#4A3A1E</color>
+    <color name="nagi_neutral">#6B7280</color>
+    <color name="nagi_ripple">#33FFFFFF</color>
+</resources>
