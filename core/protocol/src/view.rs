@@ -115,6 +115,9 @@ pub enum CandidateSource {
     Rewriter,
     /// 曖昧入力（タイプミス補正の「もしかして」候補。`input.fuzzy.enabled`）
     Fuzzy,
+    /// グライド入力（QWERTY のなぞり軌跡から求めた読みを変換した候補。`input.glide`）。
+    /// `CandidateView.reading` に、その候補の元になった読みが入る
+    Glide,
 }
 
 /// 単一の候補

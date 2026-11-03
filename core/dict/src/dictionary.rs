@@ -481,6 +481,25 @@ impl Dictionary {
         }
     }
 
+    /// すべての読みを読み（UTF-8 のバイト順）の昇順に列挙し、各読みの最良（最小）の語コストとともに
+    /// `f` に渡す。グライド入力の索引（`nagi-glide`）の構築など、辞書全体を 1 回舐める用途向け。
+    /// 語の一覧や読みの `String` は作らない
+    pub fn for_each_reading(&self, mut f: impl FnMut(&str, u16)) {
+        use fst::{IntoStreamer, Streamer};
+        let mut stream = self.trie.stream().into_stream();
+        while let Some((key, group)) = stream.next() {
+            let Ok(reading) = std::str::from_utf8(key) else {
+                continue;
+            };
+            let range = self.group_range(group as u32);
+            if range.is_empty() {
+                continue;
+            }
+            // グループ内の語はコスト昇順なので、先頭が最良
+            f(reading, self.cost_of(range.start));
+        }
+    }
+
     /// 読みが `prefix` で始まる語（`prefix` 自身を含む）が辞書にあるか。曖昧入力（`nagi-fuzzy`）が、
     /// 展開した読みの候補のうち辞書に接頭辞が無いものを早期に捨てるために使う。語の一覧は作らない
     pub fn has_reading_prefix(&self, prefix: &str) -> bool {

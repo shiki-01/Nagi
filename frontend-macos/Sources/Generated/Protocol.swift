@@ -20,6 +20,9 @@ public enum CandidateSource: String, Codable {
 	case rewriter
 	/// 曖昧入力（タイプミス補正の「もしかして」候補。`input.fuzzy.enabled`）
 	case fuzzy
+	/// グライド入力（QWERTY のなぞり軌跡から求めた読みを変換した候補。`input.glide`）。
+	/// `CandidateView.reading` に、その候補の元になった読みが入る
+	case glide
 }
 
 /// 単一の候補
@@ -216,6 +219,47 @@ public struct FloatRange: Codable {
 		self.min = min
 		self.max = max
 		self.step = step
+	}
+}
+
+/// グライド入力の軌跡の点 1 つ。座標は `set_layout_geometry` の `keys` と同じ座標系
+/// （キーボード view のローカル座標。左上が原点、単位は問わない）
+public struct GlidePoint: Codable {
+	/// 横
+	public let x: Double
+	/// 縦
+	public let y: Double
+	/// 時刻（ミリ秒。ストローク内で単調増加。原点は任意。現状の認識では使わない）
+	public let t: Double
+
+	public init(x: Double, y: Double, t: Double) {
+		self.x = x
+		self.y = y
+		self.t = t
+	}
+}
+
+/// `glide_input` メソッドの要求パラメータ。応答は `process_key` と同じ [`ProcessKeyResult`]。
+/// 
+/// 1 ストローク（指を置いてから離すまで）= 1 語。`set_layout_geometry` で QWERTY のキー矩形が
+/// 渡されていて、`input.glide` が有効なときだけ認識する（それ以外・認識できない軌跡は
+/// `consumed = false` で何も変えない）。認識できたら、入力中だった文字列は確定し、
+/// 認識した読み（最有力）を入力中（Composing）に入れて、読みの候補を変換した表記を
+/// 出所 `Glide` の候補として返す（`CandidateView.reading` に読みが入る）。
+/// 座標系・点数・時刻の使い方は `docs/glide-input.md`
+public struct GlideInputParams: Codable {
+	/// セッション ID
+	public let session_id: String
+	/// 軌跡（時刻順。2000 点まで。超えた分は等間隔に間引く）
+	public let points: [GlidePoint]
+	/// 軌跡を取ったレイアウトの識別子（`set_layout_geometry` の `layout_id`）。渡した場合、
+	/// コアが保持している配置の識別子と違えば（レイアウトの切替直後の古い軌跡）認識しない
+	public let layout_id: String?
+
+	public init(session_id: String, points: [GlidePoint], layout_id: String?) {
+		self.session_id = session_id
+		self.points = points
+		self.layout_id = layout_id
 	}
 }
 

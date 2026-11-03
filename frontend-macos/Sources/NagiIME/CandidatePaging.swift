@@ -29,6 +29,7 @@ public enum CandidatePaging {
         case .kana: return "かな"
         case .rewriter: return "変換"
         case .fuzzy: return "もしかして"
+        case .glide: return "なぞり"
         }
     }
 

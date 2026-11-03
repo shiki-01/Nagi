@@ -397,6 +397,14 @@ pub fn definitions() -> Vec<SettingDef> {
             SettingKind::Bool,
         ),
         def(
+            "input.glide",
+            "入力",
+            "グライド入力（なぞり入力）",
+            "QWERTY キーボードで、指を離さずに文字の上をなぞって 1 語を入力できるようにします（タッチ入力のみ）。なぞった軌跡から読みの候補を求め、変換候補として出します。",
+            SettingKind::Bool,
+        )
+        .platforms(SettingPlatforms::Ios),
+        def(
             "input.auto_english.mode",
             "入力",
             "英語の自動判定",
@@ -685,6 +693,7 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         }
         "input.dakuten_cycle" => Some(Text(config.input.dakuten_cycle.as_str().to_string())),
         "input.romaji_carryover" => Some(Bool(config.input.romaji_carryover)),
+        "input.glide" => Some(Bool(config.input.glide)),
         "input.auto_english.mode" => {
             Some(Text(config.input.auto_english.mode.as_str().to_string()))
         }

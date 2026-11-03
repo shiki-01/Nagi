@@ -41,6 +41,16 @@ pub const EXPANSION_BUDGET_MS: u64 = if cfg!(debug_assertions) { 50 } else { 2 }
 /// 辞書に問い合わせる補正読みの最大数（展開は上位をこれだけ返す。各々 Viterbi を 1 回走らせる）
 const MAX_EXPANDED: usize = 30;
 
+/// 再採点（LLM）に渡す補正候補の最大数（入力そのままの読みは別に 1 件加える）。
+/// 1 件ずつ prefill が要るので、同期予算に収めるための上限
+pub const RESCORE_MAX: usize = 8;
+
+/// 再採点で、打ち間違いのコスト（`nagi-fuzzy` の編集コスト）を LM の対数確率（自然対数）に
+/// 換算する係数。編集コストは置換 2.0〜3.0 など「負の対数尤度風の相対値」で、azooKey の
+/// `ZenzaiTypoCandidateGenerator`（`score = lmScore - channelCost`、置換 2.0・脱落 3.0・転置 2.0）と
+/// 近い尺度なので 1.0 とする。F0 の評価（`nagi-fuzzy-eval --rescore`）で調整する前提の初期値
+pub const CHANNEL_COST_WEIGHT: f32 = 1.0;
+
 /// 設定から決まる、曖昧入力の実行時パラメータ
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FuzzySettings {
@@ -56,6 +66,12 @@ pub struct FuzzySettings {
     pub use_touch: bool,
     /// タッチ位置のばらつき（標準偏差。キー間隔を 1 とする）。設定項目ではなく評価用の調整値
     pub touch_sigma: f32,
+    /// 補正候補を文脈つきの LM で再採点するか（`input.fuzzy.rescore`）
+    pub rescore: bool,
+    /// 高確信の補正を Space 変換の第 1 候補に自動採用するか（`input.fuzzy.auto_apply`）
+    pub auto_apply: bool,
+    /// 自動採用の閾値（再採点後のスコア差。自然対数の単位。`input.fuzzy.auto_apply_margin`）
+    pub auto_apply_margin: f32,
 }
 
 impl Default for FuzzySettings {
@@ -74,6 +90,9 @@ impl FuzzySettings {
             kinds: EditKinds::parse(&section.kinds),
             use_touch: section.use_touch_coords,
             touch_sigma: nagi_fuzzy::DEFAULT_TOUCH_SIGMA,
+            rescore: section.rescore,
+            auto_apply: section.auto_apply,
+            auto_apply_margin: section.auto_apply_margin as f32,
         }
     }
 }
@@ -87,6 +106,39 @@ pub struct Suggestion {
     pub surface: String,
     /// 並べ替え用の総合コスト（辞書コスト尺度。小さいほど良い）
     pub score: f32,
+    /// 展開時の編集コスト（`nagi-fuzzy` の尺度。チャネルコスト）
+    pub channel_cost: f32,
+    /// 再採点（LM）の結果: 補正候補の `lmScore - channelCost` から、入力そのままの読みの
+    /// `lmScore` を引いた差（大きいほど補正が有利）。再採点しなかった・できなかったときは `None`
+    pub lm_margin: Option<f32>,
+}
+
+/// 文脈つきで「読み → 表記」の尤もらしさ（対数確率。大きいほど良い）を求めるもの。
+/// 実体は `nagi-infer` の [`nagi_infer::ConversionModel::score`]（Pipeline が包む）。
+/// テストではモックに差し替える
+pub trait ReadingScorer {
+    /// `items` の各 `(読み, 表記)` の対数確率を返す。`budget` 内に求められない・モデルが無い・
+    /// 失敗したときは `None`（呼び出し側が辞書のスコアにフォールバックする）
+    fn score(
+        &self,
+        left_context: &str,
+        items: &[(String, String)],
+        budget: Duration,
+    ) -> Option<Vec<f32>>;
+}
+
+/// 再採点の結果、補正を自動採用してよいか。`suggestions` は [`FuzzyEngine::suggest_with`] の結果
+/// （先頭が最良）。先頭の `lm_margin` が閾値以上ならその提案を返す
+pub fn auto_apply_pick<'a>(
+    suggestions: &'a [Suggestion],
+    settings: &FuzzySettings,
+) -> Option<&'a Suggestion> {
+    if !settings.auto_apply {
+        return None;
+    }
+    suggestions
+        .first()
+        .filter(|s| s.lm_margin.is_some_and(|m| m >= settings.auto_apply_margin))
 }
 
 /// `nagi-dict` の辞書を `nagi-fuzzy` の索引として見せる
@@ -214,7 +266,8 @@ impl FuzzyEngine {
         )
     }
 
-    /// `reading`（入力中の読み）の補正の提案を、良い順に最大 `settings.max_candidates` 件返す。
+    /// `reading`（入力中の読み）の補正の提案を、良い順に最大 `settings.max_candidates` 件返す
+    /// （辞書のスコアだけ。再採点はしない）。
     ///
     /// `known` は、学習・ユーザー辞書などで読みがすでに意味を持つとき（クリーンとみなして何も出さない）。
     /// `budget` は展開に使える時間の上限
@@ -229,22 +282,84 @@ impl FuzzyEngine {
         known: bool,
         budget: Duration,
     ) -> Vec<Suggestion> {
-        if !settings.enabled || known || settings.max_candidates == 0 || reading.is_empty() {
+        let mut out = self
+            .collect(dict, overlay, reading, typing, settings, known, budget)
+            .map(|c| c.suggestions)
+            .unwrap_or_default();
+        out.truncate(settings.max_candidates);
+        out
+    }
+
+    /// [`Self::suggest`] に、文脈つきの LM による再採点（`settings.rescore`）を足したもの。
+    ///
+    /// 辞書のスコアで絞った上位 [`RESCORE_MAX`] 件の補正読みと、入力そのままの読みを `scorer` に
+    /// 評価させ、`lmScore - CHANNEL_COST_WEIGHT * channelCost` の降順に並べ替える（入力そのままは
+    /// channelCost 0 の基準）。`scorer` が無い・`None` を返した（予算超過・モデルなし）ときは
+    /// 辞書のスコアの順のまま `lm_margin` を `None` にして返す。
+    /// `rescore_budget` は再採点に使える時間の上限
+    #[allow(clippy::too_many_arguments)] // `suggest` の引数に再採点の道具・文脈・予算が加わる
+    pub fn suggest_with(
+        &self,
+        dict: &Dictionary,
+        overlay: &Overlay,
+        reading: &str,
+        typing: &TypingHint<'_>,
+        settings: &FuzzySettings,
+        known: bool,
+        budget: Duration,
+        rescoring: Option<(&dyn ReadingScorer, &str)>,
+    ) -> Vec<Suggestion> {
+        let Some(mut collected) =
+            self.collect(dict, overlay, reading, typing, settings, known, budget)
+        else {
             return Vec::new();
+        };
+        if let Some((scorer, left_context)) = rescoring.filter(|_| settings.rescore) {
+            collected.suggestions.truncate(RESCORE_MAX);
+            rerank(
+                &mut collected.suggestions,
+                reading,
+                &collected.typed_surface,
+                scorer,
+                left_context,
+                budget,
+            );
+        }
+        collected.suggestions.truncate(settings.max_candidates);
+        collected.suggestions
+    }
+
+    /// 補正の提案を辞書のスコアの良い順に全部集める（個数の上限は掛けない）。クリーンな入力・
+    /// 補正なしなら `None`
+    #[allow(clippy::too_many_arguments)]
+    fn collect(
+        &self,
+        dict: &Dictionary,
+        overlay: &Overlay,
+        reading: &str,
+        typing: &TypingHint<'_>,
+        settings: &FuzzySettings,
+        known: bool,
+        budget: Duration,
+    ) -> Option<Collected> {
+        if !settings.enabled || known || settings.max_candidates == 0 || reading.is_empty() {
+            return None;
         }
         // クリーンな入力: 読みが辞書語（システム辞書・ユーザー辞書・スニペット）として完全一致する
         if !dict.lookup(reading).is_empty()
             || !overlay.lookup(reading).is_empty()
             || !overlay.snippets(reading).is_empty()
         {
-            return Vec::new();
+            return None;
         }
         let corrections = self.expand(dict, reading, typing, settings, budget);
         if corrections.is_empty() {
-            return Vec::new();
+            return None;
         }
         // 元の読みの Viterbi コスト（辞書に無い文字は大きなコストになる）。補正はこれより良くなければ捨てる
-        let typed_cost = best_path(dict, overlay, reading).map_or(f32::MAX, |(_, c)| c);
+        let typed = best_path(dict, overlay, reading);
+        let typed_cost = typed.as_ref().map_or(f32::MAX, |(_, c)| *c);
+        let typed_surface = typed.map_or_else(|| reading.to_string(), |(s, _)| s);
         // 元の読みがすでに辞書の語の連なりとして成り立っている（かなの打ち間違いが別の語になった
         // 可能性より、打った通りである可能性が高い）ときは、補正に強い証拠を求める
         let per_edit = if covered(&DictIndex(dict), reading) {
@@ -265,16 +380,69 @@ impl FuzzyEngine {
                 reading: c.reading,
                 surface,
                 score,
+                channel_cost: c.cost,
+                lm_margin: None,
             });
+        }
+        if out.is_empty() {
+            return None;
         }
         out.sort_by(|a, b| {
             a.score
                 .total_cmp(&b.score)
                 .then_with(|| a.reading.cmp(&b.reading))
         });
-        out.truncate(settings.max_candidates);
-        out
+        Some(Collected {
+            suggestions: out,
+            typed_surface,
+        })
     }
+}
+
+/// [`FuzzyEngine::collect`] の結果
+struct Collected {
+    /// 辞書のスコアの良い順
+    suggestions: Vec<Suggestion>,
+    /// 入力そのままの読みの最良の表記（辞書に無ければ読みそのまま）
+    typed_surface: String,
+}
+
+/// `suggestions` を `lmScore - CHANNEL_COST_WEIGHT * channelCost` の降順に並べ替え、`lm_margin` を入れる。
+/// 評価できなければ（`scorer` が `None` を返す・件数が合わない）何も変えない
+fn rerank(
+    suggestions: &mut [Suggestion],
+    reading: &str,
+    typed_surface: &str,
+    scorer: &dyn ReadingScorer,
+    left_context: &str,
+    budget: Duration,
+) {
+    // LM が -inf を返す（文脈長の超過など）と比較できないので、十分低い有限値に丸める
+    const FLOOR: f32 = -1000.0;
+    let mut items: Vec<(String, String)> = Vec::with_capacity(suggestions.len() + 1);
+    items.push((reading.to_string(), typed_surface.to_string()));
+    items.extend(
+        suggestions
+            .iter()
+            .map(|s| (s.reading.clone(), s.surface.clone())),
+    );
+    let Some(scores) = scorer.score(left_context, &items, budget) else {
+        return;
+    };
+    if scores.len() != items.len() {
+        return;
+    }
+    let clean = |x: f32| if x.is_finite() { x.max(FLOOR) } else { FLOOR };
+    let base = clean(scores[0]);
+    for (s, lm) in suggestions.iter_mut().zip(&scores[1..]) {
+        s.lm_margin = Some(clean(*lm) - CHANNEL_COST_WEIGHT * s.channel_cost - base);
+    }
+    // 安定ソート: 差が同じなら辞書のスコアの順を保つ
+    suggestions.sort_by(|a, b| {
+        b.lm_margin
+            .unwrap_or(f32::MIN)
+            .total_cmp(&a.lm_margin.unwrap_or(f32::MIN))
+    });
 }
 
 /// 読みの最良の変換（表記）と Viterbi の総コスト

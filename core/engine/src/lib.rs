@@ -17,8 +17,8 @@ pub mod touch;
 pub use action::{Action, Direction};
 pub use apps::{AppClass, AppsConfig};
 pub use backend::{
-    BackendCandidate, BackendSegment, BackendSentence, Completion, ConversionBackend, KanaBackend,
-    MockBackend, TypingHint,
+    BackendCandidate, BackendSegment, BackendSentence, Completion, ConversionBackend, GlideReading,
+    KanaBackend, MockBackend, TypingHint,
 };
 pub use engine::{
     AlnumWidth, AutoEnglishMode, Engine, EngineConfig, InitialView, SessionSnapshot, StateKind,

@@ -5,8 +5,8 @@
 
 use crate::kana::to_katakana;
 use crate::observer::CommitContext;
-use nagi_protocol::SetLayoutGeometryParams;
 use nagi_protocol::view::CandidateSource;
+use nagi_protocol::{GlidePoint, SetLayoutGeometryParams};
 use nagi_romaji::Stroke;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,6 +39,15 @@ pub struct BackendCandidate {
     pub sources: Vec<CandidateSource>,
     /// 曖昧入力（出所 `Fuzzy`）の候補の、補正後の読み。補正でなければ `None`
     pub reading: Option<String>,
+}
+
+/// [`ConversionBackend::glide_readings`] が返す、グライド入力（なぞり軌跡）から求めた読みの候補
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlideReading {
+    /// ひらがなの読み
+    pub reading: String,
+    /// 認識のスコア（大きいほど良い。比較にだけ使う）
+    pub score: f32,
 }
 
 /// 曖昧入力の追加情報（実際の打鍵列とキー配置）。どちらも任意で、無ければ読みからの復元・内蔵の QWERTY
@@ -147,6 +156,33 @@ pub trait ConversionBackend: Send + Sync {
         Vec::new()
     }
 
+    /// 曖昧入力の自動採用（`input.fuzzy.auto_apply`）: 入力そのままの読みより明らかに尤もらしい補正が
+    /// あれば、その候補（出所 [`CandidateSource::Fuzzy`]、`reading` は補正後の読み）を 1 件返す。
+    /// 確信が足りない・無効・再採点できない（モデルなし・予算超過）ときは `None`（既定実装は非対応）。
+    /// Space 変換の開始時だけ呼ばれ、採用しても元の読みの候補は一覧に残る
+    fn fuzzy_auto_apply(
+        &self,
+        reading: &str,
+        typing: &TypingHint<'_>,
+        left_context: &str,
+    ) -> Option<BackendCandidate> {
+        let _ = (reading, typing, left_context);
+        None
+    }
+
+    /// グライド入力: QWERTY 上のなぞり軌跡 `points`（`geometry` のキー矩形と同じ座標系）から、
+    /// 読み（ひらがな）の候補を良い順に最大 `limit` 件。表記への変換は呼び出し側（engine）が
+    /// `convert_sentence` などで行う。認識できない・非対応なら空（既定実装は非対応）
+    fn glide_readings(
+        &self,
+        points: &[GlidePoint],
+        geometry: &SetLayoutGeometryParams,
+        limit: usize,
+    ) -> Vec<GlideReading> {
+        let _ = (points, geometry, limit);
+        Vec::new()
+    }
+
     /// 予測変換の候補（学習キャッシュ・ユーザー辞書の前方一致。良い順、最大 `limit` 件）。
     /// `prefix` は入力中の読み（ひらがな）。既定実装は非対応（空を返す）
     fn predict(&self, prefix: &str, left_context: &str, limit: usize) -> Vec<BackendCandidate> {
@@ -242,6 +278,8 @@ pub struct MockBackend {
     loanwords: HashMap<String, Vec<String>>,
     /// Rewriter（既定チェーン）の候補を `segment_candidates` の末尾と `literal_candidates` に出すか
     rewriter: bool,
+    /// グライド入力の認識結果（どの軌跡にも同じ読みを返す。テスト用）
+    glide: Vec<GlideReading>,
 }
 
 impl MockBackend {
@@ -279,6 +317,19 @@ impl MockBackend {
         self
     }
 
+    /// グライド入力の認識結果を登録する（どの軌跡にも、良い順のこの読みを返す。テスト用）
+    pub fn with_glide(mut self, readings: Vec<&str>) -> Self {
+        self.glide = readings
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| GlideReading {
+                reading: r.to_string(),
+                score: -(i as f32),
+            })
+            .collect();
+        self
+    }
+
     /// 次語予測の候補を登録する: 直前の語 → 次の語（テスト用）
     pub fn with_next_words(mut self, prev: &str, candidates: Vec<&str>) -> Self {
         self.next_words.insert(
@@ -310,6 +361,15 @@ impl MockBackend {
 impl ConversionBackend for MockBackend {
     fn name(&self) -> &str {
         "mock"
+    }
+
+    fn glide_readings(
+        &self,
+        _points: &[GlidePoint],
+        _geometry: &SetLayoutGeometryParams,
+        limit: usize,
+    ) -> Vec<GlideReading> {
+        self.glide.iter().take(limit).cloned().collect()
     }
 
     fn symbol_candidates(&self, reading: &str) -> Vec<String> {

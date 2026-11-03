@@ -18,8 +18,9 @@ use crate::observer::{CommitContext, CommitObserver, CommittedSegment};
 use crate::touch;
 use nagi_protocol::key::{KeyEvent, KeyKind};
 use nagi_protocol::methods::{
-    FlickDetail, KanaKey, KeyGesture, ProcessKeyResult, ReadingInput, RestoreSessionParams,
-    SetContextParams, SetLayoutGeometryParams, TouchAction, TouchDirection, TouchPoint,
+    FlickDetail, GlideInputParams, KanaKey, KeyGesture, ProcessKeyResult, ReadingInput,
+    RestoreSessionParams, SetContextParams, SetLayoutGeometryParams, TouchAction, TouchDirection,
+    TouchPoint,
 };
 use nagi_protocol::utf16;
 use nagi_protocol::view::{CandidateView, CandidatesView, InputMode, PreeditView};
@@ -41,6 +42,8 @@ const CANDIDATE_LIMIT: usize = 50;
 const FORM_CANDIDATES_MAX: usize = 4;
 /// 英語の綴りの「もしかして」の最大件数
 const ENGLISH_SPELLINGS_MAX: usize = 3;
+/// グライド入力で認識した読みを、候補として出す最大数
+const GLIDE_READINGS: usize = 5;
 
 /// 候補ウィンドウの初期表示（`conversion.initial_view`。設計書 §4.4）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -135,6 +138,8 @@ pub struct EngineConfig {
     /// 曖昧入力（`input.fuzzy.enabled`）。ローマ字の取りこぼしが混ざる入力にも入力中の候補と
     /// Space 変換の候補を出し、補正の候補（出所 `Fuzzy`）を混ぜられるようにする
     pub fuzzy_input: bool,
+    /// グライド入力（`input.glide`）。有効なときだけ `glide_input` がなぞり軌跡を認識する
+    pub glide_input: bool,
     /// アプリごとの既定モード・素通し（`[apps]`）
     pub apps: AppsConfig,
     /// 英語の自動判定（`input.auto_english.mode`。H-51）
@@ -162,6 +167,7 @@ impl Default for EngineConfig {
             dakuten_order: touch::DakutenOrder::default(),
             romaji_carryover: true,
             fuzzy_input: false,
+            glide_input: false,
             apps: AppsConfig::default(),
             auto_english: AutoEnglishMode::default(),
         }
@@ -271,6 +277,9 @@ struct Session {
     touch_toggle: Option<TouchToggle>,
     /// 入力中（変換前）の候補。バックグラウンドで作る（`refresh_composing_candidates`）
     composing_cands: Option<ComposingCands>,
+    /// 直前のグライド入力で認識した読みの候補。入力中の読みが `reading` と一致する間だけ、
+    /// 入力中の候補の先頭に変換結果を並べる（Composing を抜けると捨てる）
+    glide: Option<GlideState>,
     /// 入力中のサジェストの選択位置（`None` = 未選択）。サジェストが表示されている間だけ意味を持ち、
     /// 選択キー（`SuggestNext` / `SuggestPrev`）以外の操作・サジェストの入れ替わり・表示が消える
     /// ことで `None` に戻る
@@ -365,9 +374,20 @@ impl RawMap {
     }
 }
 
+/// グライド入力の認識結果（入力中の読みの元）
+#[derive(Debug, Clone, PartialEq)]
+struct GlideState {
+    /// 最有力の読み（入力中の文字列に入れたもの）
+    reading: String,
+    /// 認識した読み（良い順。先頭は `reading` と同じ）
+    readings: Vec<String>,
+}
+
 /// 入力中（変換前）の候補の一覧。`reading` が現在の入力と一致する間だけ表示と選択に使う
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ComposingCands {
+    /// 一部の候補だけを先に出したもの（グライド入力の直後）。バックグラウンドで全体を作り直す
+    partial: bool,
     reading: String,
     /// 計算時点の左文脈。文脈が変わった（同じ読みの再入力でも）ら作り直す
     left_context: String,
@@ -658,6 +678,7 @@ impl Engine {
             pending_reconvert: false,
             touch_toggle: None,
             composing_cands: None,
+            glide: None,
             suggest_selected: None,
             last_word: None,
             next_words: Vec::new(),
@@ -716,6 +737,190 @@ impl Engine {
         let result = self.finish(&mut sess, consumed, commit);
         self.sessions.insert(session_id.to_string(), sess);
         result
+    }
+
+    /// `glide_input` メソッド（タッチ入力）: QWERTY のなぞり軌跡から読みを求めて入力する。
+    /// 1 ストローク = 1 語。`input.glide` が無効・配置（`set_layout_geometry`）が無い・ひらがなモードでない・
+    /// 認識できないときは何も変えず消費しない。認識できたら、入力中・変換中の内容は確定してから、
+    /// 最有力の読みを入力中（Composing）に入れ、認識した読みを変換した表記を出所 `Glide` の候補にする
+    /// （選ぶとその候補の読みで確定・学習する）
+    pub fn glide_input(&mut self, params: &GlideInputParams) -> ProcessKeyResult {
+        let mut sess = self.take_session(&params.session_id);
+        sess.origins.clear();
+        let mut commit = String::new();
+        let consumed = self.apply_glide(&mut sess, params, &mut commit);
+        let result = self.finish(&mut sess, consumed, commit);
+        self.sessions.insert(params.session_id.clone(), sess);
+        result
+    }
+
+    fn apply_glide(
+        &self,
+        sess: &mut Session,
+        params: &GlideInputParams,
+        commit: &mut String,
+    ) -> bool {
+        if !self.config.glide_input || sess.mode != InputMode::Hiragana {
+            return false;
+        }
+        let Some(geometry) = sess.geometry.clone() else {
+            return false;
+        };
+        if params
+            .layout_id
+            .as_ref()
+            .is_some_and(|id| *id != geometry.layout_id)
+        {
+            return false;
+        }
+        // 認識に失敗したときに入力中の内容を動かさないよう、確定の前に認識する
+        let found = self
+            .backend
+            .glide_readings(&params.points, &geometry, GLIDE_READINGS);
+        let readings: Vec<String> = found
+            .into_iter()
+            .map(|g| g.reading)
+            .filter(|r| !r.is_empty())
+            .collect();
+        let Some(top) = readings.first().cloned() else {
+            return false;
+        };
+        // 前の語（入力中・変換中）は確定して、新しい語を始める。直前もグライド入力で、まだ読みが
+        // そのままなら、先頭の候補（変換結果）で確定する（選ぶのを省いた次の語へ進めるように）
+        if !matches!(sess.state, State::Direct) {
+            let previous_glide = matches!(sess.state, State::Composing)
+                && sess.glide.as_ref().is_some_and(|g| {
+                    sess.composer.text() == g.reading && !sess.composer.has_pending()
+                })
+                && sess
+                    .composing_cands
+                    .as_ref()
+                    .and_then(|c| c.items.first())
+                    .is_some_and(|i| i.sources.contains(&CandidateSource::Glide));
+            if !(previous_glide && self.select_composing(sess, 0, commit)) {
+                self.commit_all(sess, commit);
+            }
+        }
+        sess.last_commit = None;
+        sess.touch_toggle = None;
+        sess.live_conversion = None;
+        sess.live_suppressed = false;
+        sess.composer.clear();
+        let mut chars = top.chars();
+        if let Some(first) = chars.next() {
+            self.insert_stroke(
+                sess,
+                Stroke {
+                    ch: first,
+                    touch: None,
+                    flick: None,
+                },
+                commit,
+            );
+        }
+        for c in chars {
+            sess.composer.insert_char(c);
+        }
+        sess.glide = Some(GlideState {
+            reading: top.clone(),
+            readings,
+        });
+        // 認識した読みの変換結果を、すぐに候補として出す。残り（通常の候補）はバックグラウンドで足す
+        let items = self.glide_items(sess, &top);
+        sess.suggest_selected = None;
+        sess.composing_cands = Some(ComposingCands {
+            partial: true,
+            reading: top,
+            left_context: sess.left_context.clone(),
+            items,
+        });
+        true
+    }
+
+    /// グライド入力で認識した各読みの変換結果（出所 `Glide`）。最有力の読みは左文脈つきの
+    /// 文変換（辞書 + LLM）、ほかの読みは軽い辞書・学習の最良候補（遅延を増やさないため LLM は通さない）。
+    /// 同じ表記は 1 つにまとめる。入力中の読みが認識結果と食い違っていれば空
+    fn glide_items(&self, sess: &Session, reading: &str) -> Vec<ComposingItem> {
+        let Some(glide) = sess.glide.as_ref().filter(|g| g.reading == reading) else {
+            return Vec::new();
+        };
+        let left = tail_chars(&sess.left_context, LEFT_CONTEXT_CHARS);
+        let total = reading.chars().count();
+        let mut items: Vec<ComposingItem> = Vec::new();
+        for (i, alt) in glide.readings.iter().enumerate() {
+            let (surface, mut sources) = if i == 0 {
+                let segments = self.backend.convert_sentence(alt, &left);
+                let joined: String = segments.iter().map(|s| s.reading.as_str()).collect();
+                if segments.is_empty() || joined != *alt {
+                    (alt.clone(), vec![CandidateSource::Kana])
+                } else {
+                    let mut sources: Vec<CandidateSource> = Vec::new();
+                    for s in segments.iter().flat_map(|s| &s.sources) {
+                        if !sources.contains(s) {
+                            sources.push(*s);
+                        }
+                    }
+                    (
+                        segments.iter().map(|s| s.surface.as_str()).collect(),
+                        sources,
+                    )
+                }
+            } else {
+                match self
+                    .backend
+                    .prefix_candidates(alt, &left, 1)
+                    .into_iter()
+                    .next()
+                {
+                    Some(c) => (c.surface, c.sources),
+                    None => (alt.clone(), vec![CandidateSource::Kana]),
+                }
+            };
+            sources.retain(|s| *s != CandidateSource::Glide);
+            sources.insert(0, CandidateSource::Glide);
+            if let Some(existing) = items.iter_mut().find(|x| x.surface == surface) {
+                for s in sources {
+                    if !existing.sources.contains(&s) {
+                        existing.sources.push(s);
+                    }
+                }
+            } else {
+                items.push(ComposingItem {
+                    surface,
+                    // 読みが違っても候補は入力全体を置き換える（選ぶとその候補の読みで確定する）
+                    covers: total,
+                    sources,
+                    reading: Some(alt.clone()),
+                });
+            }
+        }
+        items
+    }
+
+    /// 入力中の候補の先頭に、グライド入力の候補（`glide_items`）を並べる。通常の候補のうち同じ表記
+    /// （読み全体を置き換えるもの）は 1 つにまとめ、出所を併記する
+    fn prepend_glide_items(&self, items: &mut Vec<ComposingItem>, sess: &Session, reading: &str) {
+        let mut glide = self.glide_items(sess, reading);
+        if glide.is_empty() {
+            return;
+        }
+        let total = reading.chars().count();
+        items.retain(|i| {
+            let Some(g) = glide
+                .iter_mut()
+                .find(|g| g.surface == i.surface && i.covers == total)
+            else {
+                return true;
+            };
+            for s in &i.sources {
+                if !g.sources.contains(s) {
+                    g.sources.push(*s);
+                }
+            }
+            false
+        });
+        glide.append(items);
+        *items = glide;
     }
 
     /// `perform_action` メソッド（タッチ入力）: ボタンに対応する操作を直接実行する。
@@ -975,7 +1180,11 @@ impl Engine {
         let sess = self.sessions.get(session_id)?;
         let reading = self.candidate_reading(sess)?;
         match &sess.composing_cands {
-            Some(c) if c.reading == reading && c.left_context == sess.left_context => None,
+            Some(c)
+                if !c.partial && c.reading == reading && c.left_context == sess.left_context =>
+            {
+                None
+            }
             _ => Some(reading),
         }
     }
@@ -1104,6 +1313,7 @@ impl Engine {
                 sess.suggest_selected = None;
             }
             sess.composing_cands = Some(ComposingCands {
+                partial: false,
                 reading: reading.to_string(),
                 left_context: sess.left_context.clone(),
                 items,
@@ -1141,6 +1351,7 @@ impl Engine {
             if self.config.symbol_position == SymbolPosition::Last {
                 self.insert_symbol_items(&mut items, reading);
             }
+            self.prepend_glide_items(&mut items, sess, reading);
             items
         } else {
             // 日本語の読みを作れない（保留中、または曖昧入力が無効）: 英語らしいときだけ、打った通りの文字列と
@@ -2085,6 +2296,7 @@ impl Engine {
         }
         sess.suggest_selected = None;
         sess.composing_cands = Some(ComposingCands {
+            partial: false,
             reading,
             left_context: sess.left_context.clone(),
             items,
@@ -2994,6 +3206,13 @@ impl Engine {
         }
         if how == Start::Convert
             && self.config.fuzzy_input
+            && let Some(conv) = self.start_converting_fuzzy_auto(sess)
+        {
+            sess.state = State::Converting(conv);
+            return;
+        }
+        if how == Start::Convert
+            && self.config.fuzzy_input
             && let Some(conv) = self.start_converting_fuzzy(sess)
         {
             sess.state = State::Converting(conv);
@@ -3187,6 +3406,57 @@ impl Engine {
                 .position(|c| c.surface == selected_surface)
                 .unwrap_or(0);
         }
+        Some(conv)
+    }
+
+    /// 曖昧入力の自動採用（`input.fuzzy.auto_apply`）: 入力全体が 1 つの日本語の読みで、バックエンドが
+    /// 「入力そのままより明らかに尤もらしい補正」を返したとき、その補正を第 1 候補（表示される表記）に
+    /// して候補ウィンドウを開く。入力全体を 1 文節にする（補正は読み全体に対して働くため）。
+    /// 候補一覧には、通常の候補と元の読み（ひらがな・カタカナ）が残るので、選び直して元に戻せる。
+    /// 確信が足りなければ `None`（通常の変換）
+    fn start_converting_fuzzy_auto(&self, sess: &Session) -> Option<Conv> {
+        let reading = match sess.composer.leftover_reading() {
+            Some(r) => r,
+            None => {
+                let pieces = sess.composer.pieces();
+                match pieces.as_slice() {
+                    [p] if p.kind == PieceKind::Japanese => p.text.clone(),
+                    _ => return None,
+                }
+            }
+        };
+        let left = tail_chars(&sess.left_context, LEFT_CONTEXT_CHARS);
+        let typing = TypingSnapshot::of(sess, &reading);
+        let auto = self
+            .backend
+            .fuzzy_auto_apply(&reading, &typing.hint(), &left)?;
+        let mut conv = Conv {
+            segments: vec![Segment {
+                reading: reading.clone(),
+                surface: reading,
+                kind: SegmentKind::Japanese,
+                candidates: None,
+                chunk_id: 0,
+            }],
+            focus: 0,
+            visible: true,
+            range_anchor: None,
+            sentence_alternatives: None,
+        };
+        self.ensure_candidates(&sess.left_context, &sess.raw_map, &mut conv, 0);
+        let set = conv.segments[0].candidates.as_mut()?;
+        // 補正を先頭に置く。同じ表記が通常の候補にあれば（出所は補正で上書きされる）統合する
+        set.items.retain(|c| c.surface != auto.surface);
+        set.items.insert(
+            0,
+            Candidate {
+                surface: auto.surface.clone(),
+                sources: vec![CandidateSource::Fuzzy],
+                reading: auto.reading.clone(),
+            },
+        );
+        set.selected = 0;
+        conv.segments[0].surface = auto.surface;
         Some(conv)
     }
 
@@ -3889,6 +4159,7 @@ impl Engine {
         // 出さない。作り直しはサーバーが入力のたびに予約する）
         if !matches!(sess.state, State::Composing) {
             sess.composing_cands = None;
+            sess.glide = None;
         }
         // サジェストの選択は、表示中で範囲内のときだけ保つ
         if let Some(i) = sess.suggest_selected

@@ -19,6 +19,7 @@ pub fn source_label(source: CandidateSource) -> &'static str {
         CandidateSource::Kana => "かな",
         CandidateSource::Rewriter => "変換",
         CandidateSource::Fuzzy => "もしかして",
+        CandidateSource::Glide => "なぞり",
     }
 }
 

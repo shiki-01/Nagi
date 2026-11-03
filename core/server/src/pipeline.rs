@@ -13,7 +13,8 @@
 //!   辞書の結果で応答する。推論は続行して結果をキャッシュに入れる
 //! - **縮退**: モデルが無い・エラー・`minimal` プロファイルでは辞書だけ、辞書も無ければ読みのまま
 
-use crate::fuzzy::{FuzzyEngine, Suggestion};
+use crate::fuzzy::{FuzzyEngine, ReadingScorer, Suggestion, auto_apply_pick};
+use crate::glide::GlideEngine;
 use crate::runtime::{Effective, Event, ModelControl, Runtime};
 use nagi_dict::{Dictionary, Overlay};
 use nagi_engine::{
@@ -46,6 +47,10 @@ const CALIBRATION_READING: &str = "きょうはいいてんきです";
 
 type SharedModel = Arc<Mutex<Box<dyn ConversionModel>>>;
 type Cache = Arc<Mutex<HashMap<(String, String), String>>>;
+/// 曖昧入力の再採点の結果の記憶: (左文脈, 読み, 表記) → 対数確率
+type ScoreCache = Arc<Mutex<HashMap<(String, String, String), f32>>>;
+/// 再採点の記憶の最大件数（超えたら全部捨てる。入力のたびに同じ組を引くための小さな記憶）
+const SCORE_CACHE_MAX: usize = 512;
 
 /// モデルの解放 / 再読み込みの状態。推論スレッドと共有する
 #[derive(Default)]
@@ -70,8 +75,96 @@ struct Llm {
     model: SharedModel,
     state: Arc<LlmState>,
     cache: Cache,
+    /// 曖昧入力の補正候補の再採点（`ConversionModel::score`）の記憶
+    score_cache: ScoreCache,
     /// 直前に `reconcile_active` を呼んだときのプロファイル（変化を検出するため）
     last_profile: Mutex<nagi_profile::Profile>,
+}
+
+/// 変換モデル（zenz）の `score` で、曖昧入力の補正候補（読み → 表記）を左文脈つきで評価する。
+///
+/// 読みごとにプロンプトが違うので 1 件ずつ `score` を呼ぶ（候補 1 つ）。結果は記憶し、同じ入力で
+/// 候補の一覧が何度も作り直されても再計算しない。`budget` を超えたら残りを諦めて `None`
+/// （そこまでの結果は記憶に残るので、次の呼び出しで続きから進む）
+struct LlmReadingScorer<'a> {
+    llm: &'a Llm,
+    persona: Option<String>,
+    n_threads: usize,
+}
+
+impl ReadingScorer for LlmReadingScorer<'_> {
+    fn score(
+        &self,
+        left_context: &str,
+        items: &[(String, String)],
+        budget: Duration,
+    ) -> Option<Vec<f32>> {
+        let left = tail(left_context, 40);
+        let key = |r: &str, s: &str| (left.clone(), r.to_string(), s.to_string());
+        let cached: Vec<Option<f32>> = {
+            let cache = self.llm.score_cache.lock().ok()?;
+            items
+                .iter()
+                .map(|(r, s)| cache.get(&key(r, s)).copied())
+                .collect()
+        };
+        if cached.iter().all(Option::is_some) {
+            return Some(cached.into_iter().flatten().collect());
+        }
+        let deadline = Instant::now() + budget;
+        let (tx, rx) = mpsc::sync_channel::<bool>(1);
+        let model = self.llm.model.clone();
+        let state = self.llm.state.clone();
+        let cache = self.llm.score_cache.clone();
+        let todo: Vec<(String, String)> = items
+            .iter()
+            .zip(&cached)
+            .filter(|(_, c)| c.is_none())
+            .map(|(it, _)| it.clone())
+            .collect();
+        let persona = self.persona.clone();
+        let n_threads = self.n_threads;
+        let thread_left = left.clone();
+        std::thread::Builder::new()
+            .name("nagi-llm-fuzzy".into())
+            .spawn(move || {
+                let done = (|| {
+                    let mut m = model.lock().ok()?;
+                    if state.is_unloaded() {
+                        return None;
+                    }
+                    m.set_n_threads(n_threads);
+                    for (reading, surface) in &todo {
+                        // 予算を超えたら、モデルのロックを長く握らないよう打ち切る
+                        if Instant::now() >= deadline {
+                            return Some(false);
+                        }
+                        let req = Pipeline::request(reading, &thread_left, persona.as_deref());
+                        let score = *m.score(&req, std::slice::from_ref(surface)).ok()?.first()?;
+                        if let Ok(mut c) = cache.lock() {
+                            if c.len() >= SCORE_CACHE_MAX {
+                                c.clear();
+                            }
+                            c.insert(
+                                (thread_left.clone(), reading.clone(), surface.clone()),
+                                score,
+                            );
+                        }
+                    }
+                    Some(true)
+                })();
+                let _ = tx.send(done.unwrap_or(false));
+            })
+            .ok()?;
+        if !rx.recv_timeout(budget).ok()? {
+            return None;
+        }
+        let cache = self.llm.score_cache.lock().ok()?;
+        items
+            .iter()
+            .map(|(r, s)| cache.get(&key(r, s)).copied())
+            .collect()
+    }
 }
 
 /// LLM の非同期完了通知の置き場
@@ -110,6 +203,8 @@ pub struct Pipeline {
     rewriter: RewriterChain,
     /// 曖昧入力の提案器（隣接表などを最初に使うときに作る。無効な間は作らない）
     fuzzy: OnceLock<FuzzyEngine>,
+    /// グライド入力（なぞり入力）の認識器。索引は `data/dict/nagi-glide.bin`、無ければ最初の認識で辞書から作る
+    glide: GlideEngine,
     /// 英語の自動判定（語彙は `data/english/words.fst`。無ければ特徴量だけの劣化動作）
     english: nagi_english::Judge,
     /// カタカナ語の原語の候補（索引は `data/loanword/loanword.fst`。無ければ出さない）
@@ -188,9 +283,15 @@ impl Pipeline {
             completions: Arc::new(Completions::new()),
             rewriter: RewriterChain::default_chain_with(date_time),
             fuzzy: OnceLock::new(),
+            glide: GlideEngine::default(),
             english: nagi_english::Judge::standard(None),
             loanword: None,
         }
+    }
+
+    /// グライド入力の索引（`nagi-glide.bin`）を取り付ける。`None` なら最初の認識で辞書から作る
+    pub fn set_glide_index(&mut self, index: Option<Arc<nagi_glide::GlideIndex>>) {
+        self.glide.set_index(index);
     }
 
     /// 英単語の語彙を取り付ける（英語の自動判定）。`None` なら特徴量だけで判定する（劣化動作）
@@ -233,6 +334,7 @@ impl Pipeline {
             model: Arc::new(Mutex::new(model)),
             state: Arc::new(LlmState::default()),
             cache: Arc::new(Mutex::new(HashMap::new())),
+            score_cache: Arc::new(Mutex::new(HashMap::new())),
             last_profile: Mutex::new(profile),
         }
     }
@@ -635,8 +737,21 @@ impl Pipeline {
         out
     }
 
+    /// 学習（文脈つき）・ユーザー辞書・スニペットに読みがあるか（意図した入力とみなして補正しない）
+    fn fuzzy_reading_is_known(&self, reading: &str, left_context: &str, overlay: &Overlay) -> bool {
+        let hash = context_hash(&tail(left_context, HASH_CONTEXT_CHARS));
+        self.runtime
+            .learn_lookup(reading, hash)
+            .iter()
+            .any(|(_, score)| *score > 0.0)
+            || !overlay.lookup(reading).is_empty()
+            || !overlay.snippets(reading).is_empty()
+    }
+
     /// 曖昧入力の補正候補（「もしかして」）。無効・辞書なし・読みが既知（学習・ユーザー辞書・辞書語）なら空。
-    /// 展開は `EXPANSION_BUDGET_MS` と同期予算のうち短い方で打ち切る
+    /// 展開は `EXPANSION_BUDGET_MS` と同期予算のうち短い方で打ち切る。
+    /// `input.fuzzy.rescore` が有効、かつ変換モデルがあれば、左文脈 `left` つきで
+    /// モデルに再採点させる（同期予算内に終わらなければ辞書のスコアのまま）
     fn fuzzy_suggestions(
         &self,
         reading: &str,
@@ -644,6 +759,7 @@ impl Pipeline {
         overlay: &Overlay,
         known: bool,
         typing: &TypingHint<'_>,
+        left: &str,
     ) -> Vec<Suggestion> {
         let Some(dict) = &self.dict else {
             return Vec::new();
@@ -651,7 +767,16 @@ impl Pipeline {
         if !eff.fuzzy.enabled {
             return Vec::new();
         }
-        self.fuzzy.get_or_init(FuzzyEngine::new).suggest(
+        let scorer = self
+            .llm
+            .get()
+            .filter(|_| eff.fuzzy.rescore && eff.use_llm)
+            .map(|llm| LlmReadingScorer {
+                llm,
+                persona: eff.persona.clone(),
+                n_threads: eff.n_threads,
+            });
+        self.fuzzy.get_or_init(FuzzyEngine::new).suggest_with(
             dict,
             overlay,
             reading,
@@ -659,6 +784,7 @@ impl Pipeline {
             &eff.fuzzy,
             known,
             eff.sync_budget,
+            scorer.as_ref().map(|s| (s as &dyn ReadingScorer, left)),
         )
     }
 
@@ -958,10 +1084,17 @@ impl Pipeline {
         let fuzzy: Vec<Suggestion> = if light {
             Vec::new()
         } else {
-            self.fuzzy_suggestions(reading, &eff, &overlay, known, &TypingHint::default())
-                .into_iter()
-                .filter(|f| !groups.iter().any(|(_, items)| items.contains(&f.surface)))
-                .collect()
+            self.fuzzy_suggestions(
+                reading,
+                &eff,
+                &overlay,
+                known,
+                &TypingHint::default(),
+                &left_llm,
+            )
+            .into_iter()
+            .filter(|f| !groups.iter().any(|(_, items)| items.contains(&f.surface)))
+            .collect()
         };
         groups.push((
             CandidateSource::Fuzzy,
@@ -1115,6 +1248,18 @@ impl ConversionBackend for Pipeline {
             .collect()
     }
 
+    fn glide_readings(
+        &self,
+        points: &[nagi_protocol::methods::GlidePoint],
+        geometry: &nagi_protocol::methods::SetLayoutGeometryParams,
+        limit: usize,
+    ) -> Vec<nagi_engine::GlideReading> {
+        match &self.dict {
+            Some(dict) => self.glide.readings(dict, points, geometry, limit),
+            None => Vec::new(),
+        }
+    }
+
     fn fuzzy_candidates(
         &self,
         reading: &str,
@@ -1127,15 +1272,9 @@ impl ConversionBackend for Pipeline {
             return Vec::new();
         }
         let overlay = self.runtime.overlay();
-        let hash = context_hash(&tail(left_context, HASH_CONTEXT_CHARS));
-        let known = self
-            .runtime
-            .learn_lookup(reading, hash)
-            .iter()
-            .any(|(_, score)| *score > 0.0)
-            || !overlay.lookup(reading).is_empty()
-            || !overlay.snippets(reading).is_empty();
-        self.fuzzy_suggestions(reading, &eff, &overlay, known, typing)
+        let known = self.fuzzy_reading_is_known(reading, left_context, &overlay);
+        let left = tail(left_context, eff.max_context_chars);
+        self.fuzzy_suggestions(reading, &eff, &overlay, known, typing, &left)
             .into_iter()
             .take(limit)
             .map(|s| BackendCandidate {
@@ -1144,6 +1283,29 @@ impl ConversionBackend for Pipeline {
                 reading: Some(s.reading),
             })
             .collect()
+    }
+
+    fn fuzzy_auto_apply(
+        &self,
+        reading: &str,
+        typing: &TypingHint<'_>,
+        left_context: &str,
+    ) -> Option<BackendCandidate> {
+        let eff = self.runtime.effective();
+        // 自動採用は再採点の結果（モデルが予算内に答えたとき）がなければ判断できない
+        if !eff.fuzzy.enabled || !eff.fuzzy.auto_apply || !eff.fuzzy.rescore || self.dict.is_none()
+        {
+            return None;
+        }
+        let overlay = self.runtime.overlay();
+        let known = self.fuzzy_reading_is_known(reading, left_context, &overlay);
+        let left = tail(left_context, eff.max_context_chars);
+        let suggestions = self.fuzzy_suggestions(reading, &eff, &overlay, known, typing, &left);
+        auto_apply_pick(&suggestions, &eff.fuzzy).map(|s| BackendCandidate {
+            surface: s.surface.clone(),
+            sources: vec![CandidateSource::Fuzzy],
+            reading: Some(s.reading.clone()),
+        })
     }
 
     fn predict_next(

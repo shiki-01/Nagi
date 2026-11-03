@@ -178,6 +178,7 @@ pub fn engine_config_from(config: &Config) -> (EngineConfig, Vec<Event>) {
                 DakutenCycle::DakutenFirst => DakutenOrder::DakutenFirst,
             },
             romaji_carryover: config.input.romaji_carryover,
+            glide_input: config.input.glide,
             fuzzy_input: config.input.fuzzy.enabled,
             auto_english: match config.input.auto_english.mode {
                 nagi_config::AutoEnglishMode::Off => AutoEnglishMode::Off,
@@ -371,6 +372,18 @@ pub fn load_english_lexicon(
             .map_err(|e| format!("英語の語彙の読み込みに失敗しました: {e}"))
     })
 }
+
+/// グライド入力の索引（`<data_dir>/dict/nagi-glide.bin`）を読み込む。ファイルが無ければ `None`
+pub fn load_glide_index(data_dir: Option<&Path>) -> Option<Result<nagi_glide::GlideIndex, String>> {
+    let path = data_dir?.join("dict").join(GLIDE_INDEX_FILE);
+    path.exists().then(|| {
+        nagi_glide::GlideIndex::load(&path)
+            .map_err(|e| format!("グライド索引の読み込みに失敗しました: {e}"))
+    })
+}
+
+/// グライド入力の索引のファイル名（`<data_dir>/dict/` 内）
+pub const GLIDE_INDEX_FILE: &str = "nagi-glide.bin";
 
 /// カタカナ語の原語の索引（`<data_dir>/loanword/loanword.fst`）を読み込む。ファイルが無ければ `None`
 pub fn load_loanword_index(
@@ -657,6 +670,17 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
              cargo xtask fetch-loanword または --install-data で取得できます）"
                 .to_string(),
         ),
+    }
+    // グライド入力の索引（任意。`cargo xtask build-glide-index`）。無ければ最初の認識で辞書から作る
+    match load_glide_index(options.data_dir.as_deref()) {
+        Some(Ok(index)) => {
+            notes.push(format!("グライド索引: OK ({} entries)", index.len()));
+            pipeline.set_glide_index(Some(Arc::new(index)));
+        }
+        Some(Err(e)) => notes.push(format!(
+            "{e}（グライド入力は最初の使用時に辞書から索引を作ります）"
+        )),
+        None => {}
     }
     let pipeline = Arc::new(pipeline);
     // メモリ逼迫・メモリ上限・`unload_model` でのモデルの解放と再読み込みの実行先

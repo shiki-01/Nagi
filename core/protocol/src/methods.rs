@@ -40,6 +40,8 @@ pub mod method {
     pub const INSERT_READING: &str = "insert_reading";
     /// `set_layout_geometry` メソッド（タッチ入力: キーボードのキー矩形。曖昧入力のキー近接に使う）
     pub const SET_LAYOUT_GEOMETRY: &str = "set_layout_geometry";
+    /// `glide_input` メソッド（タッチ入力: QWERTY のなぞり入力の軌跡から読みを求める）
+    pub const GLIDE_INPUT: &str = "glide_input";
     /// `perform_action` メソッド（タッチ UI のボタンから操作を直接実行）
     pub const PERFORM_ACTION: &str = "perform_action";
     /// `select_candidate` メソッド
@@ -637,6 +639,40 @@ impl SetLayoutGeometryParams {
     pub fn is_usable_for_fuzzy(&self) -> bool {
         self.letter_keys().count() >= 10
     }
+}
+
+/// グライド入力の軌跡の点 1 つ。座標は `set_layout_geometry` の `keys` と同じ座標系
+/// （キーボード view のローカル座標。左上が原点、単位は問わない）
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GlidePoint {
+    /// 横
+    pub x: f64,
+    /// 縦
+    pub y: f64,
+    /// 時刻（ミリ秒。ストローク内で単調増加。原点は任意。現状の認識では使わない）
+    pub t: f64,
+}
+
+/// `glide_input` メソッドの要求パラメータ。応答は `process_key` と同じ [`ProcessKeyResult`]。
+///
+/// 1 ストローク（指を置いてから離すまで）= 1 語。`set_layout_geometry` で QWERTY のキー矩形が
+/// 渡されていて、`input.glide` が有効なときだけ認識する（それ以外・認識できない軌跡は
+/// `consumed = false` で何も変えない）。認識できたら、入力中だった文字列は確定し、
+/// 認識した読み（最有力）を入力中（Composing）に入れて、読みの候補を変換した表記を
+/// 出所 `Glide` の候補として返す（`CandidateView.reading` に読みが入る）。
+/// 座標系・点数・時刻の使い方は `docs/glide-input.md`
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GlideInputParams {
+    /// セッション ID
+    pub session_id: String,
+    /// 軌跡（時刻順。2000 点まで。超えた分は等間隔に間引く）
+    pub points: Vec<GlidePoint>,
+    /// 軌跡を取ったレイアウトの識別子（`set_layout_geometry` の `layout_id`）。渡した場合、
+    /// コアが保持している配置の識別子と違えば（レイアウトの切替直後の古い軌跡）認識しない
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub layout_id: Option<String>,
 }
 
 /// 左右の方向

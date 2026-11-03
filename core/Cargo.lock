@@ -979,6 +979,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagi-glide"
+version = "0.1.8"
+dependencies = [
+ "memmap2",
+ "nagi-dict",
+]
+
+[[package]]
 name = "nagi-infer"
 version = "0.1.8"
 dependencies = [
@@ -1054,6 +1062,7 @@ dependencies = [
  "nagi-engine",
  "nagi-english",
  "nagi-fuzzy",
+ "nagi-glide",
  "nagi-infer",
  "nagi-learn",
  "nagi-loanword",
@@ -2157,6 +2166,7 @@ dependencies = [
  "getrandom 0.2.17",
  "nagi-datafetch",
  "nagi-dict",
+ "nagi-glide",
  "serde_json",
  "sha2",
  "zip",

@@ -1,0 +1,24 @@
+[package]
+name = "nagi-glide"
+description = "Nagi グライド入力: QWERTY 上のなぞり軌跡（SHARK2 系の形状 + 位置の照合）から読みの候補を求める。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+nagi-dict.workspace = true
+
+# 非 Windows では索引ファイルを mmap する（iOS 拡張のメモリ上限対策。nagi-dict と同じ方針）
+[target.'cfg(not(windows))'.dependencies]
+memmap2 = "0.9"
+
+[lints.rust]
+# ワークスペース既定は forbid。索引ファイルの mmap（index.rs の map_file 1 箇所）だけ解禁する
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

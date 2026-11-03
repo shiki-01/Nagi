@@ -9,6 +9,7 @@ members = [
     "english",
     "loanword",
     "fuzzy",
+    "glide",
     "dict",
     "infer",
     "protocol",
@@ -36,6 +37,7 @@ nagi-romaji = { path = "romaji" }
 nagi-english = { path = "english" }
 nagi-loanword = { path = "loanword" }
 nagi-fuzzy = { path = "fuzzy" }
+nagi-glide = { path = "glide" }
 nagi-dict = { path = "dict" }
 nagi-datafetch = { path = "datafetch" }
 nagi-infer = { path = "infer" }
@@ -61,4 +63,8 @@ codegen-units = 1
 
 # 辞書の構築・Viterbi は重いので、dev / test でも最適化する
 [profile.dev.package.nagi-dict]
+opt-level = 3
+
+# グライドの索引構築・照合も重いので、dev / test でも最適化する
+[profile.dev.package.nagi-glide]
 opt-level = 3

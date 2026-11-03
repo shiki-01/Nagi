@@ -11,9 +11,9 @@ use nagi_protocol::jsonrpc::{
     ErrorObject, Notification, Request, Response, error_code, parse_message,
 };
 use nagi_protocol::methods::{
-    ConfigError, EmptyResult, ImportSkipReason, ImportUserDictParams, ImportUserDictResult,
-    InitializeParams, InitializeResult, InsertReadingTouchParams, NotifyParams,
-    PerformActionParams, ProcessKeyParams, ReconvertParams, ReloadConfigResult,
+    ConfigError, EmptyResult, GlideInputParams, ImportSkipReason, ImportUserDictParams,
+    ImportUserDictResult, InitializeParams, InitializeResult, InsertReadingTouchParams,
+    NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams, ReloadConfigResult,
     RestoreSessionParams, SelectCandidateParams, ServerCapabilities, SessionParams,
     SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams, UpdateCandidatesParams,
     UpdatePreeditParams, UserDictFormat, method,
@@ -563,6 +563,14 @@ impl Server {
                     p.touch,
                     p.flick,
                 );
+                self.maybe_schedule_live_conversion(&p.session_id);
+                self.maybe_schedule_composing_candidates(&p.session_id);
+                to_value(result)
+            }
+            method::GLIDE_INPUT => {
+                self.require_initialized()?;
+                let p: GlideInputParams = params(req)?;
+                let result = self.engine_lock().glide_input(&p);
                 self.maybe_schedule_live_conversion(&p.session_id);
                 self.maybe_schedule_composing_candidates(&p.session_id);
                 to_value(result)

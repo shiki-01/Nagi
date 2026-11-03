@@ -373,6 +373,16 @@ pub struct FuzzySection {
     /// タッチ座標（キー内の位置・フリックの角度）を補正のコストに使うか。既定: true。
     /// 座標を送らない入力（物理キーボード）には影響しない。
     pub use_touch_coords: bool,
+    /// 補正候補を、左文脈つきで変換モデル（LLM）に再採点させて並べ替えるか。既定: false。
+    /// モデルが無い・同期予算内に終わらないときは辞書のスコアのままにする。
+    pub rescore: bool,
+    /// Space 変換の第 1 候補に、高い確信のある補正を自動で採用するか。既定: false。
+    /// 採用しても元の読みの候補は一覧に残る。再採点（`rescore`）が有効で、モデルが予算内に
+    /// 答えたときだけ働く。
+    pub auto_apply: bool,
+    /// 自動採用の閾値（再採点後の `lmScore - channelCost` の、補正候補と入力そのままの差。
+    /// 自然対数の単位で整数。大きいほど慎重）。1〜30。既定: 8。
+    pub auto_apply_margin: u32,
 }
 
 /// `input.fuzzy.kinds` の既定値（全種類）。
@@ -386,6 +396,9 @@ impl Default for FuzzySection {
             max_candidates: 3,
             kinds: FUZZY_KINDS_ALL.to_string(),
             use_touch_coords: true,
+            rescore: false,
+            auto_apply: false,
+            auto_apply_margin: 8,
         }
     }
 }
@@ -455,6 +468,8 @@ pub struct InputSection {
     pub dakuten_cycle: DakutenCycle,
     /// Backspace で文字を消したとき、残った未変換のローマ字を保留に戻して続けて入力できるようにする（H-23）。既定: true。
     pub romaji_carryover: bool,
+    /// グライド入力（QWERTY のなぞり入力。タッチ入力のみ）。既定: false。
+    pub glide: bool,
     /// 曖昧入力（タイプミス補正の候補）。
     pub fuzzy: FuzzySection,
     /// 英語の自動判定。
@@ -468,6 +483,7 @@ impl Default for InputSection {
             punctuation: Punctuation::default(),
             dakuten_cycle: DakutenCycle::SmallFirst,
             romaji_carryover: true,
+            glide: false,
             fuzzy: FuzzySection::default(),
             auto_english: AutoEnglishSection::default(),
         }
@@ -1098,6 +1114,14 @@ impl Config {
             ));
         }
 
+        // input.fuzzy.auto_apply_margin: 1 <= auto_apply_margin <= 30
+        if !(1..=30).contains(&self.input.fuzzy.auto_apply_margin) {
+            errors.push(format!(
+                "input.fuzzy.auto_apply_margin は 1 から 30 の間である必要があります: {}",
+                self.input.fuzzy.auto_apply_margin
+            ));
+        }
+
         // live_conversion_delay_ms: 0 <= live_conversion_delay_ms <= 5000
         if !(0..=5000).contains(&self.conversion.live_conversion_delay_ms) {
             errors.push(format!(
@@ -1276,6 +1300,9 @@ const FUZZY_KEYS: &[&str] = &[
     "max_candidates",
     "kinds",
     "use_touch_coords",
+    "rescore",
+    "auto_apply",
+    "auto_apply_margin",
 ];
 
 /// `[input.auto_english]` の既知キー。
@@ -1306,6 +1333,7 @@ fn get_known_section_keys(section: &str) -> &'static [&'static str] {
             "punctuation",
             "dakuten_cycle",
             "romaji_carryover",
+            "glide",
             "fuzzy",
             "auto_english",
         ],
@@ -2287,6 +2315,9 @@ min_chars = 3
         assert_eq!(d.input.fuzzy.strength, FuzzyStrength::Normal);
         assert_eq!(d.input.fuzzy.max_candidates, 3);
         assert_eq!(d.input.fuzzy.kinds, FUZZY_KINDS_ALL);
+        assert!(!d.input.fuzzy.rescore, "再採点は既定でオフ");
+        assert!(!d.input.fuzzy.auto_apply, "自動採用は既定でオフ");
+        assert_eq!(d.input.fuzzy.auto_apply_margin, 8);
         assert_eq!(FuzzyStrength::Gentle.max_cost(), 3.0);
         assert_eq!(FuzzyStrength::Normal.max_cost(), 4.5);
         assert_eq!(FuzzyStrength::Aggressive.max_cost(), 6.5);
@@ -2301,6 +2332,20 @@ min_chars = 3
         assert_eq!(c.input.fuzzy.kinds, "voicing");
 
         // 範囲外はエラー（行番号付き）、入れ子の未知キーは警告
+        let (c, issues) =
+            parse("[input.fuzzy]\nrescore = true\nauto_apply = true\nauto_apply_margin = 12\n")
+                .expect("parse");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(c.input.fuzzy.rescore && c.input.fuzzy.auto_apply);
+        assert_eq!(c.input.fuzzy.auto_apply_margin, 12);
+        let issues = parse("[input.fuzzy]\nauto_apply_margin = 0\n").expect_err("範囲外");
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.message.contains("input.fuzzy.auto_apply_margin")),
+            "{issues:?}"
+        );
+
         let bad = "[input]\nromaji_carryover = true\n[input.fuzzy]\nmax_candidates = 6\n";
         let issues = parse(bad).expect_err("範囲外");
         assert_eq!(issues[0].line, 4, "{issues:?}");

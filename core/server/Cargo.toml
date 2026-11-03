@@ -30,6 +30,7 @@ nagi-english.workspace = true
 nagi-loanword.workspace = true
 nagi-romaji.workspace = true
 nagi-fuzzy.workspace = true
+nagi-glide.workspace = true
 nagi-protocol.workspace = true
 nagi-dict.workspace = true
 nagi-infer.workspace = true

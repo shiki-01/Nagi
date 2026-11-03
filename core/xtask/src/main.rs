@@ -4,6 +4,7 @@
 
 mod app_icon;
 mod build_dict;
+mod build_glide_index;
 mod build_ios_xcframework;
 mod bundle_macos;
 mod bundle_windows;
@@ -39,6 +40,16 @@ enum Task {
     BuildDict {
         #[arg(long, value_enum, default_value_t = DictSource::Mozc)]
         source: DictSource,
+    },
+    /// 辞書からグライド入力（なぞり入力）の索引を生成する（data/dict/nagi-glide.bin。
+    /// 無くても動くが、モバイルでは mmap で読むためこのファイルを配る）
+    BuildGlideIndex {
+        /// 辞書（既定は data/dict/nagi-dict.bin）
+        #[arg(long)]
+        dict: Option<std::path::PathBuf>,
+        /// 出力先（既定は data/dict/nagi-glide.bin）
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
     /// 英単語の語彙（SCOWL）を取得し SHA-256 検証して、fst 索引を組み立てる
     /// （data/english/words.fst。英語の自動判定の語彙。無くても動く）
@@ -150,6 +161,7 @@ fn main() -> ExitCode {
     let result = match cli.task {
         Task::FetchDict => fetch_dict::run(),
         Task::BuildDict { source } => build_dict::run(source),
+        Task::BuildGlideIndex { dict, out } => build_glide_index::run(dict, out),
         Task::FetchEnglish => fetch_english::run(),
         Task::FetchLoanword { from } => fetch_loanword::run(from),
         Task::FetchModel { variant } => fetch_model::run(variant),

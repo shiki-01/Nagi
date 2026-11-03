@@ -301,4 +301,10 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 
 - 実装済み: Composer が実際の打鍵列（`Stroke`）を保持（BS・G-49 巻き戻し・引き継ぎ・カーソル移動・部分確定に追従）、`set_layout_geometry`（キー矩形から隣接を導出）、`insert_reading` の任意の `touch` / `flick`（`InsertReadingTouchParams`）、座標つきのガウス尤度の置換コスト、`CandidateView.reading`（補正後の読み。選ぶとその読みで確定・学習）、設定 `input.fuzzy.use_touch_coords`（既定 true・detail・ios）、評価 `nagi-fuzzy-eval` に座標ノイズモデル（M1 比で上位 5 件の正解率 +9〜+23pt、クリーン入力の誤訂正 0〜0.13%）
 - Swift 側は実装済み（コミット d08893f。geometry・touch / flick の送信、「もしかして: ○○」表示、テスト追従、生成 config で `[input.fuzzy] enabled = true`）
-- 未完了: CI での Swift ビルド・テストの確認、実機での確認（矩形の座標系、タッチ位置。候補バーの見え方は 2026-10-23 に確認、H-44）、M3（LLM 再採点）
+- 未完了: CI での Swift ビルド・テストの確認、実機での確認（矩形の座標系、タッチ位置。候補バーの見え方は 2026-10-23 に確認、H-44）、M3（LLM 再採点。下記 F0〜F2 で実装・計測したが効果が出ていない）
+
+## 曖昧入力 F0〜F2（2026-11-03、決定は decisions.md H-81、計画は plan-fuzzy-and-glide.md §1）
+
+- 実装済み: F0 評価基盤（`nagi-fuzzy-eval` に 12 キーのフリック方向の誤り・`--rescore`（再採点・スコア式の比較・自動採用の閾値スイープ）。部品は `nagi_server::fuzzy_eval`、単体テストは `server/tests/fuzzy_eval.rs`）、F1 文脈つきの再採点（`ReadingScorer` + `FuzzyEngine::suggest_with`。設定 `input.fuzzy.rescore`、既定 false）、F2 高確信時の自動採用（`start_converting_fuzzy_auto`。設定 `input.fuzzy.auto_apply` / `auto_apply_margin`、既定 false）。プロトコルの変更なし
+- 計測結果（サンドボックスの CPU・small）: 再採点は 1 位の正解率を下げた（約 37% → 約 31%）、レイテンシは p50 約 100ms で同期予算 150ms に p95 が収まらない、自動採用は閾値を上げても正解率が約 6 割で頭打ち。既定オフのまま
+- 未完了: スコア式の見直し（zenz に読みを生成させる方式の調査。azooKey `ZenzaiTypoCandidateGenerator` の入力書式は未確認）、実機での計測、設定画面（レジストリ）への項目追加、`cargo xtask check-types`（この環境に typeshare が無く未実行。プロトコルは未変更）
