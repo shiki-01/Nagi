@@ -1911,3 +1911,12 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **スタイル変換は未実装**: コアに機能が無い（デスクトップ Phase 4 の項目）。zenz は仮名漢字変換モデルで、指示に従う文体変換には別のモデルが要る。コア側の設計が先
 - **ユーザー作業（未実施）**: Secrets の登録（`ANDROID_KEYSTORE_*`、`NAGI_UPDATE_SIGNING_KEY`）、`latest.json` を `nagi.shiki-01.com/updates/android/` に置くこと、実機での確認
 
+
+### H-78. Android 実機確認で見つかった不具合と修正（2026-11-03、実機で M2 の機能を確認、要レビュー）
+
+- **確認できたこと（実機）**: 12 キー・フリック、日本語入力と自動変換、LLM（small）のダウンロードと使用、英語・カタカナ語データの取得、全候補の展開、0.1.0 → 0.1.1 の上書きインストール（署名鍵が同じなので、データを残したまま更新できた）
+- **コアが起動しない**: LLM 入りの `libnagi_jni.so` が NDK の `libc++_shared.so` に依存しているのに APK へ同梱しておらず、`System.loadLibrary` が失敗していた。ワークフローで `.so` の NEEDED を調べ、Android 標準以外のものを NDK から探して `jniLibs` に同梱する（診断ログ付き）。あわせて、起動に失敗した理由を設定画面の「コア」行の下に出す（`NagiCore.loadError` / `NagiEngine.startError`）。コアが使えないときは、押した文字をそのまま入力する縮退動作にした
+- **キーボードが画面いっぱいに伸びる**: フリックの押下ポップアップを `FrameLayout.LayoutParams(MATCH, MATCH)` で重ねており、`wrap_content` の親の中では既定の `onMeasure` が「使える最大の高さ」を要求するため、キーボード全体が伸びていた。`FlickPopupView.onMeasure` で、高さは親が決めた（EXACTLY）ときだけ使う。全候補パネルも、いまのキーボードの高さに固定した。入力ビューは `WRAP_CONTENT` のレイアウトパラメータを付けて返す
+- **Release へ添付できない**: ワークフローに `permissions: contents: write` が無かった。付与し、手動実行でも `release_tag` を指定して既存の Release に添付できるようにした（タグはこの環境の Git からは push できない（403）ため、タグはユーザーが GitHub の画面か手元で作る）
+- **署名**: APK 署名鍵（`ANDROID_KEYSTORE_*`）と更新署名鍵（`NAGI_UPDATE_SIGNING_KEY`）は登録済み
+- **未確認**: アプリ内のリモート更新（マニフェストの取得 → 検証 → インストール）。サイト（`nagi.shiki-01.com/updates/android/latest.json`）への公開は、`android-v*` の prerelease でない Release を作って `web` ワークフローを実行する必要がある
