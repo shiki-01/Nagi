@@ -128,10 +128,10 @@ class LayoutPasteActivity : Activity() {
     private fun startImport() {
         val text = field.text.toString()
         when (LayoutClipboard.classify(text)) {
-            ClipboardKind.EMPTY -> showError("テキストが空です")
-            ClipboardKind.LINK -> startLink(text)
+            LayoutClipboardKind.EMPTY -> showError("テキストが空です")
+            LayoutClipboardKind.LINK -> startLink(text)
             // JSON 以外に見える内容も、そのまま検証にかけて理由を出す
-            ClipboardKind.JSON, ClipboardKind.OTHER ->
+            LayoutClipboardKind.JSON, LayoutClipboardKind.OTHER ->
                 if (LayoutIntake.looksLikeLink(text)) startLink(text) else inspectAndImport(text, viaLink = false)
         }
     }

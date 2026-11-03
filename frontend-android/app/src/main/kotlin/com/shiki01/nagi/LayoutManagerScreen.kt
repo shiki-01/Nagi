@@ -530,12 +530,12 @@ internal class LayoutManagerScreen(
     private fun importFromClipboard() {
         val text = LayoutClipboardReader.readText(this)
         when (LayoutClipboard.classify(text)) {
-            ClipboardKind.EMPTY, ClipboardKind.OTHER -> {
+            LayoutClipboardKind.EMPTY, LayoutClipboardKind.OTHER -> {
                 errorBanner.show(LayoutClipboard.NOT_FOUND, Tone.WARNING)
                 scroll.smoothScrollTo(0, 0)
             }
-            ClipboardKind.LINK -> if (text != null) startPastedLink(text)
-            ClipboardKind.JSON -> if (text != null) startImport(text, viaLink = false)
+            LayoutClipboardKind.LINK -> if (text != null) startPastedLink(text)
+            LayoutClipboardKind.JSON -> if (text != null) startImport(text, viaLink = false)
         }
     }
 

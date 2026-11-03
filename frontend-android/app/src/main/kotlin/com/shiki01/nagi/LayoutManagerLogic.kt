@@ -268,7 +268,7 @@ internal object LayoutCopy {
 }
 
 /** クリップボードの文字列の種類 */
-internal enum class ClipboardKind {
+internal enum class LayoutClipboardKind {
     /** 空・空白のみ・テキストでない */
     EMPTY,
 
@@ -289,18 +289,18 @@ internal object LayoutClipboard {
     /** 取り込める内容が無いときの案内 */
     const val NOT_FOUND = "クリップボードにレイアウトがありません。サイト（$SITE_URL）で作った JSON をコピーしてください"
 
-    fun classify(text: String?): ClipboardKind {
-        if (text == null || text.isBlank()) return ClipboardKind.EMPTY
+    fun classify(text: String?): LayoutClipboardKind {
+        if (text == null || text.isBlank()) return LayoutClipboardKind.EMPTY
         if (LayoutIntake.looksLikeLink(text)) {
-            return if (LayoutIntake.classifyUrl(text) is IntakeResult.Accept) ClipboardKind.LINK else ClipboardKind.OTHER
+            return if (LayoutIntake.classifyUrl(text) is IntakeResult.Accept) LayoutClipboardKind.LINK else LayoutClipboardKind.OTHER
         }
         val t = text.trim().removePrefix("﻿")
-        if (!t.startsWith("{")) return ClipboardKind.OTHER
+        if (!t.startsWith("{")) return LayoutClipboardKind.OTHER
         return try {
             val o = JSONObject(t)
-            if (o.has("id") && o.has("rows")) ClipboardKind.JSON else ClipboardKind.OTHER
+            if (o.has("id") && o.has("rows")) LayoutClipboardKind.JSON else LayoutClipboardKind.OTHER
         } catch (e: Exception) {
-            ClipboardKind.OTHER
+            LayoutClipboardKind.OTHER
         }
     }
 }

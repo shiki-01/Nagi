@@ -7,33 +7,33 @@ import org.junit.Test
 class LayoutClipboardTest {
     @Test
     fun nullと空白は空() {
-        assertEquals(ClipboardKind.EMPTY, LayoutClipboard.classify(null))
-        assertEquals(ClipboardKind.EMPTY, LayoutClipboard.classify("  \n"))
+        assertEquals(LayoutClipboardKind.EMPTY, LayoutClipboard.classify(null))
+        assertEquals(LayoutClipboardKind.EMPTY, LayoutClipboard.classify("  \n"))
     }
 
     @Test
     fun レイアウトのjsonはJSON() {
         val json = """{"id":"my-kana","name":"x","mode":"kana","rows":[]}"""
-        assertEquals(ClipboardKind.JSON, LayoutClipboard.classify(json))
-        assertEquals(ClipboardKind.JSON, LayoutClipboard.classify("\n  $json  "))
+        assertEquals(LayoutClipboardKind.JSON, LayoutClipboard.classify(json))
+        assertEquals(LayoutClipboardKind.JSON, LayoutClipboard.classify("\n  $json  "))
     }
 
     @Test
     fun 別のjsonや壊れたjsonはOTHER() {
-        assertEquals(ClipboardKind.OTHER, LayoutClipboard.classify("""{"a":1}"""))
-        assertEquals(ClipboardKind.OTHER, LayoutClipboard.classify("""{"id":"a","rows":"""))
-        assertEquals(ClipboardKind.OTHER, LayoutClipboard.classify("こんにちは"))
+        assertEquals(LayoutClipboardKind.OTHER, LayoutClipboard.classify("""{"a":1}"""))
+        assertEquals(LayoutClipboardKind.OTHER, LayoutClipboard.classify("""{"id":"a","rows":"""))
+        assertEquals(LayoutClipboardKind.OTHER, LayoutClipboard.classify("こんにちは"))
     }
 
     @Test
     fun nagiのレイアウトリンクはLINK() {
-        assertEquals(ClipboardKind.LINK, LayoutClipboard.classify("nagi://layout?data=abc"))
-        assertEquals(ClipboardKind.LINK, LayoutClipboard.classify("  NAGI://layout?data=abc\n"))
+        assertEquals(LayoutClipboardKind.LINK, LayoutClipboard.classify("nagi://layout?data=abc"))
+        assertEquals(LayoutClipboardKind.LINK, LayoutClipboard.classify("  NAGI://layout?data=abc\n"))
     }
 
     @Test
     fun layout以外のnagiリンクはOTHER() {
-        assertEquals(ClipboardKind.OTHER, LayoutClipboard.classify("nagi://other?data=abc"))
+        assertEquals(LayoutClipboardKind.OTHER, LayoutClipboard.classify("nagi://other?data=abc"))
     }
 
     @Test
