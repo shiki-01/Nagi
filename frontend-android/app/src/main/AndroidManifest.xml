@@ -14,10 +14,14 @@
         android:supportsRtl="false"
         android:theme="@style/Theme.Nagi">
 
+        <!-- 本体アプリの入口（下部タブ: ホーム / 入力テスト / 設定 / レイアウト / About）。singleTask: 初回案内・nagi://layout から同じ画面へ戻す -->
         <activity
-            android:name=".SettingsActivity"
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="true"
-            android:label="@string/app_name">
+            android:label="@string/app_name"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -25,22 +29,12 @@
         </activity>
 
         <!-- 本体アプリの設定系画面（B 担当）。画面回転で作り直さない（ダウンロード中の進捗を保つため） -->
-        <activity
-            android:name=".SettingsFormActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
-            android:exported="false"
-            android:label="変換の設定" />
-        <activity
-            android:name=".KeyboardInputSettingsActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
-            android:exported="false"
-            android:label="入力設定" />
-        <!-- キーボードレイアウトの管理。nagi://layout（ブラウザ等の外部アプリから）を受け取るので exported。取り込みは必ず確認ダイアログを挟む -->
+        <!-- nagi://layout（ブラウザ等の外部アプリから）の受け口なので exported。画面は持たず、MainActivity のレイアウトタブへ渡す（取り込みは必ず確認ダイアログを挟む） -->
         <activity
             android:name=".LayoutManagerActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="true"
-            android:label="キーボードのレイアウト">
+            android:label="キーボードのレイアウト"
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -81,12 +75,7 @@
             android:exported="false"
             android:label="アップデート" />
 
-        <!-- このアプリについて・使い始めの手順・開発者・データの使用量（画面系の機能） -->
-        <activity
-            android:name=".AboutActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
-            android:exported="false"
-            android:label="このアプリについて" />
+        <!-- 使い始めの手順・開発者・データの使用量（画面系の機能） -->
         <activity
             android:name=".OnboardingActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"

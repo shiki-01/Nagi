@@ -5,15 +5,12 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
-import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
 import android.widget.LinearLayout
 
 /** 使い始めの手順。各手順の達成状態を検出して色付きのバッジで示し、戻ってくるたびに更新する */
 class OnboardingActivity : Activity() {
     private lateinit var stepsBox: LinearLayout
-    private lateinit var testField: EditText
     private lateinit var closeButton: UiButton
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -24,10 +21,6 @@ class OnboardingActivity : Activity() {
         val parts = screenParts("使い始めの手順")
         val root = parts.content
         root.addView(body("Nagi を使えるようにするまでの手順です。済んだ手順には「済み」が付きます。", secondary = true))
-
-        testField = inputField("ここで入力を試す")
-        testField.minLines = 3
-        testField.gravity = Gravity.TOP
 
         stepsBox = LinearLayout(this)
         stepsBox.orientation = LinearLayout.VERTICAL
@@ -62,8 +55,6 @@ class OnboardingActivity : Activity() {
         val dictOk = DataInstaller.dictFile(this).exists()
         val modelOk = ModelStore.hasModel(this)
 
-        // 入力欄は作り直さず付け替える（入力中の文字を保つ）
-        (testField.parent as? ViewGroup)?.removeView(testField)
         stepsBox.removeAllViews()
 
         addStep(
@@ -85,13 +76,21 @@ class OnboardingActivity : Activity() {
             4, "変換モデルを入れる（任意）", "入れると変換の精度が上がります。入れなくても辞書だけで動きます。",
             done = modelOk, optional = true,
             actionLabel = if (modelOk) null else "モデルの画面を開く",
+            secondLabel = "ホームを開く",
+            onSecond = { openTab(MainTab.HOME) },
         ) { startActivity(Intent(this, ModelActivity::class.java)) }
         addStep(
-            5, "入力テスト", "Nagi に切り替えてから、ここで入力と変換を試します。",
-            done = false, optional = true, actionLabel = null, extra = testField,
-        ) {}
+            5, "入力テスト", "Nagi に切り替えてから、入力テストのタブで入力と変換を試します。",
+            done = false, optional = true, actionLabel = "入力テストを開く", showBadge = false,
+        ) { openTab(MainTab.INPUT_TEST) }
 
         closeButton.text = if (enabled && selected && dictOk) "完了" else "あとで"
+    }
+
+    /** [tab] を開いて、この案内を閉じる（メイン画面は既にあるので、タブを切り替えるだけ） */
+    private fun openTab(tab: MainTab) {
+        startActivity(MainActivity.intentFor(this, tab))
+        finish()
     }
 
     private fun addStep(
@@ -101,7 +100,9 @@ class OnboardingActivity : Activity() {
         done: Boolean,
         optional: Boolean,
         actionLabel: String?,
-        extra: android.view.View? = null,
+        showBadge: Boolean = true,
+        secondLabel: String? = null,
+        onSecond: () -> Unit = {},
         onAction: () -> Unit,
     ) {
         val header = LinearLayout(this)
@@ -122,7 +123,7 @@ class OnboardingActivity : Activity() {
             else -> badge("未", Tone.WARNING)
         }
         // 入力テストは達成を検出できないので、バッジを出さない
-        if (extra == null) header.addView(badgeView)
+        if (showBadge) header.addView(badgeView)
 
         val bodyBox = cardBody(header)
         val dlp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
@@ -134,10 +135,11 @@ class OnboardingActivity : Activity() {
             blp.topMargin = dp(12)
             bodyBox.addView(b, blp)
         }
-        if (extra != null) {
-            val elp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
-            elp.topMargin = dp(12)
-            bodyBox.addView(extra, elp)
+        if (secondLabel != null) {
+            val b = tonalButton(secondLabel) { onSecond() }
+            val blp = LinearLayout.LayoutParams(LP_MATCH, LP_WRAP)
+            blp.topMargin = dp(12)
+            bodyBox.addView(b, blp)
         }
         if (stepsBox.childCount > 0) stepsBox.addView(spacer(12))
         stepsBox.addView(card(bodyBox))

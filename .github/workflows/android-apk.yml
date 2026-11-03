@@ -165,6 +165,7 @@ jobs:
           # About 画面のライセンス全文（NOTICE）の表示用
           mkdir -p frontend-android/app/src/main/assets
           cp NOTICE frontend-android/app/src/main/assets/NOTICE.txt
+          cp THIRD_PARTY_LICENSES.md frontend-android/app/src/main/assets/THIRD_PARTY_LICENSES.txt
 
       - name: 更新の検証用公開鍵を assets へ配置
         run: |

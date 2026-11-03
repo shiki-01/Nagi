@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MainActivity の Fragment 置き場。再生成後も同じ id で Fragment を戻せるよう、固定の id にする -->
+    <item name="main_container" type="id" />
+</resources>

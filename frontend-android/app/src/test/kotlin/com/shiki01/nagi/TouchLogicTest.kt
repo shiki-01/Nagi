@@ -172,10 +172,10 @@ class TouchLogicTest {
     }
 
     @Test
-    fun キーの余白は既定で従来の値() {
-        // 既定の間隔 4dp で、左右 2dp・上下 3dp（従来の固定値）
-        assertEquals(2f, KeyMetrics.horizontalMarginDp(KeyboardDefaults.KEY_SPACING_DP), 0f)
-        assertEquals(3f, KeyMetrics.verticalMarginDp(KeyboardDefaults.KEY_SPACING_DP), 0f)
+    fun キーの余白は_4dpで従来の値() {
+        // 間隔 4dp（旧来の既定）で、左右 2dp・上下 3dp（従来の固定値）
+        assertEquals(2f, KeyMetrics.horizontalMarginDp(4f), 0f)
+        assertEquals(3f, KeyMetrics.verticalMarginDp(4f), 0f)
         assertEquals(0f, KeyMetrics.horizontalMarginDp(0f), 0f)
         assertEquals(6f, KeyMetrics.verticalMarginDp(8f), 0f)
     }

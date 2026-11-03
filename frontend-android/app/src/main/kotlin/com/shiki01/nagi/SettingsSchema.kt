@@ -34,8 +34,22 @@ internal object SettingsSchema {
     /** "ios" 専用でも Android で意味が通る項目 */
     private val IOS_KEYS_FOR_ANDROID = setOf("input.dakuten_cycle")
 
-    /** 専用画面で扱うため汎用フォームには出さない項目 */
-    private val HIDDEN_KEYS = setOf("conversion.model")
+    /**
+     * 汎用フォームには出さない項目。
+     * - `conversion.model`: 専用画面（変換モデル）で扱う
+     * - `update.auto_check`: Android の更新確認はフロントが行い、見ているのは [KeyboardPrefs.autoCheckUpdates] だけ。
+     *   コアの値は更新確認に使われないので、重複と不整合を避けるために出さない（「アップデート」グループにはフロントの行を置く）
+     */
+    private val HIDDEN_KEYS = setOf("conversion.model", "update.auto_check")
+
+    /**
+     * グループの並び（iOS の `groupOrder` と同じ固定順。iOS の「クリップボード履歴」は Android に無いので含めない）。
+     * ここに無い名前は最後に、出現順で並べる
+     */
+    val GROUP_ORDER: List<String> = listOf(
+        "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "アップデート", "開発者",
+        "表記の候補", "ユーザー辞書", "アプリごとの設定",
+    )
 
     /** `get_settings` の結果（または `update_settings` 結果の `snapshot`）から項目を読む。読めない項目は飛ばす */
     fun parseItems(snapshot: JSONObject): List<SettingDef> {
@@ -100,7 +114,7 @@ internal object SettingsSchema {
         }
     }
 
-    /** Android の設定画面に出す項目か（desktop 専用と、意味が通らない ios 専用は除く） */
+    /** Android の設定画面に出す項目か（非表示の項目・desktop 専用・意味が通らない ios 専用は除く） */
     fun isVisibleOnAndroid(d: SettingDef): Boolean = when {
         d.key in HIDDEN_KEYS -> false
         d.platforms == "desktop" -> false
@@ -112,11 +126,17 @@ internal object SettingsSchema {
     fun visible(items: List<SettingDef>, showDetail: Boolean): List<SettingDef> =
         items.filter { isVisibleOnAndroid(it) && (showDetail || !it.detail) }
 
-    /** group ごとにまとめる（出現順を保つ） */
+    /** グループ名を [GROUP_ORDER] の順に並べる。未知の名前は最後に、渡された順（出現順）で並べる */
+    fun orderedGroupNames(names: Collection<String>): List<String> {
+        val distinct = names.distinct()
+        return GROUP_ORDER.filter { it in distinct } + distinct.filter { it !in GROUP_ORDER }
+    }
+
+    /** group ごとにまとめる。グループは [GROUP_ORDER] の固定順（未知のグループは最後に出現順）、グループ内は元の順 */
     fun groups(items: List<SettingDef>): List<Pair<String, List<SettingDef>>> {
         val map = LinkedHashMap<String, MutableList<SettingDef>>()
         for (d in items) map.getOrPut(d.group) { ArrayList() }.add(d)
-        return map.map { (k, v) -> k to v }
+        return orderedGroupNames(map.keys).map { it to map.getValue(it) }
     }
 
     /** 型付きの値の JSON（`{"type":"int","value":200}`）。型と合わない値は null */

@@ -70,9 +70,45 @@ class SettingsSchemaTest {
     }
 
     @Test
-    fun groupsKeepOrder() {
+    fun groupsFollowFixedOrder() {
+        // 出現順は 変換 → 動作モード → 入力 だが、並びは固定順（入力 → 変換 → 動作モード）
         val items = SettingsSchema.visible(SettingsSchema.parseItems(snapshot), true)
-        assertEquals(listOf("変換", "動作モード", "入力"), SettingsSchema.groups(items).map { it.first })
+        assertEquals(listOf("入力", "変換", "動作モード"), SettingsSchema.groups(items).map { it.first })
+    }
+
+    @Test
+    fun groupOrderIsIosFixedOrderAndUnknownGroupsComeLastInAppearanceOrder() {
+        assertEquals(
+            listOf(
+                "入力", "変換", "動作モード", "予測変換", "学習", "キーボード", "アップデート", "開発者",
+                "表記の候補", "ユーザー辞書", "アプリごとの設定",
+            ),
+            SettingsSchema.GROUP_ORDER,
+        )
+        val names = listOf("アプリごとの設定", "未知B", "学習", "表記の候補", "入力", "未知A", "ユーザー辞書", "未知B")
+        assertEquals(
+            listOf("入力", "学習", "表記の候補", "ユーザー辞書", "アプリごとの設定", "未知B", "未知A"),
+            SettingsSchema.orderedGroupNames(names),
+        )
+    }
+
+    @Test
+    fun groupsKeepItemOrderWithinGroup() {
+        fun def(key: String, group: String) = SettingDef(key, group, key, "d", SettingType.BOOL)
+        val items = listOf(def("a.2", "変換"), def("b.1", "入力"), def("a.1", "変換"), def("b.2", "入力"))
+        val g = SettingsSchema.groups(items)
+        assertEquals(listOf("入力", "変換"), g.map { it.first })
+        assertEquals(listOf("b.1", "b.2"), g[0].second.map { it.key })
+        assertEquals(listOf("a.2", "a.1"), g[1].second.map { it.key })
+    }
+
+    @Test
+    fun coreUpdateAutoCheckIsHidden() {
+        // 更新確認で実際に見られるのは KeyboardPrefs.autoCheckUpdates だけなので、コアの記述子の行は出さない
+        val d = SettingDef("update.auto_check", "アップデート", "アップデートを自動で確認", "d", SettingType.BOOL)
+        assertFalse(SettingsSchema.isVisibleOnAndroid(d))
+        assertTrue(SettingsSchema.visible(listOf(d), showDetail = true).isEmpty())
+        assertTrue(SettingsSchema.visible(listOf(d.copy(detail = true)), showDetail = true).isEmpty())
     }
 
     @Test

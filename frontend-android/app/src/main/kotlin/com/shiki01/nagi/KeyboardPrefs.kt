@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 
 /**
  * 入力の操作感の設定の既定値と範囲（1 か所にまとめる。設定画面の「既定に戻す」・[KeyboardPrefs] の読み出しが共通で使う）。
- * iOS の `docs/ios-settings.md` の同名の項目に揃えた値（Android 固有の違いは各行のコメント）。
+ * iOS の実装（`IOSSettings.swift`）の同名の項目に揃えた値（Android 固有の違いは各行のコメント）。
  */
 internal object KeyboardDefaults {
     // 入力
@@ -29,23 +29,22 @@ internal object KeyboardDefaults {
 
     // キー操作
     const val SPACE_SWIPE = true
-    const val SPACE_SWIPE_STEP_DP = 12f
+    const val SPACE_SWIPE_STEP_DP = 14f
     const val SPACE_SWIPE_STEP_MIN = 4f
     const val SPACE_SWIPE_STEP_MAX = 40f
     const val BACKSPACE_SWIPE = false
-    const val KEY_REPEAT_DELAY_MS = 400
+    const val KEY_REPEAT_DELAY_MS = 450
     const val KEY_REPEAT_DELAY_MIN = 200
     const val KEY_REPEAT_DELAY_MAX = 1000
 
-    /** iOS は 80。Android は従来の固定値（60）を既定にする */
-    const val KEY_REPEAT_MS = 60
+    const val KEY_REPEAT_MS = 110
     const val KEY_REPEAT_MIN = 30
     const val KEY_REPEAT_MAX = 300
 
     // 見た目
     const val THEME = "system"
     const val ACCENT = "blue"
-    const val KEY_SPACING_DP = 4f
+    const val KEY_SPACING_DP = 6f
     const val KEY_SPACING_MIN = 0f
     const val KEY_SPACING_MAX = 8f
     const val KEY_CORNER_DP = 6f
@@ -54,7 +53,8 @@ internal object KeyboardDefaults {
 
     // フィードバック
     const val HAPTIC_LEVEL = "light"
-    const val KEY_SOUND = false
+    /** iOS の `keyboard.sound` の既定（クリック音あり）に揃える。保存は従来どおり boolean */
+    const val KEY_SOUND = true
 
     // アップデート
     const val AUTO_CHECK_UPDATES = true
@@ -64,7 +64,7 @@ internal object KeyboardDefaults {
     const val ONE_HANDED_WIDTH = 0.8f
     const val HEIGHT_SCALE = 1.0f
     const val HEIGHT_SCALE_MIN = 0.8f
-    const val HEIGHT_SCALE_MAX = 1.4f
+    const val HEIGHT_SCALE_MAX = 1.3f
     const val HEIGHT_SCALE_LANDSCAPE = 1.0f
     const val HEIGHT_SCALE_LANDSCAPE_MIN = 0.7f
     const val HEIGHT_SCALE_LANDSCAPE_MAX = 1.4f
@@ -98,6 +98,7 @@ internal object PrefKeys {
     const val KEY_CORNER_DP = "key_corner_dp"
     const val ACCENT = "accent"
     const val AUTO_CHECK_UPDATES = "auto_check_updates"
+    const val LAYOUT_BY_FIELD = "layout_by_field"
 }
 
 /**
@@ -130,14 +131,15 @@ internal object ResetKeys {
     val HEIGHT_SCALE = listOf(PrefKeys.HEIGHT_SCALE)
     val HEIGHT_SCALE_LANDSCAPE = listOf(PrefKeys.HEIGHT_SCALE_LANDSCAPE)
     val AUTO_CHECK_UPDATES = listOf(PrefKeys.AUTO_CHECK_UPDATES)
+    val LAYOUT_BY_FIELD = listOf(PrefKeys.LAYOUT_BY_FIELD)
 
-    /** この画面で扱う設定すべて（「すべて既定に戻す」）。かな入力のレイアウトの割り当ては別（[KeyboardPrefs.setKanaLayoutId]） */
+    /** 設定画面で扱う設定すべて（「すべて既定に戻す」）。かな入力のレイアウトの割り当ては別（[KeyboardPrefs.setKanaLayoutId]） */
     val ALL: List<String> = (
         TOGGLE_INPUT + FLICK_THRESHOLD + FLICK_SENSITIVITY + FLICK_POPUP +
             SPACE_SWIPE + SPACE_SWIPE_STEP + BACKSPACE_SWIPE + KEY_REPEAT_DELAY + KEY_REPEAT + THEME + ACCENT +
             KEY_SPACING + KEY_CORNER + HAPTIC + KEY_SOUND + ONE_HANDED + ONE_HANDED_WIDTH + HEIGHT_SCALE +
             HEIGHT_SCALE_LANDSCAPE + AUTO_CHECK_UPDATES + COMPOSE_NUMBERS + KEEP_PREEDIT_ON_SYMBOLS +
-            KEEP_PREEDIT_ON_ENGLISH
+            KEEP_PREEDIT_ON_ENGLISH + FLICK_HINTS + FLICK_LONG_PRESS + LAYOUT_BY_FIELD
         ).distinct()
 }
 
@@ -218,9 +220,9 @@ internal object KeyboardPrefs {
     }
 
     /** 入力欄の種類（メール・URL・数字など）に合わせてレイアウトを自動で選び、改行キーの文字を変える */
-    fun layoutByField(ctx: Context): Boolean = sp(ctx).getBoolean("layout_by_field", true)
+    fun layoutByField(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.LAYOUT_BY_FIELD, true)
 
-    fun setLayoutByField(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean("layout_by_field", v).apply()
+    fun setLayoutByField(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.LAYOUT_BY_FIELD, v).apply()
 
     /** 長押しと判定する時間（ミリ秒、150〜1000）。iOS の `flick.long_press_ms` */
     fun flickLongPressMs(ctx: Context): Int = sp(ctx).getInt(PrefKeys.FLICK_LONG_PRESS_MS, KeyboardDefaults.FLICK_LONG_PRESS_MS)
@@ -372,7 +374,7 @@ internal object KeyboardPrefs {
         e.apply()
     }
 
-    /** キーボードの高さの倍率（0.8〜1.4） */
+    /** キーボードの高さの倍率（0.8〜1.3） */
     fun heightScale(ctx: Context): Float = sp(ctx).getFloat(PrefKeys.HEIGHT_SCALE, KeyboardDefaults.HEIGHT_SCALE)
         .coerceIn(KeyboardDefaults.HEIGHT_SCALE_MIN, KeyboardDefaults.HEIGHT_SCALE_MAX)
 

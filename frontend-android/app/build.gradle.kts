@@ -79,6 +79,8 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
+    // タブごとの Fragment（MainActivity）。AppCompat は使わない
+    implementation("androidx.fragment:fragment:1.8.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

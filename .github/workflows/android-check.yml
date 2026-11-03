@@ -33,6 +33,7 @@ jobs:
         run: |
           mkdir -p frontend-android/app/src/main/assets
           cp NOTICE frontend-android/app/src/main/assets/NOTICE.txt
+          cp THIRD_PARTY_LICENSES.md frontend-android/app/src/main/assets/THIRD_PARTY_LICENSES.txt
       - uses: gradle/actions/setup-gradle@v4
       - name: Kotlin のコンパイルと lint 相当
         working-directory: frontend-android

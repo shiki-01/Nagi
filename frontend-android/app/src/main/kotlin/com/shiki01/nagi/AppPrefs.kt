@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 
 /**
  * 本体アプリ（画面まわり）の設定。キーボード側の設定は [KeyboardPrefs]。
- * 初回案内・開発者モード・診断ログ・更新後の案内の記憶をここに置く。
+ * 初回案内・開発者モード・設定の表示モード・診断ログ・更新後の案内の記憶をここに置く。
  */
 internal object AppPrefs {
     private const val NAME = "nagi_app"
@@ -25,6 +25,13 @@ internal object AppPrefs {
 
     fun setDeveloperMode(ctx: Context, v: Boolean) {
         sp(ctx).edit().putBoolean("developer_mode", v).apply()
+    }
+
+    /** 設定タブの表示モード（既定 シンプル）。iOS の `ui.mode` に相当 */
+    fun uiMode(ctx: Context): SettingsUiMode = SettingsUiMode.fromJson(sp(ctx).getString("ui_mode", null))
+
+    fun setUiMode(ctx: Context, v: SettingsUiMode) {
+        sp(ctx).edit().putString("ui_mode", v.json).apply()
     }
 
     /** 診断ログを記録するか（既定 false） */

@@ -115,7 +115,7 @@ internal object OneHandedLogic {
 
 /** キーボードの高さのプリセット（選ぶと高さの倍率を設定する） */
 internal enum class HeightPreset(val json: String, val label: String, val scale: Float) {
-    COMPACT("compact", "コンパクト（×0.9）", 0.9f),
+    COMPACT("compact", "低め（×0.9）", 0.9f),
     STANDARD("standard", "標準（×1.0）", 1.0f),
     TALL("tall", "高め（×1.1）", 1.1f),
     ;
@@ -130,10 +130,10 @@ internal enum class HeightPreset(val json: String, val label: String, val scale:
 
 /** キーの間隔・角丸（`keyboard.key_spacing_pt` / `key_corner_pt`）から余白を決める */
 internal object KeyMetrics {
-    /** 左右の余白（dp。片側）。間隔の半分（既定 4dp で 2dp = 従来の左右の余白） */
+    /** 左右の余白（dp。片側）。間隔の半分（4dp で 2dp = 従来の左右の余白） */
     fun horizontalMarginDp(spacingDp: Float): Float = spacingDp / 2f
 
-    /** 上下の余白（dp。片側）。既定 4dp で 3dp = 従来の上下の余白 */
+    /** 上下の余白（dp。片側）。4dp で 3dp = 従来の上下の余白 */
     fun verticalMarginDp(spacingDp: Float): Float = spacingDp * 3f / 4f
 }
 
