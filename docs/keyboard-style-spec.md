@@ -27,7 +27,7 @@ iOS キーボードのキーの見た目を、レイアウト JSON から細か�
 | 検証の流儀 | 不正なレイアウトは**読み込まず次の候補（同梱 → 組み込み）に進む**（入力を失わない）。ただし参照先が消えた `layout.target` など「実行時に確かめない」ものは寛容（`validationError(targets: nil)`）。`visible` は形が違っても無視（`try?`） |
 | 既存の `style` | キー定義の `style` は `normal` / `function` / `accent` の**文字列**（色の役割）。`KeyStyle` enum。この仕様で **`role` に改名**する（§1.3、§12） |
 | キーの描画 | `Keyboard/NagiKeyboardView.swift`: `LayoutPad` → `RowView` → `KeyCell`（kind ごとに `FlickKeyView` / `RepeatKeyView` / `SpaceKeyView` / `LongPressKeyView` / `TapKeyView`）→ 共通の `KeyFace`（背景 `RoundedRectangle(keyCorner).fill(fill.opacity(pressed ? 0.6 : 1))`、文字 `.font(.system(size: fontSize))`、アイコンは `KeyIconView(size: 17)`） |
-| 既定の色 | normal = `systemBackground`、function = `systemGray4`、accent（または Shift の Caps）= `themeAccent`＋文字白、文字 = `UIColor.label`。角丸 = 設定 `keyboard.key_corner_pt`（6）、余白 = `keyboard.key_spacing_pt`（4）。キーボード全体の背景は**塗らない**（システムの背景が見える。H-61） |
+| 既定の色 | normal = `systemBackground`（ダークは `systemGray2`。H-77）、function = `systemGray4`、accent（または Shift の Caps）= `themeAccent`＋文字白、文字 = `UIColor.label`。角丸 = 設定 `keyboard.key_corner_pt`（6）、余白 = `keyboard.key_spacing_pt`（4）。キーボード全体の背景は**塗らない**（システムの背景が見える。H-61） |
 | テーマ | 設定 `keyboard.theme`（system/light/dark）は `KeyboardViewController` が `overrideUserInterfaceStyle` で上書き。SwiftUI の `colorScheme` はその結果を反映する |
 | 状態のもと | 押下: 各 View の `@GestureState isPressed`（`TapKeyView`/`SpaceKeyView`/`RepeatKeyView`）、`isDown`（`LongPressKeyView`）、`drag != nil`（`FlickKeyView`）。長押し: `LongPressKeyView.startTimer`（`flick.long_press_ms` 後に `popupShown = true`）。スペースのドラッグ: `SpaceKeyView` の `SpaceSwipeTracker.isActive`（`Keyboard/TouchLogic.swift`）。シフト: `KeyboardModel.shiftState`（`.off/.once/.caps`）。入力中: `KeyboardModel.hasPreedit` |
 | スペースの移動の有効条件 | `model.ios.spaceSwipe` が真で、スペースキーに `longPress` が無いとき（`KeyCell` の `case .action where key.action == "space" …`） |
@@ -115,7 +115,7 @@ iOS キーボードのキーの見た目を、レイアウト JSON から細か�
    | --- | --- | --- |
    | `@label` | 文字色 | `UIColor.label` |
    | `@secondaryLabel` | 薄い文字色 | `UIColor.secondaryLabel` |
-   | `@key` | 通常キーの背景 | `UIColor.systemBackground` |
+   | `@key` | 通常キーの背景 | ライトは `UIColor.systemBackground`、ダークは `UIColor.systemGray2`（H-77） |
    | `@function` | 機能キーの背景 | `UIColor.systemGray4` |
    | `@accent` | アクセントカラー | 設定 `keyboard.accent`（`themeAccent`） |
    | `@separator` | 区切り線 | `UIColor.separator` |

@@ -18,6 +18,7 @@ final class IOSSettingsTests: XCTestCase {
         let s = NagiIOSSettings()
         XCTAssertFalse(s.toggleInput)
         XCTAssertTrue(s.flickPopup)
+        XCTAssertTrue(s.flickHints)
         XCTAssertEqual(s.flickLongPressMs, 350)
         XCTAssertEqual(s.keyRepeatDelayMs, 450)
         XCTAssertEqual(s.keyRepeatMs, 110)

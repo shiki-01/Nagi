@@ -824,6 +824,33 @@ private struct FlickChars {
 /// 押している間は、上下左右の文字をポップアップで案内する。
 /// キーの幅・高さの 2 倍を超えて動かすと取り消し（離しても入力しない。`FlickCancel`）。
 /// 取り消しは表示を出さずに静かに行い、その範囲にいる間はポップアップのどのセルも選択色にしない
+/// フリックキーの上下左右に置く、フリック先の文字（小さく薄い色）。中央の文字はキーの表示（`StyledKeyFace`）が描く
+private struct FlickHints: View {
+    let chars: FlickChars
+
+    var body: some View {
+        ZStack {
+            hint(chars.left).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            hint(chars.up).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            hint(chars.right).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            hint(chars.down).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func hint(_ text: String?) -> some View {
+        if let text = text, !text.isEmpty {
+            Text(verbatim: text)
+                .font(.system(size: 9))
+                .foregroundColor(Color(UIColor.secondaryLabel))
+                .lineLimit(1)
+                .fixedSize()
+        }
+    }
+}
+
 private struct FlickKeyView: View {
     let key: LayoutKeyDef
     let face: KeyFaceInput
@@ -837,6 +864,7 @@ private struct FlickKeyView: View {
     @State private var reported = false
     @StateObject private var hold = ReleaseHold()
     @Environment(\.nagiKeyboardSize) private var rootSize
+    @Environment(\.nagiHitOutset) private var hitOutset
 
     var body: some View {
         GeometryReader { keyGeo in
@@ -864,6 +892,15 @@ private struct FlickKeyView: View {
                     keyWidth: Double(keySize.width), keyHeight: Double(keySize.height)
                 ) } ?? false
             )
+        )
+        // フリック先の文字（設定 `flick.hints`）。当たり判定を広げた分は見た目から差し引く（`StyledKeyFace` と同じ）
+        .overlay(
+            Group {
+                if NagiKeyMetrics.current.flickHints {
+                    FlickHints(chars: chars).padding(hitOutset)
+                }
+            }
+            .allowsHitTesting(false)
         )
         .overlay(
             GeometryReader { geo in

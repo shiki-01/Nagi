@@ -21,7 +21,11 @@ enum LookPalette {
         switch name {
         case "label": return UIColor.label
         case "secondaryLabel": return UIColor.secondaryLabel
-        case "key": return UIColor.systemBackground
+        // ライトは白（systemBackground）。ダークの systemBackground は真っ黒で、標準のキーボード（灰色のキー）と
+        // 見た目が離れるため、ダークだけ灰色にする（function の systemGray4 より明るく、区別がつく）
+        case "key": return UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor.systemGray2 : UIColor.systemBackground
+        }
         case "function": return UIColor.systemGray4
         case "accent": return NagiTheme.accentUIColor(NagiKeyMetrics.current.accent)
         case "separator": return UIColor.separator

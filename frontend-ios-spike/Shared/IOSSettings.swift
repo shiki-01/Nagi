@@ -195,6 +195,10 @@ struct NagiIOSSettings: Codable, Equatable {
             description: "キーを押している間、上下左右の文字をポップアップで見せます。オフにすると描画が軽くなります。",
             kind: .bool, isSimple: true, defaultValue: .bool(true)),
         NagiIOSSettingDef(
+            key: Key.flickHints, group: "入力", label: "フリック先の文字をキーに表示",
+            description: "かなのキーの上下左右に、フリックで入る文字を小さく表示します。",
+            kind: .bool, isSimple: true, defaultValue: .bool(true)),
+        NagiIOSSettingDef(
             key: Key.flickLongPressMs, group: "入力", label: "長押しの判定時間（ミリ秒）",
             description: "長押しと判定するまでの時間です。レイアウトの longPress を持つキーを、この時間押し続けると候補のポップアップが出ます。",
             kind: .int(min: 150, max: 1000, step: 50), isSimple: false, defaultValue: .number(350)),
@@ -342,6 +346,7 @@ struct NagiIOSSettings: Codable, Equatable {
         static let flickSensitivity = "flick.sensitivity"
         static let flickThresholdPt = "flick.threshold_pt"
         static let flickPopup = "flick.popup"
+        static let flickHints = "flick.hints"
         static let flickLongPressMs = "flick.long_press_ms"
         static let keyRepeatDelayMs = "touch.key_repeat_delay_ms"
         static let keyRepeatMs = "touch.key_repeat_ms"
@@ -435,6 +440,8 @@ struct NagiIOSSettings: Codable, Equatable {
     /// かな ⇄ 英字の切替で入力中の文字列を保つか
     var keepPreeditOnEnglish: Bool { bool(Key.keepPreeditOnEnglish) }
     var flickPopup: Bool { bool(Key.flickPopup) }
+    /// フリックキーの上下左右に、フリック先の文字を小さく表示するか
+    var flickHints: Bool { bool(Key.flickHints) }
     var flickLongPressMs: Int { int(Key.flickLongPressMs) }
     /// トグルキー（レイアウトの `toggle`）が次の押下を「置き換え」とみなす時間。
     /// 設定項目 `input.toggle_timeout_ms` は設定画面には未登録（コア側の概念待ち）で、ファイルに値があれば使い、無ければ 1000ms

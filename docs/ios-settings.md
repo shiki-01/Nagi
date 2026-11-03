@@ -56,6 +56,7 @@
 | `flick.sensitivity` | フリック感度（判定距離の倍率） | float 0.5–2.0, step 0.1 | 1.0 | S | kbd | 既存(iOS) | 値が大きいほど短い移動で反応。`flick.threshold_pt` を倍率で調整 |
 | `flick.threshold_pt` | フリック判定距離 | float 4–40 pt, step 1 | 14 | D | kbd | 既存(iOS) | キー幅に対する比ではなく絶対距離。小さい端末は自動で縮める |
 | `flick.popup` | フリック方向のポップアップ表示 | bool | true | S | kbd | 既存(iOS) | OFF は視認性が下がる代わりに描画が軽い |
+| `flick.hints` | フリック先の文字をキーに表示 | bool | true | S | kbd | 実装済み(iOS・要実機確認) | かなのキーの上下左右に、フリックで入る文字を小さく（9pt・secondaryLabel）表示する（H-77） |
 | `flick.popup_size` | ポップアップの大きさ | choice: `small` / `medium` / `large` | `medium` | D | kbd | 新規(iOS) | |
 | `flick.diagonal` | 斜めフリックを認識 | bool | false | D | kbd | 新規(iOS) | 4 方向 + 中央の仕様（`ios-keyboard-layout.md`）と整合。ON で 8 方向を最寄りの 4 方向に丸める |
 | `flick.long_press_ms` | 長押しと判定する時間 | int 150–1000, step 50 | 350 | D | kbd | 既存(iOS・保存のみ) | 長押しポップアップ（レイアウト仕様 `longPress`）の起点 |
