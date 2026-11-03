@@ -140,7 +140,7 @@ class SettingsActivity : Activity() {
             if (r == null) {
                 status.append("コア: 起動できませんでした")
                 val why = NagiRuntime.get(this).startError ?: NagiCore.loadError
-                if (why != null) status.append("\n理由: ").append(why)
+                if (why != null) status.append("\n理由: $why")
             } else {
                 status.append(
                     "コア ${NagiCore.nativeVersion()} / プロファイル ${r.optString("profile")} / " +
