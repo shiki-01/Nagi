@@ -673,7 +673,7 @@ internal class LayoutManagerScreen(
             when (r) {
                 is ImportResult.Success -> {
                     errorBanner.hide()
-                    toast(LayoutImportText.success(r.candidate.layout.name, r.candidate.replaces))
+                    toast(LayoutImportText.success(r.candidate.layout.name, r.candidate.replaces) + r.iconNote)
                     reload()
                     offerAssign(r.candidate.layout.id, r.candidate.layout.name, r.candidate.layout.mode)
                 }

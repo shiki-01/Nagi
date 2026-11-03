@@ -35,8 +35,27 @@ internal class KeyFace(
     /** 右上に小さく出す文字（長押しで出る項目のヒント） */
     var cornerLabel: String? = null
 
+    /**
+     * 取り込み済みの Iconify アイコン。あればメインの文字の代わりにこれを（文字色で）描く。
+     * 文字は TextView のまま保つ（アクセシビリティや、アイコンを隠すときの表示に使う）
+     */
+    var icon: IconGlyph? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** false の間は [icon] を描かず、文字を描く（空白・改行キーが「変換」「確定」を出すとき） */
+    var iconVisible: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pad = context.dpToPx(4f).toFloat()
+    private val iconMaxPx = context.dpToPx(26f).toFloat()
 
     init {
         gravity = Gravity.CENTER
@@ -51,7 +70,14 @@ internal class KeyFace(
     }
 
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
+        val g = icon
+        if (g != null && iconVisible) {
+            // キー内に収まる大きさ（高さの半分・幅の 7 割・上限 26dp の最小）で、中央に文字色で描く
+            val side = minOf(height * 0.5f, width * 0.7f, iconMaxPx)
+            if (side > 0f) g.draw(canvas, width / 2f, height / 2f, side, currentTextColor)
+        } else {
+            super.onDraw(canvas)
+        }
         val fm = hintPaint.fontMetrics
         val textH = fm.descent - fm.ascent
         val w = width.toFloat()

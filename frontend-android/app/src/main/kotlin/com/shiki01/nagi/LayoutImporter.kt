@@ -23,7 +23,11 @@ internal sealed class InspectResult {
 
 /** [LayoutImporter.importJson] の結果 */
 internal sealed class ImportResult {
-    class Success(val candidate: LayoutCandidate) : ImportResult()
+    class Success(
+        val candidate: LayoutCandidate,
+        /** 取得できなかった Iconify アイコンの案内（無ければ空文字。取り込みの通知に足す。iOS の `iconFallbackNote` 相当） */
+        val iconNote: String = "",
+    ) : ImportResult()
 
     class Failure(val reason: String) : ImportResult()
 }
@@ -81,6 +85,9 @@ internal object LayoutImporter {
     /**
      * 検証して ID 衝突を処理し、`filesDir/layouts/<id>.json` に保存する。同じ ID のユーザーのレイアウトは置き換える
      * （上書きの確認が要るなら先に [inspect] の [LayoutCandidate.replaces] で確認すること）。
+     * レイアウトが使う Iconify アイコンは、保存の前に Iconify の API から取得して端末に保存する（ネットワークを使う）。
+     * 取得できなくても取り込みは成功させ、[ImportResult.Success.iconNote] に案内を入れる（キーは label などで表示する）。
+     * 新しく取得するアイコンが [IconifyLogic.MAX_FETCHES_PER_IMPORT] 種類を超えると失敗にする（iOS と同じ）。
      * 失敗は日本語の理由つき
      */
     fun importJson(ctx: Context, jsonText: String, allowPresetId: Boolean = true): ImportResult {
@@ -88,10 +95,14 @@ internal object LayoutImporter {
             is InspectResult.Err -> return ImportResult.Failure(r.reason)
             is InspectResult.Ok -> r.candidate
         }
+        val icons = IconifyResolver.resolve(ctx, candidate.layout)
+        if (icons.tooMany) {
+            return ImportResult.Failure("新しく取得するアイコンが多すぎます（${IconifyLogic.MAX_FETCHES_PER_IMPORT} 種類まで）")
+        }
         if (!LayoutStore.saveUser(ctx, candidate.layout, candidate.json)) {
             return ImportResult.Failure("保存できませんでした")
         }
-        return ImportResult.Success(candidate)
+        return ImportResult.Success(candidate, IconifyLogic.failureNote(icons.failed))
     }
 
     /**

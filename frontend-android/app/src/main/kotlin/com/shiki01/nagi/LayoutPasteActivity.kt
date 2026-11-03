@@ -184,7 +184,7 @@ class LayoutPasteActivity : Activity() {
         background({ LayoutImporter.importJson(this, json, allowPresetId = !viaLink) }) { r ->
             when (r) {
                 is ImportResult.Success -> {
-                    toast(LayoutImportText.success(r.candidate.layout.name, r.candidate.replaces))
+                    toast(LayoutImportText.success(r.candidate.layout.name, r.candidate.replaces) + r.iconNote)
                     setResult(RESULT_OK, Intent().putExtra(EXTRA_LAYOUT_ID, r.candidate.layout.id))
                     finish()
                 }

@@ -343,6 +343,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         gridPanel = null
         colors = KeyboardColors.resolve(context)
         setBackgroundColor(colors.bg)
+        // 同梱のレイアウトが使う Iconify アイコンを（未取得なら）バックグラウンドで取得する。プロセスにつき 1 回
+        IconifyResolver.prefetchPresetIcons(context)
 
         val root = LinearLayout(context)
         rootView = root
@@ -589,6 +591,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         face.setTextColor(if (key.role == KeyRole.ACCENT) Color.WHITE else colors.fg)
         val text = if (a is KeyAction.Flick && key.label == null && flickDef != null) flickDef.center else LayoutLabels.staticLabel(key)
         face.text = text
+        // 取り込み済みの Iconify アイコンがあれば、文字の代わりに描く（無ければ従来どおり label・代替文字）
+        IconifyLogic.parse(key.icon)?.let { face.icon = IconStore.load(context, it) }
         face.textSize = when {
             text.codePointCount(0, text.length) >= 3 -> 14f
             a is KeyAction.Flick || a is KeyAction.Text -> 20f
@@ -1453,10 +1457,16 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             val a = b.key.action
             val face = b.face
             when {
-                a is KeyAction.Act && a.name == "space" ->
+                a is KeyAction.Act && a.name == "space" -> {
                     face.text = LayoutLabels.spaceLabel(composing, kanaMode, b.key.label)
-                a is KeyAction.Act && a.name == "enter" ->
+                    // 入力中の「変換」は文字で出す
+                    face.iconVisible = !(composing && kanaMode)
+                }
+                a is KeyAction.Act && a.name == "enter" -> {
                     face.text = LayoutLabels.enterLabel(composing, enterOverride, b.key.label)
+                    // 入力中の「確定」・入力欄の指定（検索・送信など）は文字で出す
+                    face.iconVisible = !composing && enterOverride == null
+                }
                 a is KeyAction.Act && (a.name == "shift" || a.name == "capslock") -> {
                     if (b.key.label == null) face.text = if (shiftState == ShiftState.CAPS) "⇪" else "⇧"
                     face.normalColor = if (shiftState != ShiftState.OFF) colors.pressedBg else roleColor(b.key.role)

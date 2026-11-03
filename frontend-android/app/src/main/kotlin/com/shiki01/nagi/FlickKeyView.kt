@@ -63,22 +63,29 @@ internal class FlickPopupView(context: Context, private val colors: KeyboardColo
         val d = def ?: return
         val w = k.width()
         val h = k.height()
-        cell(canvas, RectF(k.left - w, k.top, k.left, k.bottom), d.left, active == FlickDirection.LEFT)
-        cell(canvas, RectF(k.right, k.top, k.right + w, k.bottom), d.right, active == FlickDirection.RIGHT)
-        cell(canvas, RectF(k.left, k.top - h, k.right, k.top), d.up, active == FlickDirection.UP)
-        cell(canvas, RectF(k.left, k.bottom, k.right, k.bottom + h), d.down, active == FlickDirection.DOWN)
-        // 中央は最後に描く（上のセルが画面外に出て押し戻されたとき、重なりの上に来るようにする）
-        cell(canvas, RectF(k), d.center, active == FlickDirection.TAP)
+        // 5 セル全体の外接矩形を描画領域に収める共通の移動量。全セルに同じ量を足すので位置関係（上下左右・中央）は変わらない
+        // （下端のキーは全体が上へ、上端は下へ、左右は内側へ）。文字のある方向だけを数える（iOS と同じ）
+        val shift = PopupClamp.flickShift(
+            key = BoxF(k.left, k.top, k.right, k.bottom),
+            spacing = 0f,
+            left = d.left.isNotEmpty(),
+            up = d.up.isNotEmpty(),
+            right = d.right.isNotEmpty(),
+            down = d.down.isNotEmpty(),
+            bounds = BoxF(0f, 0f, width.toFloat(), height.toFloat()),
+        )
+        val dx = shift.dx
+        val dy = shift.dy
+        cell(canvas, RectF(k.left - w + dx, k.top + dy, k.left + dx, k.bottom + dy), d.left, active == FlickDirection.LEFT)
+        cell(canvas, RectF(k.right + dx, k.top + dy, k.right + w + dx, k.bottom + dy), d.right, active == FlickDirection.RIGHT)
+        cell(canvas, RectF(k.left + dx, k.top - h + dy, k.right + dx, k.top + dy), d.up, active == FlickDirection.UP)
+        cell(canvas, RectF(k.left + dx, k.bottom + dy, k.right + dx, k.bottom + h + dy), d.down, active == FlickDirection.DOWN)
+        // 中央は最後に描く（ずらしたとき、他のセルとの重なりの上に来るようにする）
+        cell(canvas, RectF(k.left + dx, k.top + dy, k.right + dx, k.bottom + dy), d.center, active == FlickDirection.TAP)
     }
 
     private fun cell(canvas: Canvas, r: RectF, label: String, highlighted: Boolean) {
         if (label.isEmpty()) return
-        // 画面の外にはみ出すセルは内側へ寄せる
-        var dx = 0f
-        var dy = 0f
-        if (r.left < 0f) dx = -r.left else if (r.right > width) dx = width - r.right
-        if (r.top < 0f) dy = -r.top else if (r.bottom > height) dy = height - r.bottom
-        r.offset(dx, dy)
         fill.color = if (highlighted) colors.accent else colors.keyBg
         canvas.drawRoundRect(r, radius, radius, fill)
         text.color = if (highlighted) android.graphics.Color.WHITE else colors.fg
