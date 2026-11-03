@@ -8,7 +8,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use jni::objects::{GlobalRef, JClass, JObject, JString};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString};
 use jni::sys::{jboolean, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 
@@ -262,5 +262,132 @@ pub extern "system" fn Java_com_shiki01_nagi_core_NagiCore_nativeBuildOptionalIn
         std::ptr::null_mut()
     } else {
         take_c_string(&mut env, out)
+    }
+}
+
+/// 16 進数文字列（大文字小文字不問）をバイト列にする。不正なら None
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if !s.is_ascii() || s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// ed25519 署名を検証する。公開鍵（32 バイト）・署名（64 バイト）が不正な形でも false を返す
+fn verify_ed25519(public_key_hex: &str, data: &[u8], signature_hex: &str) -> bool {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    let Some(key) = decode_hex(public_key_hex).and_then(|b| <[u8; 32]>::try_from(b).ok()) else {
+        return false;
+    };
+    let Some(sig) = decode_hex(signature_hex).and_then(|b| <[u8; 64]>::try_from(b).ok()) else {
+        return false;
+    };
+    let Ok(key) = VerifyingKey::from_bytes(&key) else {
+        return false;
+    };
+    key.verify(data, &Signature::from_bytes(&sig)).is_ok()
+}
+
+/// ed25519 署名の検証（署名対象は `data` 全体）。不正な入力は false（panic しない）
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_shiki01_nagi_core_NagiCore_nativeVerifyEd25519(
+    mut env: JNIEnv,
+    _class: JClass,
+    public_key_hex: JString,
+    data: JByteArray,
+    signature_hex: JString,
+) -> jboolean {
+    let ok = catch_unwind(AssertUnwindSafe(|| {
+        if public_key_hex.is_null() || data.is_null() || signature_hex.is_null() {
+            return false;
+        }
+        let Ok(pk) = env.get_string(&public_key_hex).map(String::from) else {
+            return false;
+        };
+        let Ok(sig) = env.get_string(&signature_hex).map(String::from) else {
+            return false;
+        };
+        let Ok(bytes) = env.convert_byte_array(&data) else {
+            return false;
+        };
+        verify_ed25519(&pk, &bytes, &sig)
+    }))
+    .unwrap_or(false);
+    jboolean::from(ok)
+}
+
+/// ed25519 署名の検証（署名対象はファイルの内容全体）。大きな配布物を JVM ヒープに載せずに検証する。
+/// 読めない・不正な入力は false
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_shiki01_nagi_core_NagiCore_nativeVerifyEd25519File(
+    mut env: JNIEnv,
+    _class: JClass,
+    public_key_hex: JString,
+    path: JString,
+    signature_hex: JString,
+) -> jboolean {
+    let ok = catch_unwind(AssertUnwindSafe(|| {
+        if public_key_hex.is_null() || path.is_null() || signature_hex.is_null() {
+            return false;
+        }
+        let Ok(pk) = env.get_string(&public_key_hex).map(String::from) else {
+            return false;
+        };
+        let Ok(sig) = env.get_string(&signature_hex).map(String::from) else {
+            return false;
+        };
+        let Ok(path) = env.get_string(&path).map(String::from) else {
+            return false;
+        };
+        match std::fs::read(&path) {
+            Ok(bytes) => verify_ed25519(&pk, &bytes, &sig),
+            Err(_) => false,
+        }
+    }))
+    .unwrap_or(false);
+    jboolean::from(ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    #[test]
+    fn verify_accepts_valid_and_rejects_tampered() {
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let public = hex(key.verifying_key().as_bytes());
+        let data = b"nagi-apk-bytes";
+        let sig = hex(&key.sign(data).to_bytes());
+        assert!(verify_ed25519(&public, data, &sig));
+        assert!(verify_ed25519(&public.to_uppercase(), data, &sig));
+        assert!(!verify_ed25519(&public, b"nagi-apk-byteS", &sig));
+        let other = SigningKey::from_bytes(&[2u8; 32]);
+        assert!(!verify_ed25519(
+            &hex(other.verifying_key().as_bytes()),
+            data,
+            &sig
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_malformed_input() {
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let public = hex(key.verifying_key().as_bytes());
+        let sig = hex(&key.sign(b"x").to_bytes());
+        assert!(!verify_ed25519("", b"x", &sig));
+        assert!(!verify_ed25519("zz", b"x", &sig));
+        assert!(!verify_ed25519(&public, b"x", ""));
+        assert!(!verify_ed25519(&public, b"x", &sig[..126]));
+        assert!(!verify_ed25519(&public, b"x", &sig[..127]));
+        assert!(!verify_ed25519(&public, b"x", "あ"));
     }
 }

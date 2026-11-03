@@ -18,6 +18,8 @@ internal object DataInstaller {
     fun ensure(context: Context) {
         userDir(context).mkdirs()
         val dict = dictFile(context)
+        // データ更新（DataUpdater）で入れた辞書は、アプリの更新で同梱版に巻き戻さない
+        if (dict.exists() && Version.isNewer(DataUpdater.installedVersion(context, "dict"), "0.0.0")) return
         val stampFile = File(dict.parentFile, "nagi-dict.stamp")
         val stamp = try {
             context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()

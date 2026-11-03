@@ -993,6 +993,7 @@ dependencies = [
 name = "nagi-jni"
 version = "0.1.8"
 dependencies = [
+ "ed25519-dalek",
  "jni",
  "nagi-ffi",
 ]

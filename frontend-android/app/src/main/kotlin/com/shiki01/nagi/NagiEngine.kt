@@ -61,8 +61,84 @@ internal class NagiEngine(context: Context) {
         callKey("insert_reading", session().put("input", input), done)
     }
 
-    fun action(type: String, done: (EngineResult?) -> Unit) {
-        callKey("perform_action", session().put("action", JSONObject().put("type", type)), done)
+    /** `perform_action`。方向を取る操作（`move_focus` 等）は [content] に `left` / `right` を渡す */
+    fun action(type: String, content: String? = null, done: (EngineResult?) -> Unit) {
+        callKey("perform_action", session().put("action", actionJson(type, content)), done)
+    }
+
+    /**
+     * 同じ操作を [times] 回続けて送り、応答を 1 つにまとめて返す（途中で他の要求が割り込まない）。
+     * preedit / candidates は変化したときだけ入るので、後のものを優先して重ねる。
+     */
+    fun actionRepeat(type: String, content: String?, times: Int, done: (EngineResult?) -> Unit) {
+        exec.execute {
+            if (!ensureStarted()) {
+                main.post { done(null) }
+                return@execute
+            }
+            var merged: EngineResult? = null
+            val allNotes = ArrayList<EngineResult>()
+            for (i in 0 until times) {
+                val (res, notes) = rpc("perform_action", session().put("action", actionJson(type, content)))
+                allNotes.addAll(notes)
+                val r = Protocol.parseResult(res)
+                if (r != null) {
+                    val prev = merged
+                    merged = if (prev == null) r else prev.merge(r)
+                }
+            }
+            val out = merged
+            main.post {
+                done(out)
+                allNotes.forEach { dispatch(it) }
+            }
+        }
+    }
+
+    /** 12 キーの 1 押下。[angleDeg] / [distance] はフリックのときだけ渡す（曖昧入力の補正用） */
+    fun insertKey12(
+        key: String,
+        gesture: String,
+        angleDeg: Double?,
+        distance: Double?,
+        done: (EngineResult?) -> Unit,
+    ) {
+        val content = JSONObject().put("key", key).put("gesture", gesture)
+        val input = JSONObject().put("type", "key12").put("content", content)
+        val p = session().put("input", input)
+        if (angleDeg != null && distance != null) {
+            p.put("flick", JSONObject().put("angle_deg", angleDeg).put("distance", distance))
+        }
+        callKey("insert_reading", p, done)
+    }
+
+    /** 濁点・小書きキー（゛゜小） */
+    fun insertVariant(done: (EngineResult?) -> Unit) {
+        callKey("insert_reading", session().put("input", JSONObject().put("type", "variant")), done)
+    }
+
+    /** 物理キーボードの 1 キー */
+    fun processKey(event: PhysicalKeyEvent, done: (EngineResult?) -> Unit) {
+        callKey("process_key", event.toParams(SESSION_ID), done)
+    }
+
+    /** 確定済みテキストの再変換。返った preedit を入力中の文字として反映する */
+    fun reconvert(text: String, done: (EngineResult?) -> Unit) {
+        callKey("reconvert", session().put("text", text), done)
+    }
+
+    /** 起動後に取得した 12 キーの表。まだ（または取得できなかった）なら null */
+    @Volatile
+    var keyTable: List<KanaKeyDef>? = null
+        private set
+
+    /** コアを起動して（まだなら）、12 キーの表を返す。取得できなければ null */
+    fun withKeyTable(done: (List<KanaKeyDef>?) -> Unit) {
+        exec.execute {
+            ensureStarted()
+            val t = keyTable
+            main.post { done(t) }
+        }
     }
 
     fun selectCandidate(index: Int, done: (EngineResult?) -> Unit) {
@@ -105,7 +181,29 @@ internal class NagiEngine(context: Context) {
         }
     }
 
-    private fun session() = JSONObject().put("session_id", "android")
+    /** [restart][NagiRuntime.restart] で置き換えられた古いエンジン。以後は二度と起動しない */
+    @Volatile
+    private var retired = false
+
+    /** 古いエンジンとして畳む: ハンドルを解放し、[onFreed] を解放後に呼ぶ（nagi-core スレッド） */
+    fun retire(onFreed: () -> Unit) {
+        retired = true
+        shutdown()
+        exec.execute { onFreed() }
+    }
+
+    /** nagi-core スレッドで [block] を実行する（置き換え後の新エンジンが、古いエンジンの解放を待つのに使う） */
+    fun runOnCoreThread(block: () -> Unit) {
+        exec.execute { block() }
+    }
+
+    private fun session() = JSONObject().put("session_id", SESSION_ID)
+
+    private fun actionJson(type: String, content: String?): JSONObject {
+        val o = JSONObject().put("type", type)
+        if (content != null) o.put("content", content)
+        return o
+    }
 
     private fun environment(): JSONObject {
         val env = JSONObject()
@@ -128,13 +226,13 @@ internal class NagiEngine(context: Context) {
 
     private fun ensureStarted(): Boolean {
         if (handle != 0L) return true
-        if (failed) return false
+        if (failed || retired) return false
         try {
             DataInstaller.ensure(app)
             val h = NagiCore.nativeNew(
                 DataInstaller.dataDir(app).path,
                 DataInstaller.userDir(app).path,
-                true, // LLM は未対応（M2）。辞書 + Viterbi の minimal で動く
+                !ModelStore.hasModel(app), // 変換モデルがあるときだけ LLM を有効にする（無ければ辞書 + Viterbi）
                 0L,
             )
             if (h == 0L) {
@@ -160,6 +258,8 @@ internal class NagiEngine(context: Context) {
                 return false
             }
             startInfo = NagiCore.nativeNotes(handle)
+            // 12 キーの表は initialize の後に 1 回だけ取る（取れなければフロントの複製表を使う）
+            keyTable = KeyTables.parse(rpc("get_key_table", JSONObject()).first)
             // initialize の後に登録する（前だと通知が積まれたままになる）
             NagiCore.nativeSetWaker(handle, Runnable { exec.execute { drain() } })
             return true
@@ -236,6 +336,7 @@ internal class NagiEngine(context: Context) {
 
     companion object {
         private const val TAG = "NagiEngine"
+        private const val SESSION_ID = "android"
     }
 }
 
@@ -248,4 +349,24 @@ internal object NagiRuntime {
         engine ?: synchronized(this) {
             engine ?: NagiEngine(context).also { engine = it }
         }
+
+    /**
+     * エンジンを作り直す（モデルの追加・選択、再起動が必要な設定の反映に使う）。
+     * 古いエンジンのハンドルを解放してから、新しいエンジンが（遅延して）起動する。
+     * 以後 [get] は新しいエンジンを返す。`onNotification` は引き継ぐが、既に [get] の戻り値を保持している側
+     * （IME サービス等）は、古い参照を捨てて [get] し直すこと（古い参照からの呼び出しは失敗として扱われる）
+     */
+    fun restart(context: Context): NagiEngine = synchronized(this) {
+        val old = engine
+        val fresh = NagiEngine(context)
+        if (old != null) {
+            fresh.onNotification = old.onNotification
+            val freed = java.util.concurrent.CountDownLatch(1)
+            old.retire { freed.countDown() }
+            // 新エンジンの最初の仕事として、古いハンドルの解放（学習の保存を含む）を待つ
+            fresh.runOnCoreThread { freed.await(10, java.util.concurrent.TimeUnit.SECONDS) }
+        }
+        engine = fresh
+        fresh
+    }
 }

@@ -3,6 +3,14 @@ package com.shiki01.nagi
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** 変換中の 1 文節。位置は `Preedit.text` 上の UTF-16 コード単位 */
+internal data class PreeditSegment(
+    val surface: String,
+    val reading: String,
+    val start: Int,
+    val end: Int,
+)
+
 /** 入力中の文字列（preedit）。位置は UTF-16 コード単位（`String` の添字と一致する） */
 internal data class Preedit(
     val text: String,
@@ -10,6 +18,13 @@ internal data class Preedit(
     /** 変換中の注目文節の範囲。なければ -1 */
     val focusStart: Int,
     val focusEnd: Int,
+    /** 文節列（変換中は複数、入力中は 1 つ以下） */
+    val segments: List<PreeditSegment> = emptyList(),
+    /** 注目文節の番号。変換中でなければ -1 */
+    val focus: Int = -1,
+    /** 複数文節の選択範囲（`text` 上の位置）。なければ -1 */
+    val selectionStart: Int = -1,
+    val selectionEnd: Int = -1,
 )
 
 /** 候補バーに出す候補 */
@@ -30,25 +45,66 @@ internal data class EngineResult(
     val preedit: Preedit? = null,
     val candidates: Candidates? = null,
     val revision: Int = 0,
-)
+    /** 入力モードの変化（`hiragana` / `alphanumeric`）。なければ null */
+    val mode: String? = null,
+    /** 選択中のテキストの再変換を求められた（フロントが選択を取って `reconvert` を送る） */
+    val reconvertSelection: Boolean = false,
+) {
+    /**
+     * 続けて返った [next] を重ねた結果。preedit / candidates は変化したときだけ入るので、
+     * 後のものがあれば後のものを、無ければ前のものを残す。
+     */
+    fun merge(next: EngineResult): EngineResult = EngineResult(
+        consumed = consumed || next.consumed,
+        commit = if (commit != null && next.commit != null) commit + next.commit else next.commit ?: commit,
+        deleteBefore = deleteBefore + next.deleteBefore,
+        preedit = next.preedit ?: preedit,
+        candidates = next.candidates ?: candidates,
+        revision = maxOf(revision, next.revision),
+        mode = next.mode ?: mode,
+        reconvertSelection = reconvertSelection || next.reconvertSelection,
+    )
+}
 
 internal object Protocol {
     fun parsePreedit(o: JSONObject?): Preedit? {
         if (o == null) return null
         val text = o.optString("text", "")
+        val segs: JSONArray? = o.optJSONArray("segments")
+        val segments = ArrayList<PreeditSegment>()
+        if (segs != null) {
+            for (i in 0 until segs.length()) {
+                val s = segs.optJSONObject(i) ?: continue
+                val range = s.optJSONObject("range")
+                segments.add(
+                    PreeditSegment(
+                        surface = s.optString("surface", ""),
+                        reading = s.optString("reading", ""),
+                        start = range?.optInt("start", -1) ?: -1,
+                        end = range?.optInt("end", -1) ?: -1,
+                    ),
+                )
+            }
+        }
+        var focus = -1
         var fs = -1
         var fe = -1
         if (o.has("focus") && !o.isNull("focus")) {
-            val idx = o.optInt("focus", -1)
-            val segs: JSONArray? = o.optJSONArray("segments")
-            val seg = if (segs != null && idx >= 0 && idx < segs.length()) segs.optJSONObject(idx) else null
-            val range = seg?.optJSONObject("range")
-            if (range != null) {
-                fs = range.optInt("start", -1)
-                fe = range.optInt("end", -1)
+            focus = o.optInt("focus", -1)
+            val seg = segments.getOrNull(focus)
+            if (seg != null) {
+                fs = seg.start
+                fe = seg.end
             }
         }
-        return Preedit(text, o.optInt("cursor", text.length), fs, fe)
+        var ss = -1
+        var se = -1
+        val sel = o.optJSONObject("selection")
+        if (sel != null) {
+            ss = sel.optInt("start", -1)
+            se = sel.optInt("end", -1)
+        }
+        return Preedit(text, o.optInt("cursor", text.length), fs, fe, segments, focus, ss, se)
     }
 
     fun parseCandidates(o: JSONObject?): Candidates? {
@@ -71,6 +127,8 @@ internal object Protocol {
             preedit = parsePreedit(o.optJSONObject("preedit")),
             candidates = parseCandidates(o.optJSONObject("candidates")),
             revision = o.optInt("revision", 0),
+            mode = if (o.has("mode") && !o.isNull("mode")) o.optString("mode") else null,
+            reconvertSelection = o.optBoolean("reconvert_selection", false),
         )
     }
 

@@ -8,6 +8,9 @@ name: android-apk
 #   ANDROID_KEYSTORE_PASSWORD   keystore のパスワード
 #   ANDROID_KEY_ALIAS           鍵のエイリアス
 #   ANDROID_KEY_PASSWORD        鍵のパスワード
+# アップデート署名（任意。未登録なら APK の署名と latest.json の生成をスキップする）:
+#   NAGI_UPDATE_SIGNING_KEY     ed25519 秘密鍵（seed、16 進 64 文字）。公開鍵は config/update-public-key.txt
+# 手順書: docs/android-release.md
 #
 # 表示バージョン（versionName）の決まり方:
 #   1. タグ android-vX.Y.Z の push で起動した場合は、そのタグの X.Y.Z
@@ -27,9 +30,9 @@ on:
         type: string
         default: ""
       llama:
-        description: "LLM 推論（llama.cpp）を有効にしてビルドする"
+        description: "LLM 推論（llama.cpp）を有効にしてビルドする（タグ push のときは常に有効）"
         type: boolean
-        default: false
+        default: true
 
 concurrency:
   group: android-apk
@@ -96,7 +99,8 @@ jobs:
         working-directory: core
         run: |
           features=""
-          if [ "${{ inputs.llama }}" = "true" ]; then features="--features llama"; fi
+          # タグ push（リリース）は常に llama 有効。手動実行は inputs.llama に従う
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] || [ "${{ inputs.llama }}" = "true" ]; then features="--features llama"; fi
           cargo ndk -t arm64-v8a --platform 26 \
             -o ../frontend-android/app/src/main/jniLibs \
             build --release -p nagi-jni ${features}
@@ -113,6 +117,12 @@ jobs:
           mkdir -p frontend-android/app/src/main/assets/dict
           cp data/dict/nagi-dict.bin frontend-android/app/src/main/assets/dict/
           ls -la frontend-android/app/src/main/assets/dict
+
+      - name: 更新の検証用公開鍵を assets へ配置
+        run: |
+          # アプリは assets/update-public-key.txt で更新（APK・データ資産）の ed25519 署名を検証する
+          cp config/update-public-key.txt frontend-android/app/src/main/assets/update-public-key.txt
+          cat frontend-android/app/src/main/assets/update-public-key.txt
 
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -145,6 +155,24 @@ jobs:
           mkdir -p dist
           cp frontend-android/app/build/outputs/apk/release/app-release.apk "dist/nagi-${VERSION_NAME}.apk"
           sha256sum "dist/nagi-${VERSION_NAME}.apk" | tee "dist/nagi-${VERSION_NAME}.apk.sha256"
+
+      - name: 更新マニフェスト（latest.json）を署名して生成
+        env:
+          NAGI_UPDATE_SIGNING_KEY: ${{ secrets.NAGI_UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "${NAGI_UPDATE_SIGNING_KEY}" ]; then
+            echo "::warning::NAGI_UPDATE_SIGNING_KEY が未登録のため、更新マニフェスト（latest.json）の署名をスキップします"
+            exit 0
+          fi
+          tag="android-v${VERSION_NAME}"
+          base="https://github.com/${{ github.repository }}/releases"
+          (cd core && cargo xtask sign-update \
+            --file "../dist/nagi-${VERSION_NAME}.apk" \
+            --version "${VERSION_NAME}" \
+            --download-url "${base}/download/${tag}/nagi-${VERSION_NAME}.apk" \
+            --notes-url "${base}/tag/${tag}" \
+            --out ../dist/latest.json)
+          cat dist/latest.json
 
       - uses: actions/upload-artifact@v4
         with:

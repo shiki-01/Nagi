@@ -15,6 +15,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 nagi-ffi = { path = "../ffi" }
 jni = "0.21"
+# 更新配布物の署名検証（core/server と同じバージョン）
+ed25519-dalek = "2"
 
 [features]
 # LLM 推論（zenz）を含む。llama.cpp の C++ ビルド（NDK）が必要

@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- モデル・任意データのダウンロード（B 担当）。C の更新確認も同じ権限を使う -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 本体 APK の更新（PackageInstaller。C 担当） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
@@ -17,6 +22,41 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 本体アプリの設定系画面（B 担当）。画面回転で作り直さない（ダウンロード中の進捗を保つため） -->
+        <activity
+            android:name=".SettingsFormActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="変換の設定" />
+        <activity
+            android:name=".KeyboardInputSettingsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="入力設定" />
+        <activity
+            android:name=".UserDictActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="ユーザー辞書"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".ModelActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="変換モデル" />
+        <activity
+            android:name=".OptionalDataActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="英語・カタカナ語データ" />
+
+        <!-- アップデート画面（C 担当）。画面回転で作り直さない（ダウンロード中断を避けるため） -->
+        <activity
+            android:name=".UpdateActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="アップデート" />
 
         <service
             android:name=".NagiImeService"
