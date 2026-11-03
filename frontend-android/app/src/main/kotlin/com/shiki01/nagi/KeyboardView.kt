@@ -5,6 +5,10 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
@@ -53,6 +57,18 @@ internal interface KeyboardListener {
 
     /** コアを通さず、そのまま入力欄に入れる文字（数字・記号の画面） */
     fun onDirectText(text: String)
+
+    /**
+     * 数字・記号の画面（または数字・記号を割り当てたキー）の文字。設定 `compose_numbers` が有効なら
+     * コアの入力中の文字列に入れ、そうでなければ [onDirectText] と同じく直接入れる（判断はサービス）
+     */
+    fun onNumberText(text: String)
+
+    /**
+     * レイアウトを [from] から [to]（どちらも [LayoutMode.json]）へ切り替える。入力中の文字列は、設定に従って確定してから、
+     * または確定せずに [block] を実行する（サービスが判断する）
+     */
+    fun onLayoutSwitch(from: String, to: String, block: () -> Unit)
 
     /** 文節列の [index] 番目をタップした */
     fun onFocusSegment(index: Int)
@@ -173,8 +189,9 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private var keyTable: List<KanaKeyDef> = KeyTables.FALLBACK
     private var composing = false
 
-    private var candItems: List<String> = emptyList()
-    private var candSelected = 0
+    private var bar: CandidateBar = CandidateBar.EMPTY
+    private val candItems: List<String> get() = bar.items
+    private val candSelected: Int get() = bar.selected
     private var segTexts: List<String> = emptyList()
     private var focusIndex = -1
 
@@ -195,6 +212,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private lateinit var toolbarScroll: HorizontalScrollView
     private lateinit var reconvertBtn: TextView
     private lateinit var expandBtn: TextView
+    private lateinit var pinnedBtn: TextView
     private lateinit var keyArea: LinearLayout
     private lateinit var popup: FlickPopupView
     private lateinit var longPopup: LongPressPopupView
@@ -253,9 +271,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     }
 
     /** 候補バーを更新する。空・非表示なら空にする（高さは保つ） */
-    fun setCandidates(items: List<String>, selected: Int) {
-        candItems = items
-        candSelected = selected
+    fun setCandidates(bar: CandidateBar) {
+        this.bar = bar
         renderCandidates()
     }
 
@@ -358,6 +375,17 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         reconvertBtn = barButton("再変換", "選択した文字を再変換") { listener.onReconvert() }
         expandBtn = barButton("▾", "全候補を開く") { toggleGrid() }
         val layoutBtn = barButton("⇄", "12キーとローマ字入力の切り替え") { toggleLayout() }
+        // 補正候補（もしかして）の最有力を右端に固定する。展開・再変換ボタンの左
+        pinnedBtn = TextView(context)
+        pinnedBtn.textSize = 16f
+        pinnedBtn.gravity = Gravity.CENTER
+        pinnedBtn.maxLines = 2
+        pinnedBtn.setPadding(dp(10), 0, dp(10), 0)
+        pinnedBtn.setTextColor(colors.fg)
+        pinnedBtn.visibility = View.GONE
+        val pinnedLp = lp(WRAP, MATCH)
+        pinnedLp.setMargins(dp(2), dp(4), dp(2), dp(4))
+        candRow.addView(pinnedBtn, pinnedLp)
         candRow.addView(reconvertBtn, lp(WRAP, MATCH))
         candRow.addView(expandBtn, lp(dp(40), MATCH))
         candRow.addView(layoutBtn, lp(dp(40), MATCH))
@@ -868,7 +896,11 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
 
     /** 文字を送る。かなのレイアウトはコア（ローマ字変換）へ、それ以外はアプリへ直接入れる */
     private fun sendText(text: String, l: LayoutModel) {
-        if (l.mode == LayoutMode.KANA) listener.onLetter(text) else listener.onDirectText(text)
+        when {
+            l.mode == LayoutMode.KANA -> listener.onLetter(text)
+            NumberCompose.isNumberOrSymbol(l.mode) -> listener.onNumberText(text)
+            else -> listener.onDirectText(text)
+        }
     }
 
     private fun typeText(a: KeyAction.Text, l: LayoutModel) {
@@ -949,7 +981,8 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         } ?: return
         val wantKana = LayoutSelect.kanaModeOf(next.mode)
         val id = if (target == LayoutSelect.TARGET_KANA || target == LayoutSelect.TARGET_ALPHA) null else next.id
-        listener.onCommitThen {
+        val from = current?.mode ?: if (kanaMode) LayoutMode.KANA else LayoutMode.ALPHA
+        listener.onLayoutSwitch(from.json, next.mode.json) {
             if (wantKana != null) {
                 listener.onSetKana(wantKana)
                 kanaMode = wantKana
@@ -1268,7 +1301,7 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
     private fun directKey(text: String): TextView {
         val t = baseKey(text, colors.keyBg)
         t.contentDescription = KeyDescriptions.symbolName(text)
-        attachTap(t, colors.keyBg, null) { listener.onDirectText(text) }
+        attachTap(t, colors.keyBg, null) { listener.onNumberText(text) }
         return t
     }
 
@@ -1442,24 +1475,45 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         KeyRole.ACCENT -> colors.accent
     }
 
+    /** 表記 [surface] に、補正候補なら小さな「もしかして: 読み」の行を足した表示 */
+    private fun candidateText(surface: String, hint: String?, prefix: String = ""): CharSequence {
+        if (hint == null) return prefix + surface
+        val sb = SpannableStringBuilder(prefix + surface)
+        val start = sb.length + 1
+        sb.append('\n').append(hint)
+        sb.setSpan(RelativeSizeSpan(0.6f), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        sb.setSpan(ForegroundColorSpan(colors.subFg), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return sb
+    }
+
     private fun renderCandidates() {
         closeGrid()
         candBar.removeAllViews()
+        val nextWord = bar.kind == CandidateKind.NEXT_WORD
+        val pinned = bar.pinned
         var selView: View? = null
         for ((i, s) in candItems.withIndex()) {
+            if (i == pinned) continue
+            val hint = bar.hints.getOrNull(i)
             val t = TextView(context)
-            t.text = s
+            t.text = candidateText(s, hint)
             t.textSize = 18f
             t.setTextColor(colors.fg)
             t.gravity = Gravity.CENTER
             t.setPadding(dp(14), 0, dp(14), 0)
+            if (hint != null) t.maxLines = 2
             if (i == candSelected) {
                 t.background = roundRect(colors.accentSoft, cornerPx)
                 selView = t
+            } else if (nextWord) {
+                // 次語候補は入力中の候補と区別できるよう、薄い背景の札にする
+                t.background = roundRect(AccentColor.withAlpha(colors.fg, 0x14), cornerPx)
             }
             t.contentDescription = KeyDescriptions.candidate(s, i, candItems.size, i == candSelected)
             t.setOnClickListener { listener.onCandidate(i) }
-            candBar.addView(t, lp(WRAP, MATCH))
+            val p = lp(WRAP, MATCH)
+            if (nextWord) p.setMargins(dp(3), dp(5), dp(3), dp(5))
+            candBar.addView(t, p)
         }
         candScroll.scrollTo(0, 0)
         val sv = selView
@@ -1470,8 +1524,27 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
                 if (prefs.animations) candScroll.smoothScrollTo(x, 0) else candScroll.scrollTo(x, 0)
             }
         }
-        expandBtn.visibility = if (candItems.size > 1) View.VISIBLE else View.GONE
+        renderPinned(pinned)
+        // 次語候補は件数が少なく、選ぶとそのまま挿入されるので展開しない
+        expandBtn.visibility = if (candItems.size > 1 && !nextWord) View.VISIBLE else View.GONE
         expandBtn.contentDescription = if (gridPanel != null) "全候補を閉じる" else "全候補を開く"
+    }
+
+    /** 右端に固定する補正候補（最有力の 1 件）。無ければ隠す */
+    private fun renderPinned(pinned: Int?) {
+        if (pinned == null || pinned !in candItems.indices) {
+            pinnedBtn.visibility = View.GONE
+            pinnedBtn.setOnClickListener(null)
+            return
+        }
+        val surface = candItems[pinned]
+        val hint = bar.hints.getOrNull(pinned)
+        val selected = pinned == candSelected
+        pinnedBtn.text = candidateText(surface, bar.readings.getOrNull(pinned)?.takeIf { it.isNotEmpty() && it != surface }, "\uD83D\uDCA1 ")
+        pinnedBtn.background = roundRect(if (selected) colors.accentSoft else AccentColor.withAlpha(colors.fg, 0x14), cornerPx)
+        pinnedBtn.contentDescription = CandidateKinds.pinnedDescription(surface, hint)
+        pinnedBtn.setOnClickListener { listener.onCandidate(pinned) }
+        pinnedBtn.visibility = View.VISIBLE
     }
 
     private fun renderSegments() {

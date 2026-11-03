@@ -9,6 +9,8 @@ internal data class PreeditSegment(
     val reading: String,
     val start: Int,
     val end: Int,
+    /** セグメント種別（`japanese` / `literal` / `fixed` / `styled`）。復元（restore_session）に使う */
+    val kind: String = "japanese",
 )
 
 /** 入力中の文字列（preedit）。位置は UTF-16 コード単位（`String` の添字と一致する） */
@@ -27,11 +29,40 @@ internal data class Preedit(
     val selectionEnd: Int = -1,
 )
 
-/** 候補バーに出す候補 */
+/** 候補の出所（コアの `CandidateSource`）。知らない値は [UNKNOWN] */
+internal enum class CandSource(val json: String) {
+    LEARNED("learned"),
+    USER_DICT("user_dict"),
+    LLM("llm"),
+    SYSTEM_DICT("system_dict"),
+    KANA("kana"),
+    REWRITER("rewriter"),
+    FUZZY("fuzzy"),
+    UNKNOWN("?"),
+    ;
+
+    companion object {
+        fun fromJson(s: String?): CandSource = values().firstOrNull { it.json == s } ?: UNKNOWN
+    }
+}
+
+/**
+ * 候補 1 件の詳細。[covers] は入力中の候補が置き換える読みの長さ（部分変換。null は読み全体）、
+ * [reading] は補正候補（出所 FUZZY）の補正後の読み
+ */
+internal data class CandidateItem(
+    val surface: String,
+    val sources: List<CandSource> = emptyList(),
+    val covers: Int? = null,
+    val reading: String? = null,
+)
+
+/** 候補バーに出す候補。[items] は表記だけ、[entries] は出所などを含む詳細（添字は [items] と一致する） */
 internal data class Candidates(
     val items: List<String>,
     val selected: Int,
     val visible: Boolean,
+    val entries: List<CandidateItem> = items.map { CandidateItem(it) },
 )
 
 /**
@@ -82,6 +113,7 @@ internal object Protocol {
                         reading = s.optString("reading", ""),
                         start = range?.optInt("start", -1) ?: -1,
                         end = range?.optInt("end", -1) ?: -1,
+                        kind = s.optString("kind", "japanese"),
                     ),
                 )
             }
@@ -111,10 +143,21 @@ internal object Protocol {
         if (o == null) return null
         val arr = o.optJSONArray("items") ?: JSONArray()
         val items = ArrayList<String>(arr.length())
+        val entries = ArrayList<CandidateItem>(arr.length())
         for (i in 0 until arr.length()) {
-            items.add(arr.optJSONObject(i)?.optString("surface", "") ?: "")
+            val c = arr.optJSONObject(i)
+            val surface = c?.optString("surface", "") ?: ""
+            items.add(surface)
+            val srcArr = c?.optJSONArray("sources")
+            val sources = ArrayList<CandSource>()
+            if (srcArr != null) {
+                for (j in 0 until srcArr.length()) sources.add(CandSource.fromJson(srcArr.optString(j, null)))
+            }
+            val covers = if (c != null && c.has("covers") && !c.isNull("covers")) c.optInt("covers", -1).takeIf { it >= 0 } else null
+            val reading = if (c != null && c.has("reading") && !c.isNull("reading")) c.optString("reading") else null
+            entries.add(CandidateItem(surface, sources, covers, reading))
         }
-        return Candidates(items, o.optInt("selected", 0), o.optBoolean("visible", true))
+        return Candidates(items, o.optInt("selected", 0), o.optBoolean("visible", true), entries)
     }
 
     /** `ProcessKeyResult` を読む。`result` が null（エラー応答）なら null */

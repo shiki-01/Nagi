@@ -4,6 +4,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.inputmethodservice.InputMethodService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
 import android.text.Spannable
@@ -56,10 +58,19 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     /** 物理キーを押し下げで受け取ったキー（離したときの [onKeyUp] も受け取って OS に流さない） */
     private val handledKeys = HashSet<Int>()
 
+    /** 環境（メモリ・熱・電源）の監視（OT-01〜03）。サービスが生きている間だけ */
+    private var envMonitor: EnvironmentMonitor? = null
+
+    /** コアの障害からの復旧（OT-04）の状態と、予約した作り直し */
+    private val recovery = RecoveryState()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var restartTask: Runnable? = null
+
     override fun onCreate() {
         super.onCreate()
         engine = NagiRuntime.get(this)
         engine.onNotification = { r -> applyNotification(r) }
+        envMonitor = EnvironmentMonitor(this) { engine }.also { it.start() }
         // 起動後に 12 キーの表を 1 回取る（取れなければフォールバック表のまま）
         engine.withKeyTable { t ->
             if (t != null) {
@@ -69,7 +80,16 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         }
     }
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        envMonitor?.onTrimMemory(level)
+    }
+
     override fun onDestroy() {
+        envMonitor?.stop()
+        envMonitor = null
+        restartTask?.let { mainHandler.removeCallbacks(it) }
+        restartTask = null
         if (engine.onNotification != null) engine.onNotification = null
         super.onDestroy()
     }
@@ -154,6 +174,15 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     private fun changeKana(value: Boolean) {
         if (kana == value) return
         kana = value
+        sendCoreMode()
+    }
+
+    /**
+     * コアの入力モードを合わせる。入力中の文字列を確定せずに英字へ切り替えたとき（設定
+     * `keep_preedit_on_english`）は、コアのモードを変えない（変えると入力中の文字列が確定されうるため）
+     */
+    private fun sendCoreMode() {
+        if (composing && !kana) return
         engine.action("set_mode", if (kana) "hiragana" else "alphanumeric") { }
     }
 
@@ -162,6 +191,8 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         secure = isSecureField(attribute)
         composing = false
         clearPreedit()
+        lastCandidates = null
+        recovery.reset()
         handledKeys.clear()
         engine.reset()
         var before: String? = null
@@ -207,7 +238,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
 
     override fun onLetter(text: String) {
         val ic = currentInputConnection ?: return
-        if (!kana) {
+        if (!viaCore()) {
             ic.commitText(text, 1)
             return
         }
@@ -216,7 +247,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     }
 
     override fun onSpace() {
-        if (!kana) {
+        if (!viaCore()) {
             currentInputConnection?.commitText(" ", 1)
             return
         }
@@ -224,7 +255,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     }
 
     override fun onEnter() {
-        if (!kana) {
+        if (!viaCore()) {
             sendEnter()
             return
         }
@@ -232,7 +263,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     }
 
     override fun onBackspace() {
-        if (!kana) {
+        if (!viaCore()) {
             sendDelete()
             return
         }
@@ -240,14 +271,51 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     }
 
     override fun onToggleMode() {
-        if (composing) {
-            // 入力中の文字を確定してから切り替える
+        val from = if (kana) LayoutMode.KANA else LayoutMode.ALPHA
+        val to = if (kana) LayoutMode.ALPHA else LayoutMode.KANA
+        // 入力中の文字を（設定に従って）確定してから切り替える
+        switchThen(from, to) { switchMode() }
+    }
+
+    /** かな入力の流れ、または設定 `keep_preedit_on_english` で英字キーも入力中の文字列に続けるときは true */
+    private fun viaCore(): Boolean =
+        kana || EnglishCompose.shouldCompose(KeyboardPrefs.keepPreeditOnEnglish(this), secure, composing)
+
+    /** レイアウト切替で入力中の文字列を確定せずに保つか（設定 `keep_preedit_on_symbols` / `_on_english`） */
+    private fun keepOnSwitch(from: LayoutMode, to: LayoutMode): Boolean = LayoutSwitchKeep.shouldKeep(
+        from = from,
+        to = to,
+        hasPreedit = composing,
+        isSecure = secure,
+        keepOnSymbols = KeyboardPrefs.keepPreeditOnSymbols(this),
+        keepOnEnglish = KeyboardPrefs.keepPreeditOnEnglish(this),
+        composeNumbers = KeyboardPrefs.composeNumbers(this),
+    )
+
+    /** 入力中なら、保たない設定のときだけ先に確定してから [block] を実行する */
+    private fun switchThen(from: LayoutMode, to: LayoutMode, block: () -> Unit) {
+        if (composing && !keepOnSwitch(from, to)) {
             engine.action("commit") { r ->
                 apply(r, null)
-                switchMode()
+                block()
             }
         } else {
-            switchMode()
+            block()
+        }
+    }
+
+    override fun onLayoutSwitch(from: String, to: String, block: () -> Unit) {
+        // 知らない種類は「かな」でも「英字」でもないものとして、常に確定する側（CUSTOM）に倒す
+        switchThen(LayoutMode.fromJson(from) ?: LayoutMode.CUSTOM, LayoutMode.fromJson(to) ?: LayoutMode.CUSTOM, block)
+    }
+
+    override fun onNumberText(text: String) {
+        val compose = NumberCompose.shouldCompose(KeyboardPrefs.composeNumbers(this), secure, kana, composing)
+        if (compose) {
+            // コアの入力中の文字列に入れる（電卓・日付の候補が出る）。コアが使えないときはそのまま入れる
+            engine.insertText(text) { r -> apply(r) { currentInputConnection?.commitText(text, 1) } }
+        } else {
+            currentInputConnection?.commitText(text, 1)
         }
     }
 
@@ -275,7 +343,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         val dir = if (left) "left" else "right"
         val code = if (left) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
         when {
-            !kana -> sendDownUpKeyEvents(code)
+            !viaCore() -> sendDownUpKeyEvents(code)
             focusIndex >= 0 -> engine.action("move_focus", dir) { r -> apply(r, null) }
             composing -> engine.action("move_cursor", dir) { r -> apply(r, null) }
             else -> sendDownUpKeyEvents(code)
@@ -290,15 +358,9 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     }
 
     override fun onOpenNumbers() {
-        if (composing) {
-            // 入力中の文字を確定してから数字・記号の画面を開く
-            engine.action("commit") { r ->
-                apply(r, null)
-                keyboard?.showNumbers()
-            }
-        } else {
-            keyboard?.showNumbers()
-        }
+        // 入力中の文字を（設定に従って）確定してから数字・記号の画面を開く
+        val from = if (kana) LayoutMode.KANA else LayoutMode.ALPHA
+        switchThen(from, LayoutMode.NUMBER) { keyboard?.showNumbers() }
     }
 
     override fun onDirectText(text: String) {
@@ -344,7 +406,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     }
 
     override fun onConvert() {
-        if (!kana) return
+        if (!viaCore()) return
         engine.action("start_convert") { r -> apply(r, null) }
     }
 
@@ -399,7 +461,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         val code = if (left) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
         val n = abs(steps)
         when {
-            !kana -> moveHostCursor(code, n)
+            !viaCore() -> moveHostCursor(code, n)
             // 変換中は注目文節、入力中は入力中の文字列内のカーソル（← → と同じ操作）
             focusIndex >= 0 -> engine.actionRepeat("move_focus", dir, min(n, CORE_CURSOR_MAX)) { r -> apply(r, null) }
             composing -> engine.actionRepeat("move_cursor", dir, min(n, CORE_CURSOR_MAX)) { r -> apply(r, null) }
@@ -427,7 +489,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     private fun switchMode() {
         setKana(!kana)
         // コアの入力モードも合わせる（物理キーの英数 / 全角半角が正しく切り替わるように）
-        engine.action("set_mode", if (kana) "hiragana" else "alphanumeric") { }
+        sendCoreMode()
         updateKeyboard(null)
     }
 
@@ -484,15 +546,82 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         }
     }
 
+    // ---- コアの障害からの復旧（OT-04） ----
+
+    /**
+     * コアの呼び出しが失敗した（例外・タイムアウト・null 応答）。続けて失敗したら、入力中の文字はホストに残したまま
+     * バックオフを置いてコアを作り直す。[typing] は、この失敗のあと押した文字を直接入れる（縮退入力）とき:
+     * 入力中の文字が composing のままだと直接入力が置き換えてしまうので、先に下線を外してホストに残す
+     */
+    private fun onCoreFailure(typing: Boolean, force: Boolean = false) {
+        if (typing && composing) {
+            currentInputConnection?.finishComposingText()
+            composing = false
+            clearPreedit()
+            DiagLog.event(this, "recovery", "入力中の文字をホストに残して縮退入力へ")
+            updateKeyboard(null)
+        }
+        when (val action = recovery.onFailure(force)) {
+            is RecoveryAction.Restart -> {
+                DiagLog.event(this, "recovery", "コアを作り直す予約 attempt=${action.attempt} delay=${action.delayMs}ms composing=$composing")
+                val task = Runnable { restartCore() }
+                restartTask = task
+                mainHandler.postDelayed(task, action.delayMs)
+            }
+            RecoveryAction.GiveUp -> DiagLog.event(this, "recovery", "作り直しの上限に達した。縮退入力のまま")
+            RecoveryAction.None -> Unit
+        }
+    }
+
+    /** コアを作り直し、残してあった読みを `restore_session` で戻す。戻せなくても確定せず composing を残す */
+    private fun restartCore() {
+        restartTask = null
+        recovery.onRestartDone()
+        val plan = RestoreLogic.plan(lastPreedit, composing)
+        // 他で（モデルの変更などで）既に作り直されていればそれを使う
+        val current = NagiRuntime.peek()
+        engine = if (current != null && current !== engine) current else NagiRuntime.restart(this)
+        engine.onNotification = { r -> applyNotification(r) }
+        lastRevision = 0 // 新しいコアの revision は 0 から数え直す
+        engine.withKeyTable { t ->
+            if (t != null) {
+                keyTable = t
+                keyboard?.setKeyTable(t)
+            }
+        }
+        var before: String? = null
+        if (!secure) before = currentInputConnection?.getTextBeforeCursor(30, 0)?.toString()
+        engine.setContext(secure, before)
+        engine.setEnvironment()
+        engine.focusIn()
+        if (plan == null) {
+            DiagLog.event(this, "recovery", "コアを作り直した（復元する入力中の文字なし）")
+            return
+        }
+        engine.restoreSession(plan) { r ->
+            if (r == null) {
+                // 復元できなかった。確定せず、ホストの composing をそのまま残す
+                DiagLog.event(this, "recovery", "restore_session に失敗。入力中の文字は確定せず残す")
+                onCoreFailure(typing = false, force = true)
+            } else {
+                recovery.onSuccess()
+                DiagLog.event(this, "recovery", "restore_session 成功 segments=${plan.segments.size}")
+                if (r.preedit != null) apply(r, null)
+            }
+        }
+    }
+
     // ---- コアの描画差分を反映する ----
 
     /** `consumed == false` のときは [fallback] を実行する（コアが扱わなかった操作をアプリへ流す） */
     private fun apply(r: EngineResult?, fallback: (() -> Unit)?) {
         if (r == null) {
             // コアが使えない（辞書なしの起動失敗など）。入力は失わないよう直接入力に落とす
+            onCoreFailure(typing = fallback != null)
             fallback?.invoke()
             return
         }
+        recovery.onSuccess()
         if (!r.consumed) {
             fallback?.invoke()
             return
@@ -574,15 +703,15 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     private fun updateKeyboard(r: EngineResult?) {
         if (r?.candidates != null) lastCandidates = r.candidates
         if (!composing) lastCandidates = if (r?.candidates?.visible == true) r.candidates else lastCandidates
-        val c = lastCandidates
-        val visible = c != null && c.visible && c.items.isNotEmpty()
-        val items: List<String> = if (visible && c != null) c.items else emptyList()
-        val selected = if (visible && c != null) c.selected else 0
+        // 次語候補（入力中の読みが無い状態で届く学習候補）は見た目を分け、パスワード欄では出さない
+        val bar = CandidateKinds.buildBar(lastCandidates, composing, secure)
+        val items: List<String> = bar.items
+        val selected = bar.selected
         // 変換中（注目文節がある）ときだけ文節列を出す
         val segs: List<String> =
             if (focusIndex >= 0) lastPreedit?.segments?.map { it.surface } ?: emptyList() else emptyList()
         keyboard?.let { kb ->
-            kb.setCandidates(items, selected)
+            kb.setCandidates(bar)
             kb.setSegments(segs, focusIndex)
             kb.setComposing(composing)
         }

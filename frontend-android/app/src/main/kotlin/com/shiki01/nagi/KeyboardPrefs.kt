@@ -18,6 +18,11 @@ internal object KeyboardDefaults {
     const val FLICK_SENSITIVITY_MAX = 2.0f
     const val FLICK_POPUP = true
     const val FLICK_HINTS = true
+
+    // 数字・記号・英字の入力中の扱い（iOS の input.compose_numbers / input.keep_preedit_on_* に揃える）
+    const val COMPOSE_NUMBERS = true
+    const val KEEP_PREEDIT_ON_SYMBOLS = true
+    const val KEEP_PREEDIT_ON_ENGLISH = false
     const val FLICK_LONG_PRESS_MS = 350
     const val FLICK_LONG_PRESS_MIN = 150
     const val FLICK_LONG_PRESS_MAX = 1000
@@ -69,6 +74,9 @@ internal object KeyboardDefaults {
 internal object PrefKeys {
     const val FLICK_LONG_PRESS_MS = "flick_long_press_ms"
     const val FLICK_HINTS = "flick_hints"
+    const val COMPOSE_NUMBERS = "compose_numbers"
+    const val KEEP_PREEDIT_ON_SYMBOLS = "keep_preedit_on_symbols"
+    const val KEEP_PREEDIT_ON_ENGLISH = "keep_preedit_on_english"
     const val TOGGLE_INPUT = "toggle_input"
     const val FLICK_THRESHOLD_DP = "flick_threshold_dp"
     const val FLICK_POPUP = "flick_popup"
@@ -102,6 +110,9 @@ internal object ResetKeys {
     val FLICK_SENSITIVITY = listOf(PrefKeys.FLICK_SENSITIVITY)
     val FLICK_POPUP = listOf(PrefKeys.FLICK_POPUP)
     val FLICK_HINTS = listOf(PrefKeys.FLICK_HINTS)
+    val COMPOSE_NUMBERS = listOf(PrefKeys.COMPOSE_NUMBERS)
+    val KEEP_PREEDIT_ON_SYMBOLS = listOf(PrefKeys.KEEP_PREEDIT_ON_SYMBOLS)
+    val KEEP_PREEDIT_ON_ENGLISH = listOf(PrefKeys.KEEP_PREEDIT_ON_ENGLISH)
     val FLICK_LONG_PRESS = listOf(PrefKeys.FLICK_LONG_PRESS_MS)
     val SPACE_SWIPE = listOf(PrefKeys.SPACE_SWIPE)
     val SPACE_SWIPE_STEP = listOf(PrefKeys.SPACE_SWIPE_STEP_DP)
@@ -125,7 +136,8 @@ internal object ResetKeys {
         TOGGLE_INPUT + FLICK_THRESHOLD + FLICK_SENSITIVITY + FLICK_POPUP +
             SPACE_SWIPE + SPACE_SWIPE_STEP + BACKSPACE_SWIPE + KEY_REPEAT_DELAY + KEY_REPEAT + THEME + ACCENT +
             KEY_SPACING + KEY_CORNER + HAPTIC + KEY_SOUND + ONE_HANDED + ONE_HANDED_WIDTH + HEIGHT_SCALE +
-            HEIGHT_SCALE_LANDSCAPE + AUTO_CHECK_UPDATES
+            HEIGHT_SCALE_LANDSCAPE + AUTO_CHECK_UPDATES + COMPOSE_NUMBERS + KEEP_PREEDIT_ON_SYMBOLS +
+            KEEP_PREEDIT_ON_ENGLISH
         ).distinct()
 }
 
@@ -220,6 +232,23 @@ internal object KeyboardPrefs {
     fun flickHints(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.FLICK_HINTS, KeyboardDefaults.FLICK_HINTS)
 
     fun setFlickHints(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.FLICK_HINTS, v).apply()
+
+    /** 数字・記号のキーも入力中の文字列（コアの composing）に入れる。iOS の `input.compose_numbers`（フロント固有の設定） */
+    fun composeNumbers(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.COMPOSE_NUMBERS, KeyboardDefaults.COMPOSE_NUMBERS)
+
+    fun setComposeNumbers(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.COMPOSE_NUMBERS, v).apply()
+
+    /** かな ⇄ 数字・記号の切替で入力中の文字列を確定しない。iOS の `input.keep_preedit_on_symbols` */
+    fun keepPreeditOnSymbols(ctx: Context): Boolean =
+        sp(ctx).getBoolean(PrefKeys.KEEP_PREEDIT_ON_SYMBOLS, KeyboardDefaults.KEEP_PREEDIT_ON_SYMBOLS)
+
+    fun setKeepPreeditOnSymbols(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.KEEP_PREEDIT_ON_SYMBOLS, v).apply()
+
+    /** かな ⇄ 英字の切替で入力中の文字列を確定しない。iOS の `input.keep_preedit_on_english` */
+    fun keepPreeditOnEnglish(ctx: Context): Boolean =
+        sp(ctx).getBoolean(PrefKeys.KEEP_PREEDIT_ON_ENGLISH, KeyboardDefaults.KEEP_PREEDIT_ON_ENGLISH)
+
+    fun setKeepPreeditOnEnglish(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.KEEP_PREEDIT_ON_ENGLISH, v).apply()
 
     /** レイアウトの保存・削除・割り当てのたびに増える番号（キーボードが組み立て直すかの判定とキャッシュ破棄に使う） */
     fun layoutsRevision(ctx: Context): Long = sp(ctx).getLong("layouts_rev", 0L)

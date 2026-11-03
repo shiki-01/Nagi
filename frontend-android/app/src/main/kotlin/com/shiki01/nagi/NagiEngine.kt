@@ -7,9 +7,11 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import com.shiki01.nagi.core.NagiCore
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.TimeZone
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * コアとの JSON-RPC 接続。コアの呼び出しはすべて専用の 1 スレッドで直列に行い（`nagi_handle_line` と
@@ -59,7 +61,42 @@ internal class NagiEngine(context: Context) {
 
     /** 描画差分を返す要求（`insert_reading` / `perform_action` / `select_candidate` 等） */
     fun callKey(method: String, params: JSONObject, done: (EngineResult?) -> Unit) {
-        call(method, params) { done(Protocol.parseResult(it)) }
+        // コアが固まったとき（JNI 呼び出しから戻らない）も、[RPC_TIMEOUT_MS] 後に失敗として 1 回だけ返す。
+        // 起動（辞書の展開など）の時間は含めない: 起動が済んだあと、要求を送る直前から測る
+        val finished = AtomicBoolean(false)
+        exec.execute {
+            if (!ensureStarted()) {
+                main.post { if (finished.compareAndSet(false, true)) done(null) }
+                return@execute
+            }
+            val watchdog = Runnable {
+                if (finished.compareAndSet(false, true)) {
+                    DiagLog.event(app, "core", "timeout method=$method")
+                    done(null)
+                }
+            }
+            main.postDelayed(watchdog, RPC_TIMEOUT_MS)
+            val (result, notes) = rpc(method, params)
+            main.post {
+                main.removeCallbacks(watchdog)
+                if (finished.compareAndSet(false, true)) done(Protocol.parseResult(result))
+                notes.forEach { dispatch(it) }
+            }
+        }
+    }
+
+    /**
+     * コアを作り直したあと、フロントが残していた入力中の読みを戻す（`restore_session`）。
+     * 成功すれば復元後の preedit を含む描画差分、失敗なら null
+     */
+    fun restoreSession(plan: RestorePlan, done: (EngineResult?) -> Unit) {
+        val segs = JSONArray()
+        for (s in plan.segments) {
+            segs.put(JSONObject().put("reading", s.reading).put("surface", s.surface).put("kind", s.kind))
+        }
+        val p = session().put("segments", segs).put("cursor", plan.cursor).put("converting", plan.converting)
+        if (plan.focus != null) p.put("focus", plan.focus)
+        callKey("restore_session", p, done)
     }
 
     fun insertText(text: String, done: (EngineResult?) -> Unit) {
@@ -213,14 +250,18 @@ internal class NagiEngine(context: Context) {
 
     private fun environment(): JSONObject {
         val env = JSONObject()
+        EnvironmentState.memoryPressure?.let { env.put("memory_pressure", it) }
+        EnvironmentState.thermal?.let { env.put("thermal", it) }
+        EnvironmentState.onBattery?.let { env.put("on_battery", it) }
         try {
             val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
             env.put("low_power_mode", pm.isPowerSaveMode)
             val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val info = ActivityManager.MemoryInfo()
             am.getMemoryInfo(info)
-            // 端末全体の空きの半分を目安にする（コアは LLM の可否とプロファイル選択に使う）
-            env.put("memory_budget_mb", (info.availMem / 2 / (1024 * 1024)).coerceIn(64L, 4096L))
+            // 端末全体の空きの半分（低メモリと報告されているときは 1/4）を目安にする
+            // （コアは LLM の可否とプロファイル選択に使う）
+            env.put("memory_budget_mb", EnvLogic.memoryBudgetMb(info.availMem, info.lowMemory))
         } catch (e: Exception) {
             Log.w(TAG, "環境情報の取得に失敗", e)
         }
@@ -292,7 +333,17 @@ internal class NagiEngine(context: Context) {
     }
 
     /** 要求を送り、`result`（エラーなら null）と、同じ戻り値に続いた通知を返す */
-    private fun rpc(method: String, params: JSONObject): Pair<JSONObject?, List<EngineResult>> {
+    private fun rpc(method: String, params: JSONObject): Pair<JSONObject?, List<EngineResult>> =
+        try {
+            rpcUnsafe(method, params)
+        } catch (e: Throwable) {
+            // JNI の例外などは失敗として返す（呼び出し側が復旧を判断する）。入力内容は記録しない
+            Log.e(TAG, "コアの呼び出しで例外", e)
+            DiagLog.event(app, "core", "exception method=$method ${e.javaClass.simpleName}")
+            Pair(null, emptyList())
+        }
+
+    private fun rpcUnsafe(method: String, params: JSONObject): Pair<JSONObject?, List<EngineResult>> {
         val id = nextId++
         val line = JSONObject()
             .put("jsonrpc", "2.0")
@@ -313,14 +364,22 @@ internal class NagiEngine(context: Context) {
             .put("method", method)
             .put("params", params)
             .toString()
-        val (_, notes) = parseLines(NagiCore.nativeHandleLine(handle, line), -1)
-        if (notes.isNotEmpty()) main.post { notes.forEach { dispatch(it) } }
+        try {
+            val (_, notes) = parseLines(NagiCore.nativeHandleLine(handle, line), -1)
+            if (notes.isNotEmpty()) main.post { notes.forEach { dispatch(it) } }
+        } catch (e: Throwable) {
+            DiagLog.event(app, "core", "exception notify=$method ${e.javaClass.simpleName}")
+        }
     }
 
     private fun drain() {
         if (handle == 0L) return
-        val (_, notes) = parseLines(NagiCore.nativePollNotifications(handle), -1)
-        if (notes.isNotEmpty()) main.post { notes.forEach { dispatch(it) } }
+        try {
+            val (_, notes) = parseLines(NagiCore.nativePollNotifications(handle), -1)
+            if (notes.isNotEmpty()) main.post { notes.forEach { dispatch(it) } }
+        } catch (e: Throwable) {
+            DiagLog.event(app, "core", "exception drain ${e.javaClass.simpleName}")
+        }
     }
 
     private fun parseLines(text: String, expectedId: Int): Pair<JSONObject?, List<EngineResult>> {
@@ -358,6 +417,9 @@ internal class NagiEngine(context: Context) {
     companion object {
         private const val TAG = "NagiEngine"
         private const val SESSION_ID = "android"
+
+        /** コアの 1 要求が戻らないとみなす時間（ミリ秒） */
+        private const val RPC_TIMEOUT_MS = 8000L
     }
 }
 
@@ -377,6 +439,9 @@ internal object NagiRuntime {
      * 以後 [get] は新しいエンジンを返す。`onNotification` は引き継ぐが、既に [get] の戻り値を保持している側
      * （IME サービス等）は、古い参照を捨てて [get] し直すこと（古い参照からの呼び出しは失敗として扱われる）
      */
+    /** 作り直されたかどうかの判定用: 今のエンジン（まだ無ければ null。作らない） */
+    fun peek(): NagiEngine? = engine
+
     fun restart(context: Context): NagiEngine = synchronized(this) {
         val old = engine
         DiagLog.event(context, "core", "restart")
