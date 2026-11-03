@@ -132,7 +132,7 @@ class LayoutManagerLogicTest {
         assertEquals(listOf("", "kana", "alpha", "none", "flick-kana", "numbers"), opts.map { it.first })
         assertEquals("自動（英字）", opts[0].second)
         assertEquals("自動（切り替えない）", LayoutChoices.fieldOptions(FieldKind.NORMAL, eff)[0].second)
-        assertEquals("自動（数字）", LayoutChoices.fieldOptions(FieldKind.NUMBER, eff)[0].second)
+        assertEquals("自動（名前-numbers）", LayoutChoices.fieldOptions(FieldKind.NUMBER, eff)[0].second)
     }
 
     @Test
