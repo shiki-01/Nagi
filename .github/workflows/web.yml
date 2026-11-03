@@ -26,11 +26,11 @@ jobs:
       # OS ごとのアップデート確認先（/updates/{os}/latest.json）は、最新の {os}-v* リリースの latest.json を
       # 取り込んで公開する（macos-release / windows-release ワークフローが作る）。
       # リリースが無い OS は飛ばす。prerelease（実機で未検証の版）は取り込まない
-      - name: latest.json を取り込む（macOS / Windows）
+      - name: latest.json を取り込む（macOS / Windows / Android）
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for os in macos windows; do
+          for os in macos windows android; do
             tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName,isDraft,isPrerelease \
               --jq "[.[] | select((.tagName | startswith(\"$os-v\")) and (.isDraft | not) and (.isPrerelease | not))][0].tagName // empty")
             if [ -n "$tag" ]; then

@@ -48,8 +48,11 @@ cd core && cargo xtask gen-update-key   # 秘密鍵と公開鍵を標準出力�
 2. workflow が `dist/` に次を作り、artifact とタグ起動時の GitHub Release（prerelease）に添付する
    - `nagi-X.Y.Z.apk` / `nagi-X.Y.Z.apk.sha256`
    - `latest.json`（`NAGI_UPDATE_SIGNING_KEY` があるときだけ。APK 全体を ed25519 署名した更新マニフェスト）
-3. **ユーザー作業**: `latest.json` を `https://nagi.shiki-01.com/updates/android/latest.json` にアップロードする
-   （アプリの既定の確認先。コアの `default_check_url` の規約で os=android）
+3. **公開（ユーザー作業は 2 手）**: アプリの確認先 `https://nagi.shiki-01.com/updates/android/latest.json` は、サイトの
+   ワークフロー `web`（`.github/workflows/web.yml`）が、最新の **prerelease でない** `android-v*` リリースの `latest.json` を
+   取り込んで Cloudflare Pages に公開する。したがって (a) GitHub の Releases でその版を開き、実機で確認できたら
+   「Set as a pre-release」を外して latest にする、(b) Actions の `web` を手動実行（Run workflow、ブランチ main）する。
+   手でファイルをアップロードする必要はない。prerelease のままなら公開されず、旧版のアプリには更新が出ない
 4. 実機で、旧版を入れた状態から「アップデート」画面で確認 → ダウンロード → インストールできることを確認する
 
 `latest.json` の `download_url` は GitHub Release の asset URL
