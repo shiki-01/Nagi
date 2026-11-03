@@ -58,7 +58,6 @@ class AboutFragment : Fragment() {
                     ),
                 ),
                 ctx.navRow("辞書・モデルの出典", "Mozc OSS 辞書・zenz-v3.1") { ctx.showSourcesDialog() },
-                ctx.navRow("レイアウトのアイコンの出典", null) { ctx.showIconLicensesDialog() },
                 ctx.navRow("ライセンス全文（NOTICE）", "リポジトリの NOTICE と同じ内容") {
                     ctx.showAssetTextDialog("ライセンス全文（NOTICE）", AboutLinks.NOTICE_ASSET, AboutLinks.REPO_URL)
                 },
@@ -66,6 +65,12 @@ class AboutFragment : Fragment() {
                     ctx.showAssetTextDialog("オープンソースライセンス", AboutLinks.THIRD_PARTY_ASSET, AboutLinks.THIRD_PARTY_URL)
                 },
             ),
+        )
+
+        root.addSection(
+            "アイコンの出典（レイアウト）",
+            ctx.card(*ctx.iconLicenseRows().toTypedArray()),
+            "レイアウトで使う Iconify のアイコンの、アイコンセットごとの作者とライセンスです。タップでライセンスのページを開きます。",
         )
 
         root.addSection(

@@ -61,12 +61,50 @@ internal object IconifyResolver {
                 continue
             }
             val res = IconifyLogic.parseResponse(text, names)
+            // 出典・ライセンスは、アイコンより先に保存する（失敗してもアイコンの取得は続ける。後で補う）
+            if (res.shapes.isNotEmpty()) ensureLicense(ctx, prefix, text)
             for (ref in refs) {
                 val shape = res.shapes[ref.name]
                 if (shape != null && IconStore.save(ctx, ref, shape)) saved++ else failed.add(ref.id)
             }
         }
         return IconResolution(false, failed, saved)
+    }
+
+    /**
+     * [prefix] のライセンス情報を保存する。保存済みなら何もしない。
+     * 取得済みの応答 [iconsResponse]（アイコン API の本文。null なら無し）に `info` があればそれを使い、
+     * 無ければ `/collection?prefix=…&info=true` を 1 回取得する（iOS と同じ）。通信できない・読めないときは false
+     */
+    private fun ensureLicense(ctx: Context, prefix: String, iconsResponse: String?): Boolean {
+        val repo = IconStore.iconSets(ctx)
+        if (repo.has(prefix)) return true
+        var info = if (iconsResponse != null) IconSetLogic.parseInfo(prefix, iconsResponse) else null
+        if (info == null) {
+            val text = try {
+                get(IconSetLogic.collectionUrl(prefix))
+            } catch (e: IOException) {
+                null
+            } catch (e: SecurityException) {
+                null
+            }
+            if (text != null) info = IconSetLogic.parseInfo(prefix, text)
+        }
+        return info != null && repo.save(info)
+    }
+
+    /**
+     * 保存済みのアイコンのうち、ライセンス情報の無いアイコンセットの分を取得して補う（この版より前に取り込んだもの）。
+     * ネットワークが使えない・失敗したときは何もしない（動作は変えない）。ネットワークを使うので、メインスレッド以外で呼ぶこと
+     */
+    fun backfillLicenses(ctx: Context) {
+        val repo = IconStore.iconSets(ctx)
+        val have = repo.load().map { it.prefix }.toSet()
+        for (prefix in IconStore.storedPrefixes(ctx)) {
+            if (prefix in have) continue
+            // 通信できない状態で何度も待たないよう、1 件でも失敗したら打ち切る（次の機会に再試行）
+            if (!ensureLicense(ctx, prefix, null)) return
+        }
     }
 
     /** HTTP 200 の本文を文字列で返す。それ以外・大きすぎる応答は null（404 は存在しないセット）。通信できなければ IOException */
@@ -116,6 +154,8 @@ internal object IconifyResolver {
                     val layout = LayoutParser.parseOrNull(text) ?: continue
                     saved += resolve(app, layout).saved
                 }
+                // 取り込み済みで出典の無いアイコンセット（以前の版で保存したもの）を補う。表示には影響しないので版は進めない
+                backfillLicenses(app)
                 if (saved > 0) KeyboardPrefs.bumpLayoutsRevision(app)
             } catch (e: Exception) {
                 // 失敗しても動作は変えない

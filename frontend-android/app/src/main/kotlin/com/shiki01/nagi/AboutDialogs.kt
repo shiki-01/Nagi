@@ -38,10 +38,6 @@ internal object AboutLinks {
         "https://huggingface.co/Miwa-Keita/zenz-v3.1-small-gguf",
         "ライセンス: CC BY-SA 4.0。モデルを再配布する場合は、表示（クレジット）と同一条件での共有を満たす必要があります。",
     ).joinToString("\n")
-
-    const val ICON_LICENSES_TEXT =
-        "Android 版は、レイアウトの iconify: のアイコンを取得せず、代替の文字で表示します。" +
-            "そのため、アイコンセットの作者・ライセンスの表示が必要な取り込み済みアイコンはありません。"
 }
 
 internal fun Context.openUrl(url: String) {
@@ -91,4 +87,23 @@ internal fun Context.showAssetTextDialog(title: String, asset: String, fallbackU
 
 internal fun Context.showSourcesDialog() = showTextDialog("辞書・モデルの出典", AboutLinks.SOURCES_TEXT)
 
-internal fun Context.showIconLicensesDialog() = showTextDialog("アイコンの出典", AboutLinks.ICON_LICENSES_TEXT)
+/** 取得済みの Iconify アイコンセットの出典・ライセンスを一覧する（About タブの一覧と同じ内容を文章で出す） */
+internal fun Context.showIconLicensesDialog() =
+    showTextDialog("アイコンの出典", IconSetLogic.plainText(IconStore.iconSets(this).load()))
+
+/**
+ * 取得済みのアイコンセットの行（セット名・作者・ライセンス名。タップでライセンスの URL を開く）。
+ * 1 つも無ければ案内の行を 1 つだけ返す。ファイルを読むので、画面の組み立て時に 1 回呼ぶ
+ */
+internal fun Context.iconLicenseRows(): List<UiRow> {
+    val sets = IconStore.iconSets(this).load()
+    if (sets.isEmpty()) return listOf(infoRow(IconSetLogic.EMPTY_TEXT, null))
+    return sets.map { set ->
+        val url = set.openUrl
+        if (url != null) {
+            navRow(set.heading, set.detail) { openUrl(url) }
+        } else {
+            infoRow(set.heading, null, set.detail)
+        }
+    }
+}

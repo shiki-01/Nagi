@@ -88,6 +88,16 @@ internal object IconStore {
 
     private fun dir(ctx: Context): File = File(ctx.filesDir, DIR)
 
+    /** アイコンセットの出典・ライセンス（filesDir/layouts/icon-sets.json） */
+    fun iconSets(ctx: Context): IconSetRepository =
+        IconSetRepository(File(File(ctx.filesDir, "layouts"), "icon-sets.json"))
+
+    /** 保存済みアイコンの prefix（重複なし・prefix 順）。フォルダが無ければ空 */
+    fun storedPrefixes(ctx: Context): List<String> {
+        val names = dir(ctx).list() ?: return emptyList()
+        return names.mapNotNull { IconSetLogic.prefixOfIconFile(it) }.distinct().sorted()
+    }
+
     /** 保存済みか（ファイルがあるか。中身は確かめない） */
     fun exists(ctx: Context, ref: IconRef): Boolean = File(dir(ctx), ref.fileName).isFile
 
