@@ -32,6 +32,11 @@ internal class NagiEngine(context: Context) {
     var startInfo: String = ""
         private set
 
+    /** 起動に失敗した理由（成功なら null） */
+    @Volatile
+    var startError: String? = null
+        private set
+
     /** 非同期通知（ライブ変換・LLM の遅延結果）の受け口。メインスレッドで呼ばれる */
     @Volatile
     var onNotification: ((EngineResult) -> Unit)? = null
@@ -228,6 +233,7 @@ internal class NagiEngine(context: Context) {
         if (handle != 0L) return true
         if (failed || retired) return false
         try {
+            NagiCore.loadError?.let { throw IllegalStateException("ネイティブライブラリを読み込めません: $it") }
             DataInstaller.ensure(app)
             val h = NagiCore.nativeNew(
                 DataInstaller.dataDir(app).path,
@@ -236,6 +242,7 @@ internal class NagiEngine(context: Context) {
                 0L,
             )
             if (h == 0L) {
+                startError = "コアの初期化に失敗しました（nativeNew が 0 を返しました）"
                 failed = true
                 return false
             }
@@ -252,6 +259,7 @@ internal class NagiEngine(context: Context) {
                 .put("capabilities", caps)
             val (res, _) = rpc("initialize", init)
             if (res == null) {
+                startError = "コアの initialize に失敗しました"
                 NagiCore.nativeFree(handle)
                 handle = 0L
                 failed = true
@@ -265,6 +273,7 @@ internal class NagiEngine(context: Context) {
             return true
         } catch (e: Throwable) {
             Log.e(TAG, "コアの起動に失敗", e)
+            startError = e.message ?: e.toString()
             failed = true
             return false
         }

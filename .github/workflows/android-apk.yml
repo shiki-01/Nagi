@@ -106,6 +106,35 @@ jobs:
             build --release -p nagi-jni ${features}
           ls -la ../frontend-android/app/src/main/jniLibs/arm64-v8a
 
+      # libnagi_jni.so が NDK の共有ライブラリ（libc++_shared.so / libomp.so など）に依存していると、端末にはそれが無く
+      # System.loadLibrary が失敗する。NEEDED を調べ、Android 標準のもの以外は NDK から探して同梱する
+      - name: 依存する共有ライブラリを同梱（診断付き）
+        run: |
+          dir=frontend-android/app/src/main/jniLibs/arm64-v8a
+          readelf="$(find "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt" -name llvm-readelf | head -n 1)"
+          echo "readelf: ${readelf}"
+          echo "--- NEEDED (before) ---"
+          "${readelf}" -d "${dir}/libnagi_jni.so" | grep NEEDED || true
+          system="libc.so libm.so libdl.so liblog.so libandroid.so libz.so libstdc++.so libvulkan.so libEGL.so libGLESv2.so libOpenSLES.so libjnigraphics.so"
+          for round in 1 2 3; do
+            for so in "${dir}"/*.so; do
+              for lib in $("${readelf}" -d "${so}" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'); do
+                case " ${system} " in *" ${lib} "*) continue;; esac
+                [ -f "${dir}/${lib}" ] && continue
+                found="$(find "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt" -name "${lib}" -path '*aarch64*' | head -n 1)"
+                if [ -n "${found}" ]; then
+                  echo "同梱: ${lib} <- ${found}"
+                  cp "${found}" "${dir}/"
+                else
+                  echo "::warning::${lib} が見つかりません（端末で読み込みに失敗する可能性）"
+                fi
+              done
+            done
+          done
+          echo "--- 同梱後 ---"
+          ls -la "${dir}"
+          for so in "${dir}"/*.so; do echo "== ${so}"; "${readelf}" -d "${so}" | grep NEEDED || true; done
+
       - name: 辞書を取得・生成（アプリの assets に含める）
         working-directory: core
         run: |

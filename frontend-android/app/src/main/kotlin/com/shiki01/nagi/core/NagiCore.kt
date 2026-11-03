@@ -5,8 +5,17 @@ package com.shiki01.nagi.core
  * ハンドルは `nativeNew` が返す Long で、`nativeFree` で解放する。
  */
 internal object NagiCore {
+    /** ネイティブライブラリの読み込みに失敗した理由（成功なら null）。設定画面に出して原因を追えるようにする */
+    @Volatile
+    var loadError: String? = null
+        private set
+
     init {
-        System.loadLibrary("nagi_jni")
+        try {
+            System.loadLibrary("nagi_jni")
+        } catch (e: Throwable) {
+            loadError = e.message ?: e.toString()
+        }
     }
 
     /** 失敗時は 0 */

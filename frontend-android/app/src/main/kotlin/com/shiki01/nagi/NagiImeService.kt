@@ -11,6 +11,7 @@ import android.text.style.BackgroundColorSpan
 import android.text.style.UnderlineSpan
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
@@ -67,6 +68,8 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         kb.setKeyTable(keyTable)
         kb.setKanaMode(kana)
         keyboard = kb
+        // レイアウトパラメータが無いと、入力ビューの高さが MATCH_PARENT 扱いになり画面いっぱいに伸びる
+        kb.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         return kb
     }
 
