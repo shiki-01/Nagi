@@ -37,6 +37,8 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     private var coreGeneration = 0
     /// 高さの異常（想定の 1.5 倍超）の警告を出したか（1 回だけ）
     private var loggedOversize = false
+    /// 高さの判定を予約済みか（レイアウトのたびに予約を重ねない）
+    private var oversizeCheckScheduled = false
 
     /// コアを生成中か（メインスレッドからのみ読み書きする。同時に 2 つのコアを作らない）
     nonisolated(unsafe) private static var coreCreating = false
@@ -251,14 +253,23 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 想定の高さの 1.5 倍を超えたら 1 回だけ記録する（背景だけが画面いっぱいに広がる不具合の切り分け用）
-        guard !loggedOversize else { return }
-        let expected = CGFloat(NagiKeyMetrics.totalHeight)
-        let actual = view.bounds.height
-        if actual > expected * 1.5 {
-            loggedOversize = true
-            let elapsed = Int(Date().timeIntervalSince(loadStartedAt) * 1000)
-            DiagLog.log("layout oversize instance=#\(instanceNumber) height=\(Int(actual)) expected=\(Int(expected)) modelReady=\(model != nil) sinceLoad=\(elapsed)ms")
+        // 想定の高さの 1.5 倍を超えたままなら 1 回だけ記録する（背景だけが画面いっぱいに広がる不具合の切り分け用）。
+        // viewDidLoad 直後は OS がまだ入力ビューの高さを当てておらず、view が画面全体の高さのことがある（誤検知）ので、
+        // 表示が始まってから、レイアウトが落ち着く時間（0.5 秒）を置いて 1 回だけ判定する
+        guard isAppeared, !loggedOversize, !oversizeCheckScheduled else { return }
+        oversizeCheckScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
+            self.oversizeCheckScheduled = false
+            // 非表示になっていたら判定しない（次に表示されたときのレイアウトで改めて判定する）
+            guard self.isAppeared, !self.loggedOversize else { return }
+            let expected = CGFloat(NagiKeyMetrics.totalHeight)
+            let actual = self.view.bounds.height
+            if actual > expected * 1.5 {
+                self.loggedOversize = true
+                let elapsed = Int(Date().timeIntervalSince(self.loadStartedAt) * 1000)
+                DiagLog.log("layout oversize instance=#\(self.instanceNumber) height=\(Int(actual)) expected=\(Int(expected)) modelReady=\(self.model != nil) sinceLoad=\(elapsed)ms")
+            }
         }
     }
 

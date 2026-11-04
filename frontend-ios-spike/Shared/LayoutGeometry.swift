@@ -29,7 +29,7 @@ enum LayoutGeometry {
     /// コアが QWERTY として扱う最小のキー数（コア側も 10 個未満のレイアウトは無視する）
     static let minLetterKeys = 10
 
-    /// 英字 1 文字のキー（`text` キーで、文字が ASCII の英字 1 文字）の矩形。それ以外のキーは含めない。
+    /// 英字 1 文字のキー（`text` / `flick` キーで、文字が ASCII の英字 1 文字）の矩形。それ以外のキーは含めない。
     /// - size: 行が並ぶ領域（キー領域）の大きさ
     /// - keySpacing: キー同士の間隔、rowSpacing: 行同士の間隔（既定はどちらも設定 `keyboard.key_spacing_pt`。
     ///   レイアウトの `metrics` があればそれを優先する）
@@ -99,9 +99,17 @@ enum LayoutGeometry {
         return rowsHeight(layout: layout, keyHeight: keyHeight, rowSpacing: rowSpacing)
     }
 
-    /// `text` キーの文字が英字 1 文字ならその小文字。シフト時の表示（大文字）には依存しない
+    /// `text` キー（`flick` キーは中央の文字 `center.text`、無ければ `label`）の文字が英字 1 文字ならその小文字。
+    /// シフト時の表示（大文字）には依存しない。QWERTY の上段だけ上フリックで数字を出す、のように
+    /// 英字キーを `flick` で定義したレイアウトも対象にする
     static func letterLabel(_ key: LayoutKeyDef) -> String? {
-        guard key.kind == .text, let text = key.text ?? key.label else { return nil }
+        let source: String?
+        switch key.kind {
+        case .text: source = key.text ?? key.label
+        case .flick: source = key.center?.text ?? key.label
+        default: source = nil
+        }
+        guard let text = source else { return nil }
         let scalars = Array(text.unicodeScalars)
         guard scalars.count == 1, let scalar = scalars.first else { return nil }
         switch scalar.value {

@@ -2022,3 +2022,12 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **テスト**: `core/server/tests/glide.rs`（ファイル専用で、索引なし・壊れたファイル → `consumed = false`、後から置くと使える、パスなしは常に不可）、`core/ffi/tests/smoke.rs`（`nagi_build_glide_index` の成功・失敗〔辞書なし・壊れた辞書で既存の索引が残る・NULL 引数〕、`nagi_server_new_with_flags`）、`Tests/GlideIndexStatusTests.swift`（状態遷移・指紋・付属ファイルの破損・生成中の辞書差し替え）
 - **未確認**: Swift はこの環境でコンパイルできず CI も未実行（`GlideIndexBuilder` の `@MainActor` 呼び出し、`UIApplication.beginBackgroundTask`、`NAGI_FLAG_GLIDE_INDEX_FILE_ONLY` マクロの Swift への取り込み型、xcframework の再生成を伴うヘッダ変更）。**実機で未確認**: 生成時間・ホストのピークメモリ（iOS 上）、App Group 経由で拡張が索引を mmap できること、拡張のフットプリント、バックグラウンドでの生成の継続、辞書更新後の再生成
 - **残り**: Android（`core/jni`）はフラグを渡していないので従来どおり（配布経路を作るときに同じ方式を使う）。索引の縮小（H-82 の「縮小の余地」）は未実施
+
+### H-85. グライド入力: 上段が `flick` の QWERTY（q〜p が `flick`、a〜l・z〜m が `text`）を対象にする・なぞり開始キーのフリックを取り消す（2026-11-04、ユーザーのログから原因特定、**実機未確認・Swift は CI 未確認**、要レビュー）
+
+- **症状**: カスタムの `qwerty-kana`（`config/keyboard/presets/qwerty-kana.json` と同形）でグライドが動かず、ログに `glide_input` が出ない
+- **原因**: `LayoutGeometry.letterLabel` が `kind == .text` のキーしか英字に数えなかった。このレイアウトは上段 q〜p が `flick`（`center.text = "q"`、上フリックが数字）なので、英字キーは 16 個（`set_layout_geometry ... keys=16`）で `minGlideLetterKeys`（20）未満となり `supportsGlide` が false
+- **修正（`Shared/LayoutGeometry.swift`）**: `flick` キーも `center.text`（無ければ `label`）が ASCII 英字 1 文字なら英字キーに数える。コアに送る keys は a〜z の 26 個。12 キーのかな（中央が「あ」など）・既存プリセットには英字 1 文字の `flick` が無いので `supportsGlide` / `snapshot` は変わらない（`Tests/GlideGestureTests.swift` で確認）
+- **修正（`Keyboard/NagiKeyboardView.swift` の `FlickKeyView`）**: `LongPressKeyView` / `TapKeyView` と同様に `isGlideStroke` / `takeGlideRelease` を受け取る。なぞりと判定されたら方向のポップアップを出さず、離したときにフリック入力（上フリックの数字を含む）を入れない（印は必ず降ろす）。短いタップ・フリックは従来どおり
+- **未確認**: Swift をコンパイルしておらず CI 未実行。実機で、上段キーからのなぞり開始・数字が混ざらないこと・上段のフリック入力が従来どおり動くことを確認していない
+- **付随（ログ `layout oversize ... height=844 expected=270 modelReady=false sinceLoad=12ms` の評価）**: `viewDidLayoutSubviews` は viewDidLoad の 12ms 後（`viewWillAppear` より前）の最初のレイアウトで判定しており、OS が入力ビューの高さを当てる前の view が画面全体の高さの段階だと推定される（誤検知の可能性が高い。ただしログだけでは断定できない）。判定を「表示が始まってから（`isAppeared`）0.5 秒後に 1 回」へ変更（`KeyboardViewController.swift`）。0.5 秒後も 1.5 倍超なら本物の異常として従来どおり記録する。実機未確認

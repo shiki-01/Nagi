@@ -336,7 +336,9 @@ private struct KeyCell: View {
                 face: face(KeyFaceContent(text: key.label ?? key.kana ?? key.center?.text, icon: key.icon)),
                 chars: FlickChars(key: key),
                 onPress: onPress,
-                onGesture: { gesture, detail in model.flick(key, gesture, detail: detail) }
+                onGesture: { gesture, detail in model.flick(key, gesture, detail: detail) },
+                isGlideStroke: { model.isGlideStroke },
+                takeGlideRelease: { model.takeGlideSwallowsRelease() }
             )
         case .action where key.action == "backspace":
             RepeatKeyView(
@@ -934,6 +936,10 @@ private struct FlickKeyView: View {
     let onPress: (Bool) -> Void
     /// 操作と、方向のあるフリックならその角度・距離（曖昧入力の手がかり）
     let onGesture: (KeyGesture, FlickDetail?) -> Void
+    /// グライド入力（なぞり）と判定されているか（方向のポップアップを出さない）と、
+    /// 離したときに直近のストロークがなぞりだったか（true ならフリック入力を取り消す。呼ぶと印が降りる）
+    var isGlideStroke: () -> Bool = { false }
+    var takeGlideRelease: () -> Bool = { false }
 
     /// 押している間の移動量（押していなければ nil）
     @GestureState private var drag: CGSize? = nil
@@ -984,7 +990,7 @@ private struct FlickKeyView: View {
                     // 取り消しの範囲では選択なし（nil）にする
                     let selected: KeyGesture? = Self.isCancelled(drag, keySize: keySize) ? nil : Self.gesture(for: drag)
                     ZStack {
-                        if chars.hasAny, NagiKeyMetrics.current.flickPopup {
+                        if chars.hasAny, NagiKeyMetrics.current.flickPopup, !isGlideStroke() {
                             FlickPopup(
                                 chars: chars, selected: selected, size: geo.size,
                                 shift: popupShift(keySize: keySize, keyFrame: keyFrame)
@@ -1010,6 +1016,8 @@ private struct FlickKeyView: View {
                     reported = false
                     onPress(false)
                     if face.uses(.released) { hold.begin(ms: face.releasedHoldMs) }
+                    // なぞり入力だったときは、離したキーのフリック入力（上フリックの数字など）を入れない（印は必ず降ろす）
+                    if takeGlideRelease() { return }
                     // 取り消しの範囲で離したときは、入力もフィードバックもしない
                     if Self.isCancelled(value.translation, keySize: keySize) { return }
                     NagiKeyFeedback.keyDown()

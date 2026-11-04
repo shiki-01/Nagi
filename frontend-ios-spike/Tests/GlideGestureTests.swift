@@ -249,6 +249,48 @@ final class GlideGestureTests: XCTestCase {
         XCTAssertFalse(LayoutGeometry.supportsGlide(layout: layout(mode: .kana, letters: String(alphabet.prefix(19)))))
     }
 
+    /// 上段 q〜p が `flick`（中央が英字、上フリックが数字）、2〜3 段目が `text` のユーザーのレイアウト
+    private func flickTopLayout(mode: LayoutMode = .kana) -> KeyboardLayoutDef {
+        let digits = Array("1234567890")
+        let top = "qwertyuiop".enumerated().map { index, ch -> LayoutKeyDef in
+            var key = LayoutKeyDef(id: String(ch), kind: .flick, label: nil, action: nil, width: 1)
+            key.center = FlickChar(text: String(ch))
+            key.up = FlickChar(text: String(digits[index]))
+            return key
+        }
+        return KeyboardLayoutDef(id: "t", name: "t", mode: mode, rows: [
+            LayoutRow(height: 1, keys: top),
+            LayoutRow(height: 1, keys: "asdfghjkl".map { letterKey(String($0)) }),
+            LayoutRow(height: 1, keys: "zxcvbnm".map { letterKey(String($0)) }),
+        ])
+    }
+
+    func testFlickTopRowQwertyLayoutSupportsGlide() {
+        let layout = flickTopLayout()
+        XCTAssertTrue(LayoutGeometry.supportsGlide(layout: layout))
+        XCTAssertFalse(LayoutGeometry.supportsGlide(layout: flickTopLayout(mode: .alpha)))
+        let rects = LayoutGeometry.rects(layout: layout, size: CGSize(width: 400, height: 150), keySpacing: 4, rowSpacing: 4)
+        XCTAssertEqual(rects.count, 26)
+        XCTAssertEqual(Set(rects.map(\.label)), Set("abcdefghijklmnopqrstuvwxyz".map { String($0) }))
+        let snapshot = LayoutGeometry.snapshot(layout: layout, size: CGSize(width: 400, height: 150), keySpacing: 4, rowSpacing: 4)
+        XCTAssertEqual(snapshot?.keys.count, 26)
+    }
+
+    func testNonLetterFlickKeysAreNotCounted() {
+        // 12 キーのかな（中央が「あ」など）や、英字 1 文字でない flick は英字キーに数えない
+        var kana = LayoutKeyDef(id: "a", kind: .flick, label: nil, action: nil, width: 1)
+        kana.center = FlickChar(text: "あ")
+        XCTAssertNil(LayoutGeometry.letterLabel(kana))
+        var abc = LayoutKeyDef(id: "abc", kind: .flick, label: "abc", action: nil, width: 1)
+        abc.center = FlickChar(text: "abc")
+        XCTAssertNil(LayoutGeometry.letterLabel(abc))
+        let twelve = KeyboardLayoutDef(id: "t", name: "t", mode: .kana, rows: [
+            LayoutRow(height: 1, keys: Array(repeating: kana, count: 12)),
+        ])
+        XCTAssertFalse(LayoutGeometry.supportsGlide(layout: twelve))
+        XCTAssertNil(LayoutGeometry.snapshot(layout: twelve, size: CGSize(width: 400, height: 150), keySpacing: 4, rowSpacing: 4))
+    }
+
     // MARK: 候補の「なぞり」表示
 
     func testGlideHint() {
