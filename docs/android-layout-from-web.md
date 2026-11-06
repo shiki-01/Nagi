@@ -8,7 +8,7 @@
 
 | 項目 | 状況 |
 | --- | --- |
-| Android: 取り込み | 実装済み。`LayoutManagerActivity` が、ファイル（SAF）・テキスト貼り付け・`nagi://layout?data=…` のリンクから取り込む。検証（`LayoutParser`）→ 確認ダイアログ → 保存。`nagi://layout` の intent-filter も登録済み（H-77 以降の実装） |
+| Android: 取り込み | 実装済み。`LayoutManagerActivity` が、ファイル（SAF）・テキスト貼り付け・`nagi://layout?data=…` のリンクから取り込む。検証（`LayoutParser`）→ 確認ダイアログ → 保存。`nagi://layout` の intent-filter も登録済み（H-86 以降の実装） |
 | Android: 検証・描画 | schema 2 の検証と、JSON 駆動の描画（行・キー・フリック・toggle・longPress・shortcut・layout・action）を実装済み。`look` 系・`toolbar`・`visible`・Iconify は未対応（構文は受け付けるが無視する） |
 | サイトのエディタ（出力） | **JSON のダウンロードとクリップボードへのコピーだけ**（`web/src/lib/components/JsonPanel.svelte`）。`nagi://layout` のリンクを作る機能が無い。リンクの仕様は `docs/ios-keyboard-layout.md` と `web/src/routes/reference` に書かれているだけで、エディタには実装が無い |
 | サイトのエディタ（入力） | JSON の貼り付け・読み込みで編集を再開できる（`json-sync.ts`）。端末のアプリ側から「編集に戻す」経路は無い |
