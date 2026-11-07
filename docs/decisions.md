@@ -2031,3 +2031,15 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **修正（`Keyboard/NagiKeyboardView.swift` の `FlickKeyView`）**: `LongPressKeyView` / `TapKeyView` と同様に `isGlideStroke` / `takeGlideRelease` を受け取る。なぞりと判定されたら方向のポップアップを出さず、離したときにフリック入力（上フリックの数字を含む）を入れない（印は必ず降ろす）。短いタップ・フリックは従来どおり
 - **未確認**: Swift をコンパイルしておらず CI 未実行。実機で、上段キーからのなぞり開始・数字が混ざらないこと・上段のフリック入力が従来どおり動くことを確認していない
 - **付随（ログ `layout oversize ... height=844 expected=270 modelReady=false sinceLoad=12ms` の評価）**: `viewDidLayoutSubviews` は viewDidLoad の 12ms 後（`viewWillAppear` より前）の最初のレイアウトで判定しており、OS が入力ビューの高さを当てる前の view が画面全体の高さの段階だと推定される（誤検知の可能性が高い。ただしログだけでは断定できない）。判定を「表示が始まってから（`isAppeared`）0.5 秒後に 1 回」へ変更（`KeyboardViewController.swift`）。0.5 秒後も 1.5 倍超なら本物の異常として従来どおり記録する。実機未確認
+
+### H-87. iOS: 起動時の「標準キーボードへの置換」「背景だけが画面を覆う」の実機ログの分析と、ライフサイクル診断ログの追加（2026-11-07、原因は未確定・要実機確認、Swift は CI 未確認）
+
+- **ユーザー報告**: Nagi の診断ログを消した後、Claude アプリ（開いた時点でテキスト欄にフォーカス済み）へ切り替えた瞬間に、全画面の背景だけが表示され、その後に標準キーボードになった。それ以外の通常のタイミングでも、前触れなく不定期に起きる。
+- **ログからの分析**（pid 33216 の回と pid 33218 の回）:
+  - コア生成は `makeMs` 49〜147ms、`sinceLoad` 67〜161ms で、`appeared=true` のうちに完了している。H-79 の「起動の遅さが原因」の仮説は支持されない。
+  - `viewDidLoad` 時の footprint は 4MB、2 つ目の VC でも 60MB（available 116MB）。メモリ超過による強制終了の仮説も支持されない。`layout oversize` は出ていない。
+  - 同一プロセス内で、1 つ目の VC の約 1.3〜1.5 秒後に 2 つ目の VC（`reuseModel=true`）が作られる。正常な回は 2 つ目に `viewWillAppear` が来て 1 つ目が `viewWillDisappear` する。症状の回は 2 つ目の `viewDidLoad` と `model handed over` までで、`viewWillAppear` も 1 つ目の `viewWillDisappear` も無くログが途切れた。
+  - `previous keyboard process ... ended while visible` は両方の回に出ており（H-35 で通常の挙動）、症状の有無とは無関係。
+- **推定（未確定）**: アプリ切替の際に iOS が同一プロセスで VC を 2 つ作り、2 つ目の表示に至らないまま拡張の表示を打ち切って標準キーボードへ戻す。拡張側から止められない iOS の挙動の可能性が高い（H-33 と同種）。
+- **診断ログの追加**（`Keyboard/KeyboardViewController.swift`、`Shared/DiagLog.swift`）: ライフサイクルのログを同期書き込み（`DiagLog.logSync`）にし、プロセスの打ち切り直前の行がキューに残って失われないようにした。追加した行: `viewDidAppear`、`viewDidDisappear`、`viewWillTransition`、`didReceiveMemoryWarning`（footprint/available つき）、`viewWillAppear` への `viewState`（`bounds` / `window` の有無 / `parent` / `modelReady` / `appeared`）、`viewDidLoad` の後 4 秒間の 200ms ごとの `heartbeat`。ログが途切れる時刻と `deinit` の有無で、プロセスの終了・停止・VC だけの破棄を区別する。
+- **確認方法**: TestFlight の新ビルドで症状を再現し、直後に診断ログを取得する。見る点: 症状の回で `heartbeat` が途切れる時刻、`deinit` の有無、`viewDidAppear` の有無、`bounds` の値。

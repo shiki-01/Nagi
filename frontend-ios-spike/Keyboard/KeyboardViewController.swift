@@ -37,6 +37,9 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     private var coreGeneration = 0
     /// 高さの異常（想定の 1.5 倍超）の警告を出したか（1 回だけ）
     private var loggedOversize = false
+    /// viewDidLoad 直後の生存確認ログの回数（表示されないまま打ち切られる不具合の切り分け用）
+    private var heartbeatCount = 0
+
     /// 高さの判定を予約済みか（レイアウトのたびに予約を重ねない）
     private var oversizeCheckScheduled = false
 
@@ -63,7 +66,7 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
 
         let reuseModel = KeyboardModel.processShared != nil
         let stats = MemoryProbe.getStats()
-        DiagLog.log("viewDidLoad instance=#\(instanceNumber) pid=\(getpid()) reuseModel=\(reuseModel) footprint=\(Int(stats.physFootprintMB))MB available=\(Int(stats.availableMemoryMB))MB")
+        DiagLog.logSync("viewDidLoad instance=#\(instanceNumber) pid=\(getpid()) reuseModel=\(reuseModel) footprint=\(Int(stats.physFootprintMB))MB available=\(Int(stats.availableMemoryMB))MB")
         if !reuseModel {
             // 申告した拡張属性が実際のバンドルに入っているかの確認用（H-35）
             let ext = Bundle.main.object(forInfoDictionaryKey: "NSExtension") as? [String: Any]
@@ -71,14 +74,54 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
             DiagLog.log("extension attributes \(attrs.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " "))")
         }
         setupUI()
+        startHeartbeat()
+    }
+
+    /// 診断ログ用: view の状態（大きさ・window の有無・親が存在するか）を 1 行にする
+    private func viewState() -> String {
+        let b = view.bounds
+        return "bounds=\(Int(b.width))x\(Int(b.height)) window=\(view.window != nil) parent=\(parent != nil) modelReady=\(model != nil) appeared=\(isAppeared)"
+    }
+
+    /// viewDidLoad の後 4 秒間、200ms ごとに状態を記録する。プロセスが落ちたのか、止まったのか、
+    /// VC だけが破棄されたのか（ログが途切れる時刻と deinit の有無）を区別する。表示が始まる前の打ち切りを調べるためのもの
+    private func startHeartbeat() {
+        guard DiagLog.isEnabled else { return }
+        heartbeatCount = 0
+        scheduleHeartbeat()
+    }
+
+    private func scheduleHeartbeat() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self = self else { return }
+            self.heartbeatCount += 1
+            DiagLog.logSync("heartbeat instance=#\(self.instanceNumber) n=\(self.heartbeatCount) \(self.viewState())")
+            if self.heartbeatCount < 20 { self.scheduleHeartbeat() }
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        DiagLog.logSync("viewDidDisappear instance=#\(instanceNumber) \(viewState())")
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        let stats = MemoryProbe.getStats()
+        DiagLog.logSync("didReceiveMemoryWarning instance=#\(instanceNumber) footprint=\(Int(stats.physFootprintMB))MB available=\(Int(stats.availableMemoryMB))MB")
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        DiagLog.logSync("viewWillTransition instance=#\(instanceNumber) size=\(Int(size.width))x\(Int(size.height))")
     }
 
     deinit {
-        DiagLog.log("keyboard VC deinit instance=#\(instanceNumber)")
+        DiagLog.logSync("keyboard VC deinit instance=#\(instanceNumber)")
     }
 
     override func viewWillAppear(_ animated: Bool) {
-        DiagLog.log("viewWillAppear instance=#\(instanceNumber) currentHost=\(isCurrentHost)")
+        DiagLog.logSync("viewWillAppear instance=#\(instanceNumber) currentHost=\(isCurrentHost) \(viewState())")
         super.viewWillAppear(animated)
         isAppeared = true
         // ホストアプリのセットアップ状況表示用のマーカー（OnboardingView.swift の NagiSetupMarker が読む）
@@ -104,6 +147,7 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        DiagLog.logSync("viewDidAppear instance=#\(instanceNumber) \(viewState())")
         // 画面の端（候補バーの展開ボタン・端のキー）の押下が遅れる・取りこぼされるのを防ぐ。
         // システムの端のジェスチャ（ホームインジケーター・端からのスワイプ）の認識器が、キーボードの window で
         // touchesBegan を遅らせるため、遅らせないようにする（カスタムキーボードで一般的な対処）
@@ -117,7 +161,7 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     override func viewWillDisappear(_ animated: Bool) {
         let current = isCurrentHost
-        DiagLog.log("viewWillDisappear instance=#\(instanceNumber) currentHost=\(current)")
+        DiagLog.logSync("viewWillDisappear instance=#\(instanceNumber) currentHost=\(current)")
         isAppeared = false
         if model == nil {
             let elapsed = Int(Date().timeIntervalSince(loadStartedAt) * 1000)

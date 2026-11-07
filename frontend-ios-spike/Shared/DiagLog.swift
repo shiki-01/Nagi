@@ -52,6 +52,14 @@ enum DiagLog {
         queue.async { append(line) }
     }
 
+    /// 1 行を追記し、書き終わるまで待つ。プロセスが突然終わる（iOS による打ち切り）直前の行が
+    /// 非同期のキューに残って失われるのを避けるため、ライフサイクルの診断ログだけに使う
+    static func logSync(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        let line = "\(formatter.string(from: Date())) \(message())"
+        queue.sync { append(line) }
+    }
+
     /// 全文を読む（古い順）
     static func read() -> String {
         queue.sync {
