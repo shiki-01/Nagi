@@ -43,6 +43,10 @@ final class E2ERunner {
                 for (index, step) in scenario.steps.enumerated() {
                     do {
                         try perform(step)
+                        // 診断用: 入力系の操作ごとにテキスト欄の表示を残す（失敗時にどこで食い違ったかを追えるように）
+                        if step.tap != nil || step.flick != nil || step.key != nil {
+                            print("[trace] \(suite.suite)/\(scenario.name) step \(index + 1) (\(step.summary)): text=\"\(currentText())\"")
+                        }
                     } catch {
                         throw E2EError.step("step \(index + 1) (\(step.summary)): \(error)")
                     }
