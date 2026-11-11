@@ -35,6 +35,17 @@ let package = Package(
             dependencies: ["NagiIME"],
             path: "Sources/NagiIMEApp"
         ),
+        // E2E テスト用（`docs/ui-testing.md` / `tests/e2e/`）。macOS 以外では空の実行ファイル。
+        // NagiTestHost: NSTextInputClient を実装したテスト専用ホスト。確定/未確定文字列を状態ファイルへ書き出す
+        .executableTarget(
+            name: "NagiTestHost",
+            path: "Sources/NagiTestHost"
+        ),
+        // nagi-e2e: シナリオ JSON を読み、CGEvent でキーを送出して NagiTestHost の状態を検証するドライバー
+        .executableTarget(
+            name: "nagi-e2e",
+            path: "Sources/nagi-e2e"
+        ),
         .testTarget(
             name: "NagiIMETests",
             dependencies: ["NagiIME", "NagiClient"],

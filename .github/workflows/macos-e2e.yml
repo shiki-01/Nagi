@@ -1,0 +1,97 @@
+name: macOS UI E2E
+
+# 実際の OS 入力経路（CGEvent でキー送出 → IMKit → NagiTestHost のテキスト欄）で IME を検証する。
+# 設計: docs/ui-testing.md、シナリオ仕様: tests/e2e/README.md、実行本体: tests/e2e/macos/run.sh
+#
+# 前提・注意:
+# - macOS ホストランナーはログイン済みの GUI セッション（自動ログイン）で動く。これがないと
+#   NagiTestHost を前面化できず、CGEvent も IME に届かない。
+# - キー送出・入力ソースの有効化にはアクセシビリティ許可（TCC）が必要。runner-images は /bin/bash 等へ
+#   アクセシビリティ/画面収録を付与済み（actions/runner-images の configure-tccdb-macos.sh）で、
+#   `shell: /bin/bash` で実行すればその子プロセスの nagi-e2e にも効く想定。念のため、ユーザー TCC.db へ
+#   sqlite3 で追加付与する best-effort ステップを置いている（macOS のバージョンにより TCC.db が
+#   SIP/TCC で保護され書けないことがある。失敗しても続行し、効かなければウォームアップで
+#   「アクセシビリティ許可がない」旨の診断を出して終了コード 3 で落ちる）。
+#   フォールバックが必要な場合は、self-hosted ランナーで一度手動許可する、または Terminal.app 経由
+#   （`open -a Terminal`）で起動する構成を検討する。
+# - 変換は決定的にする: LLM なし（bundle-macos は --llama なし）、システム辞書なし。
+# - 手動実行のみ。
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: /bin/bash -eo pipefail {0}
+
+jobs:
+  e2e:
+    name: ui e2e (macos)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (rust-toolchain.toml)
+        working-directory: core
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: bundle (Nagi.app, no LLM, ad-hoc signed)
+        working-directory: core
+        run: cargo xtask bundle-macos
+
+      - name: swift version
+        run: swift --version
+
+      - name: swift build (NagiTestHost, nagi-e2e)
+        working-directory: frontend-macos
+        run: |
+          swift build -c release --product NagiTestHost
+          swift build -c release --product nagi-e2e
+
+      # best-effort: ユーザー TCC.db へアクセシビリティ/イベント送出/画面収録を付与する。
+      # 書けなくても続行（上記コメント参照）
+      - name: grant TCC (best-effort)
+        continue-on-error: true
+        working-directory: frontend-macos
+        run: |
+          BIN="$(swift build -c release --show-bin-path)"
+          BIN_REAL="$(cd "$BIN" && pwd -P)"
+          DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          echo "TCC db: $DB"
+          for client in /bin/bash "$BIN_REAL/nagi-e2e" "$BIN_REAL/NagiTestHost"; do
+            for service in kTCCServiceAccessibility kTCCServicePostEvent kTCCServiceScreenCapture; do
+              sqlite3 "$DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$service','$client',1,2,4,1);" \
+                || echo "warn: TCC grant failed: $service $client"
+            done
+          done
+          # 反映のため tccd を再起動（自動で再起動される）
+          killall tccd 2>/dev/null || true
+
+      - name: run E2E
+        env:
+          NAGI_APP: ${{ github.workspace }}/core/target/macos-bundle/Nagi.app
+          NAGI_E2E_OUT: ${{ github.workspace }}/e2e-out
+        run: tests/e2e/macos/run.sh
+
+      - name: collect IME logs
+        if: always()
+        run: |
+          mkdir -p e2e-out
+          log show --last 15m --style compact --predicate 'process == "NagiIMEApp" OR process == "imserver" OR process == "NagiTestHost"' > e2e-out/unified.log 2>&1 || true
+          ~/Library/Input\ Methods/Nagi.app/Contents/MacOS/NagiIMEApp --diagnose > e2e-out/diagnose.txt 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-e2e
+          path: |
+            e2e-out/results.json
+            e2e-out/screenshots
+            e2e-out/host.log
+            e2e-out/unified.log
+            e2e-out/diagnose.txt
+          if-no-files-found: warn
