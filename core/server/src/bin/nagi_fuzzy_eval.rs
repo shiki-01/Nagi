@@ -22,6 +22,9 @@
 //! `--dump-rows <path>` で、採否ゲートを通す前の補正（`FuzzyEngine::diagnose`）を 1 件 1 行の TSV に
 //! 書く（係数の診断用。`--no-time-limit` と併用して決定的にする）。対象は uniform p=0.05 / 0.10・
 //! phonetic p=0.05 / 0.10 の集計に入る読みと、クリーンな文節で、既存の乱数列・出力は変えない。
+//! 行の末尾には、かな文字 n-gram 言語モデル（`--kana-lm <path>`、既定 `<data-dir>/dict/nagi-kana-lm.bin`。
+//! `cargo xtask build-kana-lm` で作る。無ければ空欄）による読みの総対数確率 `lm_typed`（ノイズ後の読み）と
+//! `lm_cand`（補正後の読み）の列がある。
 //! `--tsv <path>` で、集計行を `section\tclass\tn\thit1\thitn\tany` の TSV にも書く（前後比較用）。
 //!
 //! M2 のタッチ座標モデル（`--touch-sigma` で、ノイズ側の指のばらつきをキー間隔に対する比で指定。既定は
@@ -79,6 +82,7 @@ fn main() {
     let mut no_time_limit = false;
     let mut legacy_penalty = false;
     let mut dump_path: Option<PathBuf> = None;
+    let mut kana_lm_path: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -143,6 +147,7 @@ fn main() {
                 }
             }
             "--dump-rows" => dump_path = args.next().map(PathBuf::from),
+            "--kana-lm" => kana_lm_path = args.next().map(PathBuf::from),
             "--tsv" => tsv_out = args.next().map(PathBuf::from),
             "--model" => model_path = args.next().map(PathBuf::from),
             other => {
@@ -226,7 +231,21 @@ fn main() {
     );
 
     let uniform = profiles.contains(&NoiseProfile::Uniform);
+    let kana_lm = if dump_path.is_some() {
+        let path = kana_lm_path.unwrap_or_else(|| dir.join("dict/nagi-kana-lm.bin"));
+        let lm = nagi_dict::KanaLm::load(&path);
+        if lm.is_none() {
+            eprintln!(
+                "かな言語モデルを読めません（{}）。lm_typed / lm_cand は空欄にします",
+                path.display()
+            );
+        }
+        lm
+    } else {
+        None
+    };
     let dumper = DumpCtx {
+        kana_lm: kana_lm.as_ref(),
         dict: &dict,
         overlay: &overlay,
         engine: &engine,
@@ -694,7 +713,7 @@ fn main() {
 }
 
 /// `--dump-rows` の TSV のヘッダ行
-const DUMP_HEADER: &str = "set\tclass\treading_len\ttyped_total\ttyped_words\ttyped_unknown\ttyped_max_word_cost\ttyped_min_word_cost\ttyped_word_costs\tcand_reading\tcand_surface\tcand_cost\tchannel_cost\tkinds\tis_truth";
+const DUMP_HEADER: &str = "set\tclass\treading_len\ttyped_total\ttyped_words\ttyped_unknown\ttyped_max_word_cost\ttyped_min_word_cost\ttyped_word_costs\tcand_reading\tcand_surface\tcand_cost\tchannel_cost\tkinds\tis_truth\tlm_typed\tlm_cand";
 
 /// `--dump-rows` で診断を呼ぶのに要るもの
 struct DumpCtx<'a> {
@@ -703,6 +722,8 @@ struct DumpCtx<'a> {
     engine: &'a FuzzyEngine,
     settings: &'a FuzzySettings,
     budget: Duration,
+    /// かな言語モデル（無ければ `lm_typed` / `lm_cand` は空欄）
+    kana_lm: Option<&'a nagi_dict::KanaLm>,
 }
 
 impl DumpCtx<'_> {
@@ -750,10 +771,21 @@ impl DumpCtx<'_> {
             .map(i32::to_string)
             .collect::<Vec<_>>()
             .join(",");
+        // 読みの総対数確率 = 1 文字あたり × 文字数
+        let lm = |text: &str| {
+            self.kana_lm.map_or(String::new(), |m| {
+                format!(
+                    "{:.4}",
+                    m.log_prob_per_char(text) * text.chars().count().max(1) as f32
+                )
+            })
+        };
+        let lm_typed = lm(reading);
         for r in &d.rows {
+            let lm_cand = lm(&r.reading);
             let is_truth = truth.is_some_and(|(tr, ts)| r.surface == ts || r.reading == tr) as u8;
             out.push(format!(
-                "{set}\t{class}\t{}\t{total}\t{words}\t{unknown}\t{max}\t{min}\t{cost_list}\t{}\t{}\t{}\t{}\t{}\t{is_truth}",
+                "{set}\t{class}\t{}\t{total}\t{words}\t{unknown}\t{max}\t{min}\t{cost_list}\t{}\t{}\t{}\t{}\t{}\t{is_truth}\t{lm_typed}\t{lm_cand}",
                 reading.chars().count(),
                 r.reading,
                 r.surface,

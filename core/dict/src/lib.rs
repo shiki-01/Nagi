@@ -16,6 +16,8 @@ pub mod convert;
 pub mod dictionary;
 pub mod error;
 pub mod import;
+pub mod kanalm;
+pub mod kanalm_train;
 mod nbest;
 pub mod overlay;
 pub mod pos;
@@ -24,6 +26,7 @@ pub mod user;
 
 pub use builder::{
     ConnectionLayout, DictionaryBuilder, build_from_mozc_dir, build_from_sudachi_files,
+    load_mozc_dir,
 };
 pub use convert::{ConvertedSegment, PathInfo, PathWordInfo, SegmentCandidate};
 pub use dictionary::{Dictionary, Entry};
@@ -32,6 +35,7 @@ pub use import::{
     ImportError, ImportFormat, ImportOutcome, ImportSkip, SkipReason, decode_import,
     import_user_dict,
 };
+pub use kanalm::KanaLm;
 pub use nbest::SentenceCandidate;
 pub use overlay::{Overlay, OverlayEntry};
 pub use user::{SNIPPET_POS, UserDictIssue, UserDictionary, UserEntry, decode_text, to_hiragana};

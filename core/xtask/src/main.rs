@@ -6,6 +6,7 @@ mod app_icon;
 mod build_dict;
 mod build_glide_index;
 mod build_ios_xcframework;
+mod build_kana_lm;
 mod bundle_macos;
 mod bundle_windows;
 mod fetch_dict;
@@ -50,6 +51,22 @@ enum Task {
         /// 出力先（既定は data/dict/nagi-glide.bin）
         #[arg(long)]
         out: Option<std::path::PathBuf>,
+    },
+    /// Mozc 辞書からかな文字 n-gram 言語モデルを生成する（data/dict/nagi-kana-lm.bin。
+    /// 曖昧入力の補正の特徴量。無くても動く）
+    BuildKanaLm {
+        /// 出力先（既定は data/dict/nagi-kana-lm.bin）
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// 次数（既定 5）
+        #[arg(long)]
+        order: Option<usize>,
+        /// 疑似文の数（既定 2000000）
+        #[arg(long)]
+        sentences: Option<usize>,
+        /// 次数 3 以上の n-gram を捨てる頻度の下限
+        #[arg(long)]
+        prune: Option<f64>,
     },
     /// 英単語の語彙（SCOWL）を取得し SHA-256 検証して、fst 索引を組み立てる
     /// （data/english/words.fst。英語の自動判定の語彙。無くても動く）
@@ -162,6 +179,12 @@ fn main() -> ExitCode {
         Task::FetchDict => fetch_dict::run(),
         Task::BuildDict { source } => build_dict::run(source),
         Task::BuildGlideIndex { dict, out } => build_glide_index::run(dict, out),
+        Task::BuildKanaLm {
+            out,
+            order,
+            sentences,
+            prune,
+        } => build_kana_lm::run(out, order, sentences, prune),
         Task::FetchEnglish => fetch_english::run(),
         Task::FetchLoanword { from } => fetch_loanword::run(from),
         Task::FetchModel { variant } => fetch_model::run(variant),

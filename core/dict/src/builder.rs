@@ -99,6 +99,24 @@ impl DictionaryBuilder {
         Ok(())
     }
 
+    /// 追加済みの語を `(読み, 左ID, 右ID, コスト)` で列挙する（かな言語モデルの学習用）
+    pub fn training_entries(&self) -> impl Iterator<Item = (&str, u16, u16, u16)> + '_ {
+        self.entries
+            .iter()
+            .map(|e| (e.reading.as_str(), e.lid, e.rid, e.cost))
+    }
+
+    /// 連接コスト（前の語の右ID → 次の語の左ID）。表が無い・範囲外は 0
+    pub fn connection_cost(&self, rid_prev: u16, lid_next: u16) -> u16 {
+        let n = self.conn_n;
+        let (r, l) = (usize::from(rid_prev), usize::from(lid_next));
+        if r < n && l < n {
+            self.conn.get(r * n + l).copied().unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
     /// `id.def`（1 行 `ID 品詞文字列`。ID は 0 から連番）を設定する
     pub fn set_pos_defs_text(&mut self, text: &str) -> Result<(), DictError> {
         let mut defs = Vec::new();
@@ -415,6 +433,11 @@ impl DictionaryBuilder {
 
 /// Mozc OSS 辞書のディレクトリ（`dictionary00.txt`〜、`id.def`、`connection_single_column.txt`）から辞書を構築する
 pub fn build_from_mozc_dir(dir: &Path, layout: ConnectionLayout) -> Result<Dictionary, DictError> {
+    load_mozc_dir(dir, layout)?.build()
+}
+
+/// Mozc OSS 辞書のディレクトリを読み込んだ、構築前のビルダを返す（`build()` する前の段階）
+pub fn load_mozc_dir(dir: &Path, layout: ConnectionLayout) -> Result<DictionaryBuilder, DictError> {
     let mut builder = DictionaryBuilder::new();
     let mut files: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
@@ -445,7 +468,7 @@ pub fn build_from_mozc_dir(dir: &Path, layout: ConnectionLayout) -> Result<Dicti
         &std::fs::read_to_string(dir.join("connection_single_column.txt"))?,
         layout,
     )?;
-    builder.build()
+    Ok(builder)
 }
 
 /// SudachiDict の語彙CSVファイル群と matrix.def から辞書を構築する
