@@ -304,7 +304,7 @@ fn run_inner(args: &Args) -> Result<i32, String> {
     // canonicalize の `\\?\` 付きパスは regsvr32 に渡せない場合がある
     let dll = PathBuf::from(dll.to_string_lossy().trim_start_matches(r"\\?\"));
     if !args.skip_register {
-        ime::register(&dll)?;
+        ime::register_and_wait(&dll, Duration::from_secs(45))?;
     }
     let result = run_registered(args, &suites, &probe_path, &shots);
     if !args.skip_register

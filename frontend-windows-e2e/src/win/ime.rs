@@ -18,7 +18,7 @@ use windows::Win32::UI::TextServices::{
     GUID_TFCAT_TIP_KEYBOARD, ITfCompartmentMgr, ITfInputProcessorProfileMgr,
     ITfInputProcessorProfiles, ITfThreadMgr, TF_INPUTPROCESSORPROFILE,
     TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS,
-    TF_PROFILETYPE_INPUTPROCESSOR,
+    TF_LANGUAGEPROFILE, TF_PROFILETYPE_INPUTPROCESSOR,
 };
 use windows::core::{GUID, Interface, w};
 
@@ -119,6 +119,133 @@ pub fn register(dll: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn create_profile_mgr() -> Result<ITfInputProcessorProfileMgr, String> {
+    // 二重初期化は無害（既に別のモードなら RPC_E_CHANGED_MODE が返るだけ）
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) }
+        .map_err(|e| format!("ITfInputProcessorProfileMgr: {e}"))
+}
+
+/// 全言語のプロファイルを列挙する
+fn all_profiles(profiles: &ITfInputProcessorProfileMgr) -> Vec<TF_INPUTPROCESSORPROFILE> {
+    let Ok(enumerator) = (unsafe { profiles.EnumProfiles(0) }) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    loop {
+        let mut p = [TF_INPUTPROCESSORPROFILE::default()];
+        let mut fetched = 0u32;
+        if unsafe { enumerator.Next(&mut p, &mut fetched) }.is_err() || fetched == 0 {
+            break;
+        }
+        out.push(p[0]);
+    }
+    out
+}
+
+fn nagi_listed(profiles: &ITfInputProcessorProfileMgr) -> bool {
+    all_profiles(profiles)
+        .iter()
+        .any(|p| p.clsid == CLSID_NAGI_TEXT_SERVICE && p.guidProfile == GUID_NAGI_PROFILE)
+}
+
+/// 登録し、Nagi がプロファイルの列挙に現れるまで待つ（言語リストの変更直後などで一時的に
+/// 列挙されないことがあるため）。15 秒ごとに `regsvr32` をやり直す。
+/// 現れなくてもエラーにはしない（その先の有効化で診断を出す）
+pub fn register_and_wait(dll: &Path, timeout: Duration) -> Result<(), String> {
+    register(dll)?;
+    let profiles = create_profile_mgr()?;
+    let start = Instant::now();
+    let mut last_retry = Instant::now();
+    loop {
+        if nagi_listed(&profiles) {
+            println!(
+                "Nagi のプロファイルが列挙に現れました（{}ms）",
+                start.elapsed().as_millis()
+            );
+            return Ok(());
+        }
+        if start.elapsed() >= timeout {
+            println!(
+                "警告: {}ms 待っても Nagi が列挙に現れません",
+                timeout.as_millis()
+            );
+            return Ok(());
+        }
+        if last_retry.elapsed() >= Duration::from_secs(15) {
+            println!("Nagi が列挙に現れないため regsvr32 をやり直します");
+            register(dll)?;
+            last_retry = Instant::now();
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// 言語別のプロファイル列挙と `GetProfile` による直接取得（Nagi が見えないときの診断）
+fn dump_language_profiles(
+    profiles: &ITfInputProcessorProfileMgr,
+    legacy: Option<&ITfInputProcessorProfiles>,
+) -> String {
+    let mut out = String::new();
+    if let Some(l) = legacy {
+        for langid in [LANGID_JAPANESE, 0x0409u16] {
+            match unsafe { l.EnumLanguageProfiles(langid) } {
+                Ok(e) => {
+                    let mut n = 0;
+                    let mut lines = String::new();
+                    loop {
+                        let mut p = [TF_LANGUAGEPROFILE::default()];
+                        let mut fetched = 0u32;
+                        if unsafe { e.Next(&mut p, &mut fetched) }.is_err() || fetched == 0 {
+                            break;
+                        }
+                        n += 1;
+                        lines.push_str(&format!(
+                            "  clsid={:?} profile={:?} active={}\n",
+                            p[0].clsid,
+                            p[0].guidProfile,
+                            p[0].fActive.as_bool()
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "EnumLanguageProfiles(0x{langid:04X}) {n} 件\n{lines}"
+                    ));
+                }
+                Err(e) => {
+                    out.push_str(&format!("EnumLanguageProfiles(0x{langid:04X}) 失敗: {e}\n"))
+                }
+            }
+        }
+        out.push_str(&format!(
+            "IsEnabledLanguageProfile(Nagi) = {:?}\n",
+            unsafe {
+                l.IsEnabledLanguageProfile(
+                    &CLSID_NAGI_TEXT_SERVICE,
+                    LANGID_JAPANESE,
+                    &GUID_NAGI_PROFILE,
+                )
+            }
+            .map(|b| b.as_bool())
+        ));
+    }
+    let mut p = TF_INPUTPROCESSORPROFILE::default();
+    let r = unsafe {
+        profiles.GetProfile(
+            TF_PROFILETYPE_INPUTPROCESSOR,
+            LANGID_JAPANESE,
+            &CLSID_NAGI_TEXT_SERVICE,
+            &GUID_NAGI_PROFILE,
+            HKL::default(),
+            &mut p,
+        )
+    };
+    out.push_str(&format!(
+        "GetProfile(Nagi) = {r:?} (flags=0x{:08X} caps=0x{:X})\n",
+        p.dwFlags, p.dwCaps
+    ));
+    out
+}
+
 /// `regsvr32 /u /s <dll>`
 pub fn unregister(dll: &Path) -> Result<(), String> {
     run_regsvr32(&["/u".as_ref(), "/s".as_ref(), dll.as_os_str()]).map(|_| ())
@@ -192,6 +319,7 @@ impl ImeSession {
 
         log.push_str(&format!("[前] {}\n", session.describe()));
         log.push_str(&dump_profiles(&session.profiles));
+        log.push_str(&dump_language_profiles(&session.profiles, legacy.as_ref()));
         if let Some(l) = &legacy {
             log.push_str(&format!(
                 "現在の入力言語 GetCurrentLanguage = {:?}\n",
@@ -255,9 +383,10 @@ impl ImeSession {
         println!("--- IME 有効化の試行 ---\n{log}");
         if !activated {
             return Err(format!(
-                "ActivateProfile が全て失敗しました\n{log}[後] {}\n{}--- レジストリ ---\n{}",
+                "ActivateProfile が全て失敗しました\n{log}[後] {}\n{}{}--- レジストリ ---\n{}",
                 session.describe(),
                 dump_profiles(&session.profiles),
+                dump_language_profiles(&session.profiles, legacy.as_ref()),
                 registry_dump()
             ));
         }

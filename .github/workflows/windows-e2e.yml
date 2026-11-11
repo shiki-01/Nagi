@@ -80,6 +80,15 @@ jobs:
             $list.Add((New-WinUserLanguageList -Language 'ja-JP')[0])
           }
           Set-WinUserLanguageList -LanguageList $list -Force
+          # 反映は非同期。ja が言語リストに現れるまで待ち、その後さらに待ってから登録に進む
+          # （言語追加でプロファイル情報が再構築される最中に regsvr32 / 列挙すると Nagi が見えないことがあった）
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            if (Get-WinUserLanguageList | Where-Object { $_.LanguageTag -like 'ja*' }) { $ok = $true; break }
+            Start-Sleep -Seconds 2
+          }
+          Write-Host "ja が言語リストにある: $ok"
+          Start-Sleep -Seconds 15
           Write-Host '--- 変更後 ---'
           Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
 

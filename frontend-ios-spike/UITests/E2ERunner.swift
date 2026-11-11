@@ -75,8 +75,14 @@ final class E2ERunner {
         app.launchArguments = ["-nagi-e2e"]
         app.launch()
         let input = app.textFields[Self.inputIdentifier]
-        guard E2EKeyboardSetup.showNagi(in: app, input: input) else {
-            throw E2EError.setup("Nagi キーボードを表示できません（キーボードが有効化されていない可能性）")
+        if let problem = E2EKeyboardSetup.showNagi(in: app, input: input) {
+            // 1 回だけ、アプリを起動し直してやり直す（成功するシナリオの実行時間は増えない）
+            print("[kbd] retry with relaunch: \(problem)")
+            app.terminate()
+            app.launch()
+            if let second = E2EKeyboardSetup.showNagi(in: app, input: app.textFields[Self.inputIdentifier]) {
+                throw E2EError.setup("Nagi キーボードを表示できません（再起動後も失敗）: \(second)")
+            }
         }
         if !currentText().isEmpty {
             // 起動し直しているので通常は空。念のためホストの「クリア」を押す
