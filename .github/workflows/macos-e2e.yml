@@ -14,7 +14,7 @@ name: macOS UI E2E
 #   「アクセシビリティ許可がない」旨の診断を出して終了コード 3 で落ちる）。
 #   フォールバックが必要な場合は、self-hosted ランナーで一度手動許可する、または Terminal.app 経由
 #   （`open -a Terminal`）で起動する構成を検討する。
-# - 変換は決定的にする: LLM なし（bundle-macos は --llama なし）、システム辞書なし。
+# - 変換は決定的にする: LLM なし（bundle-macos は --llama なし）、システム辞書なし（語彙なしの最小辞書 e2e-fixture-data のみ）。
 # - 手動実行のみ。
 
 on:
@@ -42,6 +42,10 @@ jobs:
       - name: bundle (Nagi.app, no LLM, ad-hoc signed)
         working-directory: core
         run: cargo xtask bundle-macos
+
+      - name: fixture data (minimal dict, no vocabulary)
+        working-directory: core
+        run: cargo xtask e2e-fixture-data --out "$GITHUB_WORKSPACE/e2e-out/fixture-data"
 
       - name: swift version
         run: swift --version
@@ -75,6 +79,7 @@ jobs:
         env:
           NAGI_APP: ${{ github.workspace }}/core/target/macos-bundle/Nagi.app
           NAGI_E2E_OUT: ${{ github.workspace }}/e2e-out
+          NAGI_FIXTURE_DATA: ${{ github.workspace }}/e2e-out/fixture-data
         run: tests/e2e/macos/run.sh
 
       - name: collect IME logs

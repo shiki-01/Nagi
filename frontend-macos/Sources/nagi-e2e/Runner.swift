@@ -6,6 +6,7 @@ struct Config {
     var scenarios: String?
     var app: String?
     var fixtures: String?
+    var dataDir: String?
     var testHost: String?
     var out = "e2e-out"
     var filter: String?
@@ -17,6 +18,7 @@ struct Config {
           --scenarios <path>   シナリオ JSON（ディレクトリなら *.json すべて。platforms に macos を含むものだけ実行）
           --app <path>         cargo xtask bundle-macos で作った Nagi.app
           --fixtures <dir>     tests/e2e/fixtures（user-dir/ を一時ディレクトリへコピーして使う）
+          --data-dir <dir>     NAGI_DATA_DIR にする辞書ディレクトリ（cargo xtask e2e-fixture-data の出力。未指定は空）
           --test-host <path>   NagiTestHost の実行ファイル（既定: この実行ファイルと同じディレクトリ）
           --out <dir>          results.json / screenshots/ / host.log の出力先（既定: e2e-out）
           --filter <text>      "<suite>/<name>" にこの文字列を含むシナリオだけ実行
@@ -37,6 +39,7 @@ struct Config {
             case "--scenarios": config.scenarios = value()
             case "--app": config.app = value()
             case "--fixtures": config.fixtures = value()
+            case "--data-dir": config.dataDir = value()
             case "--test-host": config.testHost = value()
             case "--out": config.out = value() ?? config.out
             case "--filter": config.filter = value()
@@ -170,7 +173,8 @@ final class Runner {
         // (a) fixtures/user-dir を一時ディレクトリへコピー（エンジンの設定ディレクトリ）
         let userDirSource = URL(fileURLWithPath: config.fixtures!).appendingPathComponent("user-dir")
         let userDir = workDir.appendingPathComponent("user-dir")
-        let dataDir = workDir.appendingPathComponent("data")  // 空: システム辞書なし
+        // 語彙なしの最小辞書（ユーザー辞書の重ね合わせに辞書本体が要る）。未指定なら空（辞書なし）
+        let dataDir = config.dataDir.map { URL(fileURLWithPath: $0) } ?? workDir.appendingPathComponent("data")
         do {
             try fileManager.createDirectory(at: workDir, withIntermediateDirectories: true)
             guard fileManager.fileExists(atPath: userDirSource.path) else {
