@@ -49,6 +49,26 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 - 起動引数 `-nagi-e2e` で、入力テスト画面から始める
 - 実行: `ios-uitest.yml`（手動実行）。Xcode は CI 側にあり、手元には不要
 
+## CI での実行結果（2026-11-11 時点）
+
+| 対象 | 結果 | 備考 |
+| --- | --- | --- |
+| iOS | **13 件中 10 件 PASS**（シミュレータ上で実際にキーボードを操作） | 失敗 3 件はシナリオ開始時のキーボード表示の不安定さ（堅牢化中） |
+| Windows | ビルド・登録・IME 有効化・TSF の起動までは成功した実行がある。キー入力が IME に届かない問題と、実行ごとに Nagi が列挙されないばらつきが残る | 調整中 |
+| macOS | ビルド・権限・IME の登録・入力ソースの有効化までは成功。`TISSelectInputSource` が全試行で `-50` になり、Nagi を選択できない | GitHub ホストランナーでは不可能と判断 |
+
+### macOS: 自前の Mac で実行する
+
+ホストランナーでは、第三者製 IME を入力ソースとして選択できません（US レイアウトの選択は成功するが、Nagi の mode だけ `-50`）。
+自前の Mac（Xcode 不要）で一度だけ次を行えば、`nagi-e2e` が実行できます。
+
+1. `cargo xtask bundle-macos` で作った `Nagi.app` を `~/Library/Input Methods` に置く
+2. システム設定 > キーボード > 入力ソース で Nagi（日本語）を手動で追加する（初回のみ）
+3. 実行元（Terminal）にアクセシビリティと画面収録を許可する
+4. `tests/e2e/macos/run.sh` を実行する
+
+常時回したい場合は、この Mac を self-hosted ランナーとして登録し、`macos-e2e.yml` の `runs-on` を `self-hosted` に変更します。
+
 ## 未検証の事項と、最初に疑う箇所
 
 これらはいずれもこの開発環境（Linux）では実行できず、CI での初回実行で確認する必要があります。

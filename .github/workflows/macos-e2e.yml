@@ -19,10 +19,8 @@ name: macOS UI E2E
 
 on:
   workflow_dispatch:
-  # 検証用: main に入るまでの間、このブランチへの push で起動する（main へ入れる前に削除すること）
-  push:
-    branches: [claude/ui-automation-testing-4mgml9]
-    paths: [".github/workflows/macos-e2e.yml", "frontend-macos/Sources/nagi-e2e/**", "frontend-macos/Sources/NagiTestHost/**", "tests/e2e/macos/**"]
+  # GitHub ホストランナーでは第三者製 IME を選択できない（TISSelectInputSource が -50 になる。docs/ui-testing.md）
+  # ため、push トリガーは外している。実行は自前の Mac（self-hosted）を想定する
 
 defaults:
   run:
