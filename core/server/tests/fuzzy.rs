@@ -648,3 +648,56 @@ mod m2 {
         assert_eq!(composing(&mut a), composing(&mut c));
     }
 }
+
+#[test]
+fn diagnose_returns_rows_without_the_acceptance_gate() {
+    use nagi_dict::Overlay;
+    use nagi_server::fuzzy::{FuzzyEngine, FuzzySettings};
+    use std::time::Duration;
+
+    let dict = dict_with_extra(EXTRA);
+    let engine = FuzzyEngine::new();
+    let overlay = Overlay::default();
+    let settings = FuzzySettings {
+        no_time_limit: true,
+        ..FuzzySettings::default()
+    };
+    let budget = Duration::from_millis(150);
+    let hint = TypingHint::default();
+
+    // 「かんじ」は辞書語そのもの: 提案は出ない（ゲート）が、診断は展開された補正を返す
+    let suggested = engine.suggest(&dict, &overlay, "かんじ", &hint, &settings, false, budget);
+    assert!(suggested.is_empty());
+    let d = engine
+        .diagnose(&dict, &overlay, "かんじ", &hint, &settings, budget)
+        .unwrap();
+    assert!(d.exact && d.covered);
+    assert!(!d.rows.is_empty(), "{d:?}");
+    let typed = d.typed.as_ref().unwrap();
+    assert_eq!(
+        typed.total_cost,
+        dict.segment_candidates_with("かんじ", 1, Some(&overlay))[0].cost
+    );
+    // 表記の重複はなく、補正後のコストは補正後の読みの最良経路と一致する
+    let mut surfaces: Vec<&str> = d.rows.iter().map(|r| r.surface.as_str()).collect();
+    surfaces.sort_unstable();
+    surfaces.dedup();
+    assert_eq!(surfaces.len(), d.rows.len());
+    for r in &d.rows {
+        let first = &dict.segment_candidates_with(&r.reading, 1, Some(&overlay))[0];
+        assert_eq!(r.corrected_cost, first.cost);
+        assert!(!r.kinds.is_empty());
+    }
+
+    // 辞書語でない読みでは exact = false で、typed と rows が返る
+    let d = engine
+        .diagnose(&dict, &overlay, "かmじ", &hint, &settings, budget)
+        .unwrap();
+    assert!(!d.exact && !d.covered);
+    assert!(d.rows.iter().any(|r| r.surface == "感じ"), "{d:?}");
+    assert!(
+        engine
+            .diagnose(&dict, &overlay, "", &hint, &settings, budget)
+            .is_none()
+    );
+}

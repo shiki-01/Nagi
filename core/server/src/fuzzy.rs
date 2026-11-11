@@ -9,7 +9,7 @@
 //! - 入力中の読みは変えない。候補に混ぜるだけで、自動では置き換えない
 
 use nagi_config::FuzzySection;
-use nagi_dict::{Dictionary, Overlay};
+use nagi_dict::{Dictionary, Overlay, PathInfo};
 use nagi_engine::TypingHint;
 use nagi_engine::touch::{DakutenOrder, key_table};
 use nagi_fuzzy::{
@@ -115,6 +115,35 @@ pub struct Suggestion {
     /// 再採点（LM）の結果: 補正候補の `lmScore - channelCost` から、入力そのままの読みの
     /// `lmScore` を引いた差（大きいほど補正が有利）。再採点しなかった・できなかったときは `None`
     pub lm_margin: Option<f32>,
+}
+
+/// 補正の診断（[`FuzzyEngine::diagnose`]）の 1 行: 採否ゲートを通す前の補正 1 件
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiagRow {
+    /// 補正後の読み
+    pub reading: String,
+    /// 補正後の読みの最良の表記
+    pub surface: String,
+    /// 補正後の読みの Viterbi 総コスト
+    pub corrected_cost: i32,
+    /// 編集コスト（`nagi-fuzzy` の尺度）
+    pub channel_cost: f32,
+    /// 補正に使った編集操作の種類（出現順に `+` でつないだ名前。例 `Substitute+Voicing`）
+    pub kinds: String,
+}
+
+/// 補正の診断結果。採否の判定の係数を決めるための材料で、採否の挙動には使わない
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diagnosis {
+    /// 読みが辞書語（システム辞書・ユーザー辞書・スニペット）として完全一致するか
+    /// （`collect` が何も出さなくなる条件と同じ）
+    pub exact: bool,
+    /// 読みが辞書の語の連なりとして成立するか
+    pub covered: bool,
+    /// 元の読みの Viterbi 最良経路の要約
+    pub typed: Option<PathInfo>,
+    /// 展開された補正（表記の重複は除く。採否のゲートは通さない）
+    pub rows: Vec<DiagRow>,
 }
 
 /// 文脈つきで「読み → 表記」の尤もらしさ（対数確率。大きいほど良い）を求めるもの。
@@ -335,6 +364,57 @@ impl FuzzyEngine {
         }
         collected.suggestions.truncate(settings.max_candidates);
         collected.suggestions
+    }
+
+    /// 補正の診断: 採否のゲート（Viterbi コストの比較）を通さず、展開された補正を全部返す。
+    /// 読みが辞書語として完全一致していても `rows` を返す（`exact` で区別できる）。
+    /// 読みが空なら `None`
+    pub fn diagnose(
+        &self,
+        dict: &Dictionary,
+        overlay: &Overlay,
+        reading: &str,
+        typing: &TypingHint<'_>,
+        settings: &FuzzySettings,
+        budget: Duration,
+    ) -> Option<Diagnosis> {
+        if reading.is_empty() {
+            return None;
+        }
+        let exact = !dict.lookup(reading).is_empty()
+            || !overlay.lookup(reading).is_empty()
+            || !overlay.snippets(reading).is_empty();
+        let covered = covered(&DictIndex(dict), reading);
+        let typed = dict.best_path_info(reading, Some(overlay));
+        let mut rows: Vec<DiagRow> = Vec::new();
+        for c in self.expand(dict, reading, typing, settings, budget) {
+            let Some(info) = dict.best_path_info(&c.reading, Some(overlay)) else {
+                continue;
+            };
+            if rows.iter().any(|r| r.surface == info.surface) {
+                continue;
+            }
+            let mut kinds: Vec<String> = Vec::new();
+            for op in &c.ops {
+                let name = format!("{:?}", op.kind);
+                if !kinds.contains(&name) {
+                    kinds.push(name);
+                }
+            }
+            rows.push(DiagRow {
+                reading: c.reading,
+                surface: info.surface,
+                corrected_cost: info.total_cost,
+                channel_cost: c.cost,
+                kinds: kinds.join("+"),
+            });
+        }
+        Some(Diagnosis {
+            exact,
+            covered,
+            typed,
+            rows,
+        })
     }
 
     /// 補正の提案を辞書のスコアの良い順に全部集める（個数の上限は掛けない）。クリーンな入力・

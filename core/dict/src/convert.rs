@@ -68,7 +68,60 @@ struct Path {
     extras: Vec<String>,
 }
 
+/// Viterbi 最良経路の 1 語の要約
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathWordInfo {
+    /// 語の読みの文字数
+    pub chars: usize,
+    /// 語コスト
+    pub word_cost: i32,
+    /// 辞書に無い 1 文字の素通しか
+    pub unknown: bool,
+}
+
+/// 読みの Viterbi 最良経路の要約（診断用）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathInfo {
+    /// 経路の表記
+    pub surface: String,
+    /// 経路の総コスト（連接コスト込み。`segment_candidates_with` の先頭候補のコストと一致する）
+    pub total_cost: i32,
+    /// 経路上の語（先頭から）
+    pub words: Vec<PathWordInfo>,
+}
+
 impl Dictionary {
+    /// 読みの Viterbi 最良経路の要約を返す（空の読みは `None`）。診断用で、変換の挙動は変えない
+    pub fn best_path_info(&self, reading: &str, overlay: Option<&Overlay>) -> Option<PathInfo> {
+        let chars: Vec<char> = reading.chars().collect();
+        if chars.is_empty() {
+            return None;
+        }
+        let path = self.viterbi(reading, &chars, overlay);
+        let surface: String = path
+            .words
+            .iter()
+            .map(|w| {
+                let text: String = chars[w.start..w.end].iter().collect();
+                self.word_surface(w, &text, &path.extras)
+            })
+            .collect();
+        let words = path
+            .words
+            .iter()
+            .map(|w| PathWordInfo {
+                chars: w.end - w.start,
+                word_cost: w.word_cost,
+                unknown: matches!(w.source, Source::Unknown),
+            })
+            .collect();
+        Some(PathInfo {
+            surface,
+            total_cost: path.total,
+            words,
+        })
+    }
+
     /// 読み（ひらがな）を Viterbi で最良経路に変換し、文節に区切って返す
     pub fn convert(&self, reading: &str) -> Vec<ConvertedSegment> {
         self.convert_with(reading, None)

@@ -19,6 +19,9 @@
 //! 小書きの通常化。p = 0.05 / 0.10。重みは仮で実測ではない）、`both` は両方。
 //! 各集計にはノイズ後の読みのクラス（Exact = 辞書語として完全一致 / Covered = 語の連なりとして成立 /
 //! Uncovered）別の内訳を `[class]` / `[phonetic]` で始まる追加行として出す（既存の行は変えない）。
+//! `--dump-rows <path>` で、採否ゲートを通す前の補正（`FuzzyEngine::diagnose`）を 1 件 1 行の TSV に
+//! 書く（係数の診断用。`--no-time-limit` と併用して決定的にする）。対象は uniform p=0.05 / 0.10・
+//! phonetic p=0.05 / 0.10 の集計に入る読みと、クリーンな文節で、既存の乱数列・出力は変えない。
 //! `--tsv <path>` で、集計行を `section\tclass\tn\thit1\thitn\tany` の TSV にも書く（前後比較用）。
 //!
 //! M2 のタッチ座標モデル（`--touch-sigma` で、ノイズ側の指のばらつきをキー間隔に対する比で指定。既定は
@@ -74,6 +77,7 @@ fn main() {
     let mut profiles: Vec<NoiseProfile> = vec![NoiseProfile::Uniform, NoiseProfile::Phonetic];
     let mut tsv_out: Option<PathBuf> = None;
     let mut no_time_limit = false;
+    let mut dump_path: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -135,6 +139,7 @@ fn main() {
                     }
                 }
             }
+            "--dump-rows" => dump_path = args.next().map(PathBuf::from),
             "--tsv" => tsv_out = args.next().map(PathBuf::from),
             "--model" => model_path = args.next().map(PathBuf::from),
             other => {
@@ -217,6 +222,17 @@ fn main() {
     );
 
     let uniform = profiles.contains(&NoiseProfile::Uniform);
+    let dumper = DumpCtx {
+        dict: &dict,
+        overlay: &overlay,
+        engine: &engine,
+        settings: &settings,
+        budget,
+    };
+    let mut dump_lines: Vec<String> = Vec::new();
+    if dump_path.is_some() {
+        dump_lines.push(DUMP_HEADER.to_string());
+    }
     let mut tsv_rows: Vec<String> = Vec::new();
     let class_lines = |tag: &str, label: &str, ct: &ClassTally, tsv: &mut Vec<String>| {
         for class in ReadingClass::ALL {
@@ -255,6 +271,9 @@ fn main() {
                 budget,
             );
             clean_total += 1;
+            if dump_path.is_some() {
+                dumper.dump(&mut dump_lines, "clean", reading, None);
+            }
             clean_class.add(classify_reading(&dict, &overlay, reading), &s, "");
             let exact = !dict.lookup(reading).is_empty();
             if !exact {
@@ -336,6 +355,14 @@ fn main() {
                     continue;
                 }
                 noisy += 1;
+                if dump_path.is_some() && p >= 0.05 {
+                    dumper.dump(
+                        &mut dump_lines,
+                        &format!("uniform{p:.2}"),
+                        &noisy_reading,
+                        Some((reading, surface)),
+                    );
+                }
                 let started = Instant::now();
                 let _ = engine.expand(
                     &dict,
@@ -573,6 +600,14 @@ fn main() {
                     skipped += 1;
                     continue;
                 }
+                if dump_path.is_some() {
+                    dumper.dump(
+                        &mut dump_lines,
+                        &format!("phonetic{p:.2}"),
+                        &noisy_reading,
+                        Some((reading, surface)),
+                    );
+                }
                 let s = engine.suggest(
                     &dict,
                     &overlay,
@@ -624,6 +659,14 @@ fn main() {
         }
     }
 
+    if let Some(path) = &dump_path {
+        let mut body = dump_lines.join("\n");
+        body.push('\n');
+        if let Err(e) = std::fs::write(path, body) {
+            eprintln!("行ダンプを書けません: {}: {e}", path.display());
+        }
+    }
+
     // F1 / F2: 文脈つきの再採点と自動採用
     if rescore {
         let model = model_path.or_else(|| first_gguf(&dir.join("models")));
@@ -643,6 +686,78 @@ fn main() {
             max_candidates,
             model,
         });
+    }
+}
+
+/// `--dump-rows` の TSV のヘッダ行
+const DUMP_HEADER: &str = "set\tclass\treading_len\ttyped_total\ttyped_words\ttyped_unknown\ttyped_max_word_cost\ttyped_min_word_cost\ttyped_word_costs\tcand_reading\tcand_surface\tcand_cost\tchannel_cost\tkinds\tis_truth";
+
+/// `--dump-rows` で診断を呼ぶのに要るもの
+struct DumpCtx<'a> {
+    dict: &'a Dictionary,
+    overlay: &'a Overlay,
+    engine: &'a FuzzyEngine,
+    settings: &'a FuzzySettings,
+    budget: Duration,
+}
+
+impl DumpCtx<'_> {
+    /// `reading`（ノイズ後の読み）の補正を全部 `out` に TSV 行として足す。
+    /// `truth` は (元の正しい読み, 正解の表記)。`None`（クリーン）の行は `is_truth` が常に 0
+    fn dump(&self, out: &mut Vec<String>, set: &str, reading: &str, truth: Option<(&str, &str)>) {
+        let Some(d) = self.engine.diagnose(
+            self.dict,
+            self.overlay,
+            reading,
+            &TypingHint::default(),
+            self.settings,
+            self.budget,
+        ) else {
+            return;
+        };
+        let class = if d.exact {
+            ReadingClass::Exact
+        } else if d.covered {
+            ReadingClass::Covered
+        } else {
+            ReadingClass::Uncovered
+        };
+        let class = match class {
+            ReadingClass::Exact => "exact",
+            ReadingClass::Covered => "covered",
+            ReadingClass::Uncovered => "uncovered",
+        };
+        let costs: Vec<i32> = d
+            .typed
+            .as_ref()
+            .map(|t| t.words.iter().map(|w| w.word_cost).collect())
+            .unwrap_or_default();
+        let (total, words, unknown) = d.typed.as_ref().map_or((String::new(), 0, 0), |t| {
+            (
+                t.total_cost.to_string(),
+                t.words.len(),
+                t.words.iter().filter(|w| w.unknown).count(),
+            )
+        });
+        let max = costs.iter().max().map_or(String::new(), i32::to_string);
+        let min = costs.iter().min().map_or(String::new(), i32::to_string);
+        let cost_list = costs
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        for r in &d.rows {
+            let is_truth = truth.is_some_and(|(tr, ts)| r.surface == ts || r.reading == tr) as u8;
+            out.push(format!(
+                "{set}\t{class}\t{}\t{total}\t{words}\t{unknown}\t{max}\t{min}\t{cost_list}\t{}\t{}\t{}\t{}\t{}\t{is_truth}",
+                reading.chars().count(),
+                r.reading,
+                r.surface,
+                r.corrected_cost,
+                r.channel_cost,
+                r.kinds,
+            ));
+        }
     }
 }
 

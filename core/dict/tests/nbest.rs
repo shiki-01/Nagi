@@ -91,3 +91,20 @@ fn convert_n_best_splits_into_bunsetsu_like_single_best() {
         .collect();
     assert_eq!(best_surface, top_surface);
 }
+
+#[test]
+fn best_path_info_matches_first_segment_candidate() {
+    let dict = dict();
+    for reading in ["はし", "きょうは", "きょうはx", "x"] {
+        let info = dict.best_path_info(reading, None).unwrap();
+        let first = &dict.segment_candidates_with(reading, 1, None)[0];
+        assert_eq!(info.total_cost, first.cost, "{reading}");
+        assert_eq!(info.surface, first.surface, "{reading}");
+        let total_chars: usize = info.words.iter().map(|w| w.chars).sum();
+        assert_eq!(total_chars, reading.chars().count(), "{reading}");
+    }
+    let info = dict.best_path_info("きょうはx", None).unwrap();
+    assert_eq!(info.words.iter().filter(|w| w.unknown).count(), 1);
+    assert_eq!(info.words.len(), 3);
+    assert!(dict.best_path_info("", None).is_none());
+}
