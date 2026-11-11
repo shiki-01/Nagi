@@ -319,3 +319,11 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 - 実装済み: かな n-gram LM と `cargo xtask build-kana-lm`（判定には未使用）、読みの周辺コスト API（判定には未使用）、強度のマージン反映（弱 1.5 / 中 1.0 / 強 0.8）、採用/却下の個人化（`fuzzy_stats.json`・`get_fuzzy_stats`・`input.fuzzy.personalize`）、抑制語（`suppressed.tsv`・3 メソッド）、確定後の遡及再評価（`input.fuzzy.retro_review`・`retro_review` 通知・`accept_retro_review`。既定オフ）、`nagi-fuzzy-eval` の `--retro` と再採点の式の比較の拡張
 - 結論: LLM 再採点は式を変えても辞書のみを上回らず既定オフのまま。かな LM・周辺確率も上乗せ無し
 - 未完了: フロント側の UI（強度設定・補正の振り返り・抑制語の登録・遡及再評価の置換）、実機での誤表示の確認、個人化の定数の検証、実誤りデータでの再較正
+
+## リリース記録（2026-11-11、曖昧入力 H-88・H-89 を含む）
+
+- macOS **0.1.10**: Release `macos-v0.1.10` を公開済み（`macos-release` run 13、コミット d424d6a）
+- iOS: TestFlight に**ビルド番号 82**（表示バージョン 1.0.0、llama あり、コミット b75ce5b）を送信済み。最初の 2 回（run 80・81）は H-87 の `didReceiveMemoryWarning()` 二重 override でアーカイブが失敗（H-87 の追記参照）
+- Android **0.1.7**: APK は `android-apk` run 17 で作成済み（Actions の成果物 `nagi-android-apk`）。**GitHub Release とタグ `android-v0.1.7` は未作成**: この環境からはタグの push ができないため。公開するには手元で `git tag android-v0.1.7 b75ce5b` ではなく、APK のビルドに使ったコミット `d424d6a` に対して `git tag android-v0.1.7 d424d6a && git push origin android-v0.1.7`（タグ push で Release と web の `latest.json` 更新まで自動）
+- Windows: 未リリース（TSF フロントが実機未検証のため。手動実行の `windows-release` は既定 prerelease）
+- 実機確認の項目: iOS は `docs/ios-device-checklist.md` §5.8、macOS/Windows は `docs/real-hardware-checklist.md` §9

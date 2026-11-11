@@ -2061,6 +2061,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **推定（未確定）**: アプリ切替の際に iOS が同一プロセスで VC を 2 つ作り、2 つ目の表示に至らないまま拡張の表示を打ち切って標準キーボードへ戻す。拡張側から止められない iOS の挙動の可能性が高い（H-33 と同種）。
 - **診断ログの追加**（`Keyboard/KeyboardViewController.swift`、`Shared/DiagLog.swift`）: ライフサイクルのログを同期書き込み（`DiagLog.logSync`）にし、プロセスの打ち切り直前の行がキューに残って失われないようにした。追加した行: `viewDidAppear`、`viewDidDisappear`、`viewWillTransition`、`didReceiveMemoryWarning`（footprint/available つき）、`viewWillAppear` への `viewState`（`bounds` / `window` の有無 / `parent` / `modelReady` / `appeared`）、`viewDidLoad` の後 4 秒間の 200ms ごとの `heartbeat`。ログが途切れる時刻と `deinit` の有無で、プロセスの終了・停止・VC だけの破棄を区別する。
 - **確認方法**: TestFlight の新ビルドで症状を再現し、直後に診断ログを取得する。見る点: 症状の回で `heartbeat` が途切れる時刻、`deinit` の有無、`viewDidAppear` の有無、`bounds` の値。
+- **追記（2026-11-11）**: H-87 の診断ログ追加で `KeyboardViewController` に `didReceiveMemoryWarning()` が 2 つ定義され、Release のアーカイブが「`didReceiveMemoryWarning()` has already been overridden」で失敗していた（`ios-test` の Debug・シミュレータのビルドでは見つからず、TestFlight のアーカイブで初めて分かった。H-87 の TestFlight ビルドは作れていなかった）。診断ログを既存のメモリ警告処理（「メモリ警告」の節）へ統合して解消（b75ce5b）。あわせて `ios-testflight.yml` に、アーカイブ失敗時だけログから `error:` 行を出す手順を足した（`tail -n 40` ではエラー行が残らなかったため）。この修正後の最初のビルドがビルド番号 82
 
 ### H-88. 曖昧入力: 「成立する読み」への 5 倍ペナルティを連続マージンに置き換え、誤り辞書を追加（評価の拡張を含む。2026-11-11、外部調査レポートの上位 3 件を実装、**実機未確認**、要レビュー）
 
