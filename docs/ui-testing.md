@@ -89,3 +89,41 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 - macOS の公証・署名後のインストール
 
 実機チェックリスト（`docs/real-hardware-checklist.md`）のうち、キー入力と composition の基本動作（§2〜§5、§8.3〜§8.4）は E2E シナリオへの移行対象です。移行後にチェックリストから外します。
+
+## 再開メモ（2026-11-11 時点で中断）
+
+### 到達点
+
+- **Windows**: CI（windows-latest）で E2E **17/17 成功**。実際の SendInput → TSF → IME → 入力欄の経路で検証できている
+  - E2E が製品の不具合を 1 件検出し修正した: `frontend-windows-tsf/src/render.rs` の `key_id` が lParam 下位 16bit（リピート回数）を含み、OnTestKeyDown（`0x1E0001`）と OnKeyDown（`0x1E0000`）で不一致 → 結果の引き継ぎが外れて 1 キーが 2 回評価されていた。リピート回数を除く修正と回帰テストを入れた（別コミット。問題があればそのコミットだけ戻せる）
+- **iOS**: シミュレータ上の XCUITest で ios-kana **13 件中 12 件 PASS**。残りは `cursor_move_insert`（期待 "あくい" / 実測 "あいく"）
+  - 切り分け用に、失敗メッセージへ各ステップ後のテキスト履歴（`| 経過: step1 ... -> "あ" cand=N; ...`）を入れた版を push 済み。**この版の CI 結果は未確認**
+- **macOS**: GitHub ホストランナーでは不可能と判断（`TISSelectInputSource` が全試行で `-50`。US の選択は成功するが Nagi の mode だけ失敗）。自前の Mac での実行手順は上記「macOS: 自前の Mac で実行する」
+
+### 再開手順
+
+1. 最新の `ios-uitest` の実行結果を確認する（コミット「ios-uitest: 失敗メッセージに各ステップ後のテキスト履歴を含める」）
+   - `FAIL ios-kana/cursor_move_insert` の `| 経過:` 以降を読み、原因を判定する
+     - `step3 tap ←` で text が変わる → `←` の経路の問題
+     - `step4` で "あくい" になった後に "あいく" へ戻る → 後から戻す処理がある
+     - `cand=0` のまま → プリエディット無し（`hasPreedit` 偽）の経路で、ホスト側のキャレットだけが動いている疑い
+   - 実装は `frontend-ios-spike/Keyboard/KeyboardModel.swift` の `arrow()`（887 行付近）。入力中はコアの `perform(.moveCursor)`、プリエディット無しのときだけ `adjustTextPosition`
+   - ヘッドレス（`cargo xtask e2e-headless --ios`）では "あくい" で通っている。iOS 拡張の実設定（ライブ変換が既定 ON、曖昧入力 ON）とフィクスチャ（`live_conversion = false`）の差が候補
+   - テスト側の期待値の誤りなら `tests/e2e/scenarios/ios-kana.json` を直す。実装の不具合なら根拠を付けてユーザーに相談する
+2. 13 件が通ったら後始末をする
+   - `.github/workflows/ios-uitest.yml` と `windows-e2e.yml` の検証用 `push` トリガー（`claude/ui-automation-testing-4mgml9` 限定）を削除する（`main` に入れる前に必須）
+   - `macos-e2e.yml` は push トリガー削除済み
+   - 3 つの新規ワークフローは `main` に無いと `workflow_dispatch` できない。`main` へ入れた後に手動実行へ切り替わる
+   - `docs/real-hardware-checklist.md` のうち、E2E に移せた項目（§2〜§5、§8.3〜§8.4 のキー入力・composition の基本動作）を整理する
+   - `ci.yml` の `windows-tsf` ジョブに `-p nagi-windows-e2e` を足す（単体指定で feature 不足を検出できる。ローカルでは `cargo check --target x86_64-pc-windows-gnu -p nagi-windows-e2e` で確認済み）
+3. 未着手・未解決
+   - iOS のユーザー辞書を決定的にする手段（App Group への注入）が無く、変換系シナリオは iOS で未対応
+   - Windows の `EnumProfiles` に Nagi が出るまで 45 秒待つ警告が出ていた（`GetProfile` が成功すれば待たずに進める修正は入れた）
+   - macOS を常時回すなら、自前の Mac を self-hosted ランナーにして `macos-e2e.yml` の `runs-on` を変更する
+
+### CI の調べ方（このセッションで分かったこと）
+
+- ジョブログの末尾だけでは診断が見えないことが多い。診断は標準出力（ジョブログ）に出す方針にする。アーティファクトは、実行環境のネットワークポリシーで取得できない
+- ログの要点抽出は Haiku に委任すると、コンテキストを節約できる
+- macOS ランナーは課金が重い。検証用トリガーのパスを広げると意図せず起動するので注意する
+- `cargo check -p <crate>` は単体指定で行う（他クレートとの feature 統合で、CI でのみ失敗する不具合を見逃す）
