@@ -222,6 +222,35 @@ public struct FloatRange: Codable {
 	}
 }
 
+/// 曖昧入力の「もしかして」候補の採用状況（補正の種類ごと）
+public struct FuzzyStatsItem: Codable {
+	/// 補正の種類（`voicing` / `substitute` / `transpose` / `insert` / `delete` / `mixed`）
+	public let kind: String
+	/// 候補として提示された回数
+	public let shown: UInt32
+	/// 選ばれて確定された回数
+	public let adopted: UInt32
+	/// 今の出やすさの倍率（1.0 未満は出やすく、1.0 超は出にくい。データ不足・個人化オフは 1.0）
+	public let margin_scale: Double
+
+	public init(kind: String, shown: UInt32, adopted: UInt32, margin_scale: Double) {
+		self.kind = kind
+		self.shown = shown
+		self.adopted = adopted
+		self.margin_scale = margin_scale
+	}
+}
+
+/// `get_fuzzy_stats` メソッドの応答
+public struct GetFuzzyStatsResult: Codable {
+	/// 種類ごとの採用状況（記録のある種類だけ。種類の名前順）
+	public let items: [FuzzyStatsItem]
+
+	public init(items: [FuzzyStatsItem]) {
+		self.items = items
+	}
+}
+
 /// グライド入力の軌跡の点 1 つ。座標は `set_layout_geometry` の `keys` と同じ座標系
 /// （キーボード view のローカル座標。左上が原点、単位は問わない）
 public struct GlidePoint: Codable {
@@ -373,12 +402,16 @@ public struct ServerCapabilities: Codable {
 	/// 抑制語（`suppress_candidate` / `unsuppress_candidate` / `list_suppressed`）に対応しているか。
 	/// 古いサーバーは省略する（省略は非対応と同じ）
 	public let suppression: Bool?
+	/// 曖昧入力の採用状況（`get_fuzzy_stats`）に対応しているか。古いサーバーは省略する
+	/// （省略は非対応と同じ）
+	public let fuzzy_stats: Bool?
 
-	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool, suppression: Bool?) {
+	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool, suppression: Bool?, fuzzy_stats: Bool?) {
 		self.reconvert = reconvert
 		self.live_conversion = live_conversion
 		self.style_conversion = style_conversion
 		self.suppression = suppression
+		self.fuzzy_stats = fuzzy_stats
 	}
 }
 

@@ -8,6 +8,7 @@
 //!   （クリーンな入力を誤って補正しない）
 //! - 入力中の読みは変えない。候補に混ぜるだけで、自動では置き換えない
 
+use crate::fuzzy_stats::{FuzzyStats, kind_key};
 use crate::misspell::Misspellings;
 use nagi_config::FuzzySection;
 use nagi_dict::{Dictionary, Overlay, PathInfo};
@@ -89,6 +90,9 @@ pub struct FuzzySettings {
     pub use_touch: bool,
     /// 誤り辞書（読みの書き間違い → 正しい読み）の候補を出すか（`input.fuzzy.misspellings`）
     pub misspellings: bool,
+    /// 採用状況に合わせて、補正の種類ごとにマージンの倍率を変えるか（`input.fuzzy.personalize`）。
+    /// false なら倍率は常に 1.0 で、記録もしない
+    pub personalize: bool,
     /// タッチ位置のばらつき（標準偏差。キー間隔を 1 とする）。設定項目ではなく評価用の調整値
     pub touch_sigma: f32,
     /// 補正候補を文脈つきの LM で再採点するか（`input.fuzzy.rescore`）
@@ -122,6 +126,7 @@ impl FuzzySettings {
             kinds: EditKinds::parse(&section.kinds),
             use_touch: section.use_touch_coords,
             misspellings: section.misspellings,
+            personalize: section.personalize,
             touch_sigma: nagi_fuzzy::DEFAULT_TOUCH_SIGMA,
             rescore: section.rescore,
             auto_apply: section.auto_apply,
@@ -227,6 +232,9 @@ pub struct FuzzyEngine {
     custom: Mutex<Option<(SetLayoutGeometryParams, Arc<Fuzzy>)>>,
     /// 誤り辞書（差し替え可能。既定は空）
     misspellings: RwLock<Arc<Misspellings>>,
+    /// 採用状況の統計（差し替え可能。既定は空）。種類ごとのマージンの倍率に使い、
+    /// 補正を提案した時点で (打った読み, 補正後の読み) の種類を覚える
+    stats: RwLock<Arc<FuzzyStats>>,
 }
 
 /// フロントのキー矩形から配置を作る（ラベルが 1 文字の英字のキーだけ。同じ文字は最初のキー）
@@ -283,7 +291,18 @@ impl FuzzyEngine {
             kana,
             custom: Mutex::new(None),
             misspellings: RwLock::new(Arc::new(Misspellings::empty())),
+            stats: RwLock::new(Arc::new(FuzzyStats::new())),
         }
+    }
+
+    /// 採用状況の統計を差し替える（Runtime が持つものを共有する）
+    pub fn set_stats(&self, stats: Arc<FuzzyStats>) {
+        *self.stats.write().unwrap_or_else(|e| e.into_inner()) = stats;
+    }
+
+    /// 現在の採用状況の統計
+    fn stats(&self) -> Arc<FuzzyStats> {
+        self.stats.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// 誤り辞書を差し替える（ユーザーの追記ファイルの再読込でも呼ぶ）
@@ -578,6 +597,7 @@ impl FuzzyEngine {
         // 可能性より、打った通りである可能性が高い）ときは、補正に強い証拠（マージン）を求める
         let is_covered = covered(&DictIndex(dict), reading);
         let reading_chars = reading.chars().count();
+        let stats = self.stats();
         let mut out: Vec<Suggestion> = Vec::new();
         for c in corrections {
             let Some((surface, cost)) = best_path(dict, overlay, &c.reading) else {
@@ -593,7 +613,12 @@ impl FuzzyEngine {
             } else {
                 let score = cost + c.cost * LEXICON_COST_PER_EDIT_COST;
                 let margin = if is_covered {
-                    covered_margin(&c, reading_chars) * settings.margin_scale
+                    // 採用状況による種類ごとの倍率（統計が空・データ不足・個人化オフは 1.0）
+                    let personal = match kind_key(&c.ops) {
+                        Some(kind) if settings.personalize => stats.margin_scale(kind),
+                        _ => 1.0,
+                    };
+                    covered_margin(&c, reading_chars) * settings.margin_scale * personal
                 } else {
                     0.0
                 };
@@ -601,6 +626,12 @@ impl FuzzyEngine {
             };
             if score + margin >= typed_cost || out.iter().any(|s| s.surface == surface) {
                 continue;
+            }
+            // 確定時に種類を引けるよう、(打った読み, 補正後の読み) の種類を覚える
+            if settings.personalize
+                && let Some(kind) = kind_key(&c.ops)
+            {
+                stats.note_kind(reading, &c.reading, kind);
             }
             out.push(Suggestion {
                 reading: c.reading,

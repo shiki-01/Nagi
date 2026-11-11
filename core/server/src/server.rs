@@ -11,13 +11,13 @@ use nagi_protocol::jsonrpc::{
     ErrorObject, Notification, Request, Response, error_code, parse_message,
 };
 use nagi_protocol::methods::{
-    ConfigError, EmptyResult, GlideInputParams, ImportSkipReason, ImportUserDictParams,
-    ImportUserDictResult, InitializeParams, InitializeResult, InsertReadingTouchParams,
-    ListSuppressedResult, NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams,
-    ReloadConfigResult, RestoreSessionParams, SelectCandidateParams, ServerCapabilities,
-    SessionParams, SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams,
-    SuppressCandidateParams, SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams,
-    UserDictFormat, method,
+    ConfigError, EmptyResult, FuzzyStatsItem, GetFuzzyStatsResult, GlideInputParams,
+    ImportSkipReason, ImportUserDictParams, ImportUserDictResult, InitializeParams,
+    InitializeResult, InsertReadingTouchParams, ListSuppressedResult, NotifyParams,
+    PerformActionParams, ProcessKeyParams, ReconvertParams, ReloadConfigResult,
+    RestoreSessionParams, SelectCandidateParams, ServerCapabilities, SessionParams,
+    SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams, SuppressCandidateParams,
+    SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams, UserDictFormat, method,
 };
 use nagi_protocol::settings::{UpdateSettingsParams, UpdateSettingsResult};
 use nagi_protocol::view::InputMode;
@@ -627,6 +627,7 @@ impl Server {
                         live_conversion: false,
                         style_conversion: false,
                         suppression: Some(true),
+                        fuzzy_stats: Some(true),
                     },
                 })
             }
@@ -781,6 +782,28 @@ impl Server {
                     .map(|(reading, surface)| SuppressedItem { reading, surface })
                     .collect();
                 to_value(ListSuppressedResult { items })
+            }
+            method::GET_FUZZY_STATS => {
+                self.require_initialized()?;
+                // 個人化がオフなら倍率は使われない（常に 1.0）
+                let personalize = self.runtime.fuzzy_personalize();
+                let items = self
+                    .runtime
+                    .fuzzy_stats()
+                    .snapshot()
+                    .into_iter()
+                    .map(|s| FuzzyStatsItem {
+                        kind: s.kind,
+                        shown: s.shown,
+                        adopted: s.adopted,
+                        margin_scale: if personalize {
+                            s.margin_scale as f64
+                        } else {
+                            1.0
+                        },
+                    })
+                    .collect();
+                to_value(GetFuzzyStatsResult { items })
             }
             method::GET_SETTINGS => {
                 self.require_initialized()?;

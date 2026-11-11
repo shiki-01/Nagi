@@ -49,6 +49,16 @@ impl CommitObserver for LearningObserver {
         }
     }
 
+    fn on_fuzzy_shown(&self, ctx: &CommitContext<'_>, typed: &str, corrected: &str) {
+        self.runtime
+            .fuzzy_record_shown(ctx.secure_input, ctx.app_id, typed, corrected);
+    }
+
+    fn on_fuzzy_adopted(&self, ctx: &CommitContext<'_>, typed: &str, corrected: &str) {
+        self.runtime
+            .fuzzy_record_adopted(ctx.secure_input, ctx.app_id, typed, corrected);
+    }
+
     fn on_forget(&self, ctx: &CommitContext<'_>, reading: &str, surface: &str) -> bool {
         // secure input 中は学習データに触れない（削除の有無も外に出さない）
         if ctx.secure_input {

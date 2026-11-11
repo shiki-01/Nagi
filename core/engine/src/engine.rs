@@ -29,7 +29,7 @@ use nagi_romaji::{
     Composer, Piece, PieceKind, PunctuationStyle, RomajiTable, ShiftLetterMode, Stroke,
 };
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -297,6 +297,9 @@ struct Session {
     passthrough_run: bool,
     /// 直近の操作で利用者がモードを切り替えた（アプリごとのモード記憶に反映する）
     mode_touched: bool,
+    /// この入力エピソード（確定または入力の破棄まで）で提示済みの曖昧入力の補正候補
+    /// （打った読み, 補正後の読み）。観測の二重計上を避けるためで、Direct に戻ると空にする
+    fuzzy_shown: HashSet<(String, String)>,
 }
 
 /// 入力中（変換前）の候補 1 つ
@@ -686,6 +689,7 @@ impl Engine {
             raw_map: RawMap::default(),
             passthrough_run: false,
             mode_touched: false,
+            fuzzy_shown: HashSet::new(),
         }
     }
 
@@ -1785,6 +1789,12 @@ impl Engine {
         let covers = item.covers.min(total);
         let prefix: String = reading.chars().take(covers).collect();
         let literal = self.composing_is_literal(sess);
+        if !literal
+            && item.sources == [CandidateSource::Fuzzy]
+            && let Some(corrected) = &item.reading
+        {
+            self.observe_fuzzy_adopted(sess, &prefix, corrected);
+        }
         // Literal（式・記号）の候補と、ローマ字にならなかった英字を含む読み（英語の ASCII 候補）は学習しない
         if !literal && (item.reading.is_some() || !prefix.bytes().any(|b| b.is_ascii_lowercase())) {
             self.notify_commit(
@@ -2982,6 +2992,19 @@ impl Engine {
         true
     }
 
+    /// 提示された曖昧入力の補正候補が選ばれて確定されたことを observer へ通知する
+    fn observe_fuzzy_adopted(&self, sess: &Session, typed: &str, corrected: &str) {
+        let Some(observer) = &self.observer else {
+            return;
+        };
+        let ctx = CommitContext {
+            session_id: &sess.id,
+            app_id: sess.app_id.as_deref(),
+            secure_input: sess.secure_input,
+        };
+        observer.on_fuzzy_adopted(&ctx, typed, corrected);
+    }
+
     /// 変換を経て確定した文節を observer（学習など）へ通知する
     fn notify_commit(&self, sess: &mut Session, committed: &[Segment]) {
         // secure input 中の確定語は、直前の語としても学習としても残さない
@@ -3008,10 +3031,18 @@ impl Engine {
         let mut segments = Vec::with_capacity(committed.len());
         for (seg, prev_word) in committed.iter().zip(with_prev) {
             // 曖昧入力の補正候補を選んだ文節は、補正後の読みで学習する
-            let reading = seg
+            let chosen = seg
                 .candidates
                 .as_ref()
-                .and_then(|set| set.items.iter().find(|c| c.surface == seg.surface))
+                .and_then(|set| set.items.iter().find(|c| c.surface == seg.surface));
+            if let Some(c) = chosen
+                && c.sources == [CandidateSource::Fuzzy]
+                && let Some(corrected) = &c.reading
+                && seg.kind == SegmentKind::Japanese
+            {
+                self.observe_fuzzy_adopted(sess, &seg.reading, corrected);
+            }
+            let reading = chosen
                 .and_then(|c| c.reading.clone())
                 .unwrap_or_else(|| seg.reading.clone());
             segments.push(CommittedSegment {
@@ -4149,6 +4180,58 @@ impl Engine {
         sess.next_words.truncate(limit);
     }
 
+    /// 曖昧入力の補正候補（出所が `Fuzzy` だけで補正後の読みを持つもの）が、いま利用者に提示されて
+    /// いるものを observer へ通知する（観測の提示地点。入力中の候補・候補ウィンドウのどちらも
+    /// ここを通る）。同じ入力エピソードの中では `(打った読み, 補正後の読み)` ごとに 1 回だけ。
+    /// 入力が終わった（Direct）ら記録を空にする
+    fn observe_fuzzy_shown(&self, sess: &mut Session, view: &CandidatesView) {
+        if matches!(sess.state, State::Direct) {
+            sess.fuzzy_shown.clear();
+            return;
+        }
+        let Some(observer) = &self.observer else {
+            return;
+        };
+        if !view.visible {
+            return;
+        }
+        // 候補ウィンドウ（変換中）は注目文節の読みが打った読み。入力中の候補は、候補ごとの
+        // 置き換え範囲（`covers`）の先頭部分が打った読み
+        let typed_whole = match &sess.state {
+            State::Converting(conv) => Some(conv.segments[conv.focus].reading.clone()),
+            _ => self.candidate_reading(sess),
+        };
+        let Some(typed_whole) = typed_whole else {
+            return;
+        };
+        let mut fresh: Vec<(String, String)> = Vec::new();
+        for item in &view.items {
+            if item.sources != [CandidateSource::Fuzzy] {
+                continue;
+            }
+            let Some(corrected) = &item.reading else {
+                continue;
+            };
+            let typed: String = match item.covers {
+                Some(n) => typed_whole.chars().take(n as usize).collect(),
+                None => typed_whole.clone(),
+            };
+            let pair = (typed, corrected.clone());
+            if !sess.fuzzy_shown.contains(&pair) && !fresh.contains(&pair) {
+                fresh.push(pair);
+            }
+        }
+        let ctx = CommitContext {
+            session_id: &sess.id,
+            app_id: sess.app_id.as_deref(),
+            secure_input: sess.secure_input,
+        };
+        for (typed, corrected) in &fresh {
+            observer.on_fuzzy_shown(&ctx, typed, corrected);
+        }
+        sess.fuzzy_shown.extend(fresh);
+    }
+
     /// 前回返した状態との差分を `ProcessKeyResult` にまとめる
     fn finish(&self, sess: &mut Session, consumed: bool, commit: String) -> ProcessKeyResult {
         self.refresh_next_words(sess, consumed, !commit.is_empty());
@@ -4171,6 +4254,7 @@ impl Engine {
         }
         let preedit = self.build_preedit(sess).to_view();
         let candidates = self.build_candidates(sess);
+        self.observe_fuzzy_shown(sess, &candidates);
         let mut result = ProcessKeyResult {
             consumed,
             commit: (!commit.is_empty()).then_some(commit),

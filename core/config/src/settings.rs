@@ -467,6 +467,13 @@ pub fn definitions() -> Vec<SettingDef> {
             SettingKind::Bool,
         ),
         def(
+            "input.fuzzy.personalize",
+            "入力",
+            "「もしかして」の出やすさを自分の癖に合わせる",
+            "「もしかして」候補が採用されたかどうかを、打ち間違いの種類ごとの件数だけ記録します（入力した内容は保存しません）。よく採用される種類は出やすく、ほとんど採用されない種類は出にくくなります。曖昧入力が有効なときだけ働きます。学習データの削除と一緒に消えます。",
+            SettingKind::Bool,
+        ),
+        def(
             "learning.enabled",
             "学習",
             "学習する",
@@ -710,6 +717,7 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "input.fuzzy.kinds" => Some(Text(config.input.fuzzy.kinds.clone())),
         "input.fuzzy.use_touch_coords" => Some(Bool(config.input.fuzzy.use_touch_coords)),
         "input.fuzzy.misspellings" => Some(Bool(config.input.fuzzy.misspellings)),
+        "input.fuzzy.personalize" => Some(Bool(config.input.fuzzy.personalize)),
         "rewriter.emoji" => Some(Bool(config.rewriter.emoji)),
         "rewriter.kaomoji" => Some(Bool(config.rewriter.kaomoji)),
         "convert.calculator" => Some(Bool(config.convert.calculator)),
@@ -1201,6 +1209,7 @@ mod tests {
             ("input.fuzzy.max_candidates", SettingLevel::Detail),
             ("input.fuzzy.kinds", SettingLevel::Detail),
             ("input.fuzzy.misspellings", SettingLevel::Detail),
+            ("input.fuzzy.personalize", SettingLevel::Detail),
         ] {
             assert_eq!(get(key).level, level, "{key}");
             assert_eq!(get(key).platforms, SettingPlatforms::Both, "{key}");

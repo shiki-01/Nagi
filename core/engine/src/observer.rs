@@ -41,4 +41,16 @@ pub trait CommitObserver: Send + Sync {
     /// 候補ウィンドウでの学習削除（`Ctrl+Delete`）の要求。`reading` に対する `surface` の学習を
     /// 忘れさせ、削除できたら `true` を返す
     fn on_forget(&self, ctx: &CommitContext<'_>, reading: &str, surface: &str) -> bool;
+
+    /// 曖昧入力の「もしかして」候補（読み `typed` を `corrected` に直した候補）が、候補ウィンドウ・
+    /// 入力中の候補として利用者に提示された。同じ入力エピソード（確定または入力の破棄まで）の中で
+    /// 同じ `(typed, corrected)` は 1 回しか通知しない。既定は何もしない
+    fn on_fuzzy_shown(&self, ctx: &CommitContext<'_>, typed: &str, corrected: &str) {
+        let _ = (ctx, typed, corrected);
+    }
+
+    /// 提示された「もしかして」候補（`typed` → `corrected`）が選ばれて確定された。既定は何もしない
+    fn on_fuzzy_adopted(&self, ctx: &CommitContext<'_>, typed: &str, corrected: &str) {
+        let _ = (ctx, typed, corrected);
+    }
 }

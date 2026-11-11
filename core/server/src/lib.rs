@@ -22,6 +22,7 @@
 pub mod calibration;
 pub mod fuzzy;
 pub mod fuzzy_eval;
+pub mod fuzzy_stats;
 pub mod glide;
 pub mod install_data;
 pub mod learning;

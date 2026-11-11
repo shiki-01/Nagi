@@ -861,9 +861,16 @@ impl Pipeline {
 
     /// 曖昧入力の誤り辞書を差し替える（起動時と、追記ファイルの再読み込み時）
     pub fn set_misspellings(&self, misspellings: Arc<crate::misspell::Misspellings>) {
-        self.fuzzy
-            .get_or_init(FuzzyEngine::new)
-            .set_misspellings(misspellings);
+        self.fuzzy_engine().set_misspellings(misspellings);
+    }
+
+    /// 曖昧入力の提案器（初回に作る。採用状況の統計は Runtime のものを共有する）
+    fn fuzzy_engine(&self) -> &FuzzyEngine {
+        self.fuzzy.get_or_init(|| {
+            let engine = FuzzyEngine::new();
+            engine.set_stats(self.runtime.fuzzy_stats());
+            engine
+        })
     }
 
     /// 曖昧入力の補正候補（「もしかして」）。無効・辞書なし・読みが既知（学習・ユーザー辞書・辞書語）なら空。
@@ -894,7 +901,7 @@ impl Pipeline {
                 persona: eff.persona.clone(),
                 n_threads: eff.n_threads,
             });
-        self.fuzzy.get_or_init(FuzzyEngine::new).suggest_with(
+        self.fuzzy_engine().suggest_with(
             dict,
             overlay,
             reading,

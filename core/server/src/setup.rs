@@ -618,6 +618,12 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
         options.memory_budget_mb,
     );
     runtime.set_calibration_path(calibration_path);
+    // 曖昧入力の採用状況（補正の種類ごとの件数。入力内容は含まない）
+    runtime.set_fuzzy_stats_path(
+        user_dir
+            .as_ref()
+            .map(|d| d.join(crate::fuzzy_stats::FILE_NAME)),
+    );
     if let Some(ms) = cached_calibration_ms {
         if has_llm {
             // 前回の実測値を即座に反映させる。直後の pipeline.warm_up() が新しい実測値で上書きする

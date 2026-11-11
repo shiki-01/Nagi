@@ -5,6 +5,7 @@
 //! 設定の再読み込み・`set_environment`・レイテンシ計測は、すべてここを通して反映される。
 
 use crate::fuzzy::FuzzySettings;
+use crate::fuzzy_stats::FuzzyStats;
 use nagi_config::{Config, ProfileMode, TimeZoneSetting, parse_time_zone};
 use nagi_dict::Overlay;
 use nagi_learn::{LearnConfig, Learner, NextWordLearner};
@@ -288,6 +289,12 @@ pub struct Runtime {
     /// モデルの解放・再読み込みの判定（状態の更新と実行先への指示）を直列化する
     model_apply: Mutex<()>,
     reload_delay: Mutex<Duration>,
+    /// 曖昧入力の「もしかして」候補の採用状況（補正の種類ごとの件数）
+    fuzzy_stats: Arc<FuzzyStats>,
+    /// 採用状況の保存先（`<user-dir>/fuzzy_stats.json`）
+    fuzzy_stats_path: Mutex<Option<PathBuf>>,
+    /// 採用状況を最後に保存した時刻
+    fuzzy_stats_flushed: Mutex<Instant>,
 }
 
 impl Runtime {
@@ -360,6 +367,9 @@ impl Runtime {
             model_control: Mutex::new(None),
             model_apply: Mutex::new(()),
             reload_delay: Mutex::new(MODEL_RELOAD_DELAY),
+            fuzzy_stats: Arc::new(FuzzyStats::new()),
+            fuzzy_stats_path: Mutex::new(None),
+            fuzzy_stats_flushed: Mutex::new(Instant::now()),
         });
         if let Some(e) = next_load_error {
             runtime.push_event(Event {
@@ -1064,7 +1074,97 @@ impl Runtime {
         if let Ok(mut n) = self.next_learner.lock() {
             n.clear();
         }
+        // 曖昧入力の採用状況も 0 に戻す（ファイルは flush で消える）
+        self.fuzzy_stats.clear();
         self.flush_learning(true);
+    }
+
+    // ---- 曖昧入力の採用状況 ----
+
+    /// 曖昧入力の採用状況（`FuzzyEngine` と共有する）
+    pub fn fuzzy_stats(&self) -> Arc<FuzzyStats> {
+        self.fuzzy_stats.clone()
+    }
+
+    /// 採用状況の保存先を決め、ファイルがあれば読み込む（起動時）
+    pub fn set_fuzzy_stats_path(&self, path: Option<PathBuf>) {
+        if let Some(p) = &path {
+            self.fuzzy_stats.load_from(p);
+        }
+        if let Ok(mut g) = self.fuzzy_stats_path.lock() {
+            *g = path;
+        }
+    }
+
+    /// `input.fuzzy.personalize` が有効か
+    pub fn fuzzy_personalize(&self) -> bool {
+        self.tunables.read().is_ok_and(|t| t.fuzzy.personalize)
+    }
+
+    /// 採用状況を数えてよいか（個人化が有効で、学習が止まる条件に当たらない）
+    fn fuzzy_stats_allowed(&self, secure_input: bool, app_id: Option<&str>) -> bool {
+        self.fuzzy_personalize() && self.learning_allowed(secure_input, app_id)
+    }
+
+    /// 「もしかして」候補（打った読み `typed` → 補正後の読み `corrected`）が提示された
+    pub fn fuzzy_record_shown(
+        &self,
+        secure_input: bool,
+        app_id: Option<&str>,
+        typed: &str,
+        corrected: &str,
+    ) {
+        if !self.fuzzy_stats_allowed(secure_input, app_id) {
+            return;
+        }
+        if let Some(kind) = self.fuzzy_stats.kind_of(typed, corrected) {
+            self.fuzzy_stats.record_shown(kind);
+        }
+    }
+
+    /// 「もしかして」候補（打った読み `typed` → 補正後の読み `corrected`）が選ばれて確定された
+    pub fn fuzzy_record_adopted(
+        &self,
+        secure_input: bool,
+        app_id: Option<&str>,
+        typed: &str,
+        corrected: &str,
+    ) {
+        if !self.fuzzy_stats_allowed(secure_input, app_id) {
+            return;
+        }
+        if let Some(kind) = self.fuzzy_stats.kind_of(typed, corrected) {
+            self.fuzzy_stats.record_adopted(kind);
+        }
+    }
+
+    /// 採用状況をファイルへ書き出す。`force` でなければ前回から 5 分経っている場合だけ
+    fn flush_fuzzy_stats(&self, force: bool) {
+        let Some(path) = self.fuzzy_stats_path.lock().ok().and_then(|g| g.clone()) else {
+            return;
+        };
+        if !self.fuzzy_stats.is_dirty() {
+            return;
+        }
+        let due = self
+            .fuzzy_stats_flushed
+            .lock()
+            .is_ok_and(|last| force || last.elapsed() >= FLUSH_INTERVAL);
+        if !due {
+            return;
+        }
+        match self.fuzzy_stats.flush(&path) {
+            Ok(()) => {
+                if let Ok(mut last) = self.fuzzy_stats_flushed.lock() {
+                    *last = Instant::now();
+                }
+            }
+            Err(e) => self.push_event(Event {
+                level: NotifyLevel::Warning,
+                code: "fuzzy_stats_flush_failed",
+                message: format!("曖昧入力の採用状況を保存できませんでした: {e}"),
+            }),
+        }
     }
 
     /// 学習データの件数
@@ -1074,6 +1174,7 @@ impl Runtime {
 
     /// 学習ファイルへ書き出す。`force` でなければ前回から 5 分経っている場合だけ
     pub fn flush_learning(&self, force: bool) {
+        self.flush_fuzzy_stats(force);
         let Some(path) = &self.learn_path else {
             return;
         };

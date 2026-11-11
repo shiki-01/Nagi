@@ -395,6 +395,10 @@ pub struct FuzzySection {
     /// 誤り辞書（読みの書き間違い → 正しい読みの対応表）による「もしかして」候補を出すか。既定: true。
     /// `enabled` が false のときは効かない。
     pub misspellings: bool,
+    /// 「もしかして」候補の採用状況（補正の種類ごとの件数だけ。入力内容は保存しない）を数え、
+    /// よく採用される種類は出やすく、ほとんど採用されない種類は出にくくするか。既定: true。
+    /// `enabled` が false のときは効かない。
+    pub personalize: bool,
     /// 補正候補を、左文脈つきで変換モデル（LLM）に再採点させて並べ替えるか。既定: false。
     /// モデルが無い・同期予算内に終わらないときは辞書のスコアのままにする。
     pub rescore: bool,
@@ -419,6 +423,7 @@ impl Default for FuzzySection {
             kinds: FUZZY_KINDS_ALL.to_string(),
             use_touch_coords: true,
             misspellings: true,
+            personalize: true,
             rescore: false,
             auto_apply: false,
             auto_apply_margin: 8,
@@ -1324,6 +1329,7 @@ const FUZZY_KEYS: &[&str] = &[
     "kinds",
     "use_touch_coords",
     "misspellings",
+    "personalize",
     "rescore",
     "auto_apply",
     "auto_apply_margin",

@@ -36,6 +36,8 @@ pub mod method {
     pub const UNSUPPRESS_CANDIDATE: &str = "unsuppress_candidate";
     /// `list_suppressed` メソッド（抑制語の一覧）
     pub const LIST_SUPPRESSED: &str = "list_suppressed";
+    /// `get_fuzzy_stats` メソッド（曖昧入力の「もしかして」候補の採用状況。振り返りの表示用）
+    pub const GET_FUZZY_STATS: &str = "get_fuzzy_stats";
     /// `get_key_table` メソッド（タッチ入力: 12 キーの文字表と濁点・小書きの循環）
     pub const GET_KEY_TABLE: &str = "get_key_table";
     /// `unload_model` メソッド（変換モデルだけをメモリから解放し、辞書のみで動く状態にする）
@@ -132,6 +134,10 @@ pub struct ServerCapabilities {
     /// 古いサーバーは省略する（省略は非対応と同じ）
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub suppression: Option<bool>,
+    /// 曖昧入力の採用状況（`get_fuzzy_stats`）に対応しているか。古いサーバーは省略する
+    /// （省略は非対応と同じ）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fuzzy_stats: Option<bool>,
 }
 
 /// `initialize` メソッドの応答
@@ -868,6 +874,28 @@ pub struct SuppressedItem {
 pub struct ListSuppressedResult {
     /// 登録されている抑制語（読み・表記の順）
     pub items: Vec<SuppressedItem>,
+}
+
+/// 曖昧入力の「もしかして」候補の採用状況（補正の種類ごと）
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FuzzyStatsItem {
+    /// 補正の種類（`voicing` / `substitute` / `transpose` / `insert` / `delete` / `mixed`）
+    pub kind: String,
+    /// 候補として提示された回数
+    pub shown: u32,
+    /// 選ばれて確定された回数
+    pub adopted: u32,
+    /// 今の出やすさの倍率（1.0 未満は出やすく、1.0 超は出にくい。データ不足・個人化オフは 1.0）
+    pub margin_scale: f64,
+}
+
+/// `get_fuzzy_stats` メソッドの応答
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetFuzzyStatsResult {
+    /// 種類ごとの採用状況（記録のある種類だけ。種類の名前順）
+    pub items: Vec<FuzzyStatsItem>,
 }
 
 /// `import_user_dict` メソッドの応答
