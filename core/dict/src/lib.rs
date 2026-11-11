@@ -34,4 +34,4 @@ pub use import::{
 };
 pub use nbest::SentenceCandidate;
 pub use overlay::{Overlay, OverlayEntry};
-pub use user::{SNIPPET_POS, UserDictIssue, UserDictionary, UserEntry, decode_text};
+pub use user::{SNIPPET_POS, UserDictIssue, UserDictionary, UserEntry, decode_text, to_hiragana};

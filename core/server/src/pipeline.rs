@@ -808,6 +808,13 @@ impl Pipeline {
             || !overlay.snippets(reading).is_empty()
     }
 
+    /// 曖昧入力の誤り辞書を差し替える（起動時と、追記ファイルの再読み込み時）
+    pub fn set_misspellings(&self, misspellings: Arc<crate::misspell::Misspellings>) {
+        self.fuzzy
+            .get_or_init(FuzzyEngine::new)
+            .set_misspellings(misspellings);
+    }
+
     /// 曖昧入力の補正候補（「もしかして」）。無効・辞書なし・読みが既知（学習・ユーザー辞書・辞書語）なら空。
     /// 展開は `EXPANSION_BUDGET_MS` と同期予算のうち短い方で打ち切る。
     /// `input.fuzzy.rescore` が有効、かつ変換モデルがあれば、左文脈 `left` つきで

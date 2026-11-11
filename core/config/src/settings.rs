@@ -460,6 +460,13 @@ pub fn definitions() -> Vec<SettingDef> {
         )
         .platforms(SettingPlatforms::Ios),
         def(
+            "input.fuzzy.misspellings",
+            "入力",
+            "よくある書き間違いを補正する",
+            "「ふいんき」→「ふんいき」のような、読みの段階のよくある書き間違いを「もしかして」候補に出します。曖昧入力が有効なときだけ働きます。自分で追加したい書き間違いは、データフォルダの misspellings.tsv（誤った読み、タブ、正しい読み）に書けます。",
+            SettingKind::Bool,
+        ),
+        def(
             "learning.enabled",
             "学習",
             "学習する",
@@ -702,6 +709,7 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "input.fuzzy.max_candidates" => Some(n(config.input.fuzzy.max_candidates)),
         "input.fuzzy.kinds" => Some(Text(config.input.fuzzy.kinds.clone())),
         "input.fuzzy.use_touch_coords" => Some(Bool(config.input.fuzzy.use_touch_coords)),
+        "input.fuzzy.misspellings" => Some(Bool(config.input.fuzzy.misspellings)),
         "rewriter.emoji" => Some(Bool(config.rewriter.emoji)),
         "rewriter.kaomoji" => Some(Bool(config.rewriter.kaomoji)),
         "convert.calculator" => Some(Bool(config.convert.calculator)),
@@ -1192,6 +1200,7 @@ mod tests {
             ("input.fuzzy.strength", SettingLevel::Simple),
             ("input.fuzzy.max_candidates", SettingLevel::Detail),
             ("input.fuzzy.kinds", SettingLevel::Detail),
+            ("input.fuzzy.misspellings", SettingLevel::Detail),
         ] {
             assert_eq!(get(key).level, level, "{key}");
             assert_eq!(get(key).platforms, SettingPlatforms::Both, "{key}");
@@ -1204,6 +1213,11 @@ mod tests {
             .find(|s| s.def.key == "input.fuzzy.enabled")
             .unwrap();
         assert_eq!(enabled.value, Some(SettingValue::Bool(false)));
+        let misspellings = states
+            .iter()
+            .find(|s| s.def.key == "input.fuzzy.misspellings")
+            .unwrap();
+        assert_eq!(misspellings.value, Some(SettingValue::Bool(true)));
 
         // 入れ子のテーブルへ書き込み、コメントを保ち、読み戻せる
         let src = "[input]\n# 句読点\npunctuation = \"、。\"\n\n[input.fuzzy]\n# 補正\nenabled = false # 行末\n";

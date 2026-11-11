@@ -8,6 +8,7 @@
 //!   （クリーンな入力を誤って補正しない）
 //! - 入力中の読みは変えない。候補に混ぜるだけで、自動では置き換えない
 
+use crate::misspell::Misspellings;
 use nagi_config::FuzzySection;
 use nagi_dict::{Dictionary, Overlay, PathInfo};
 use nagi_engine::TypingHint;
@@ -18,7 +19,7 @@ use nagi_fuzzy::{
 };
 use nagi_protocol::SetLayoutGeometryParams;
 use nagi_romaji::RomajiTable;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 /// 編集コスト 1.0 を Mozc 辞書のコスト尺度に換算する係数。
@@ -84,6 +85,8 @@ pub struct FuzzySettings {
     pub kinds: EditKinds,
     /// タッチ座標（キー内の位置・フリックの角度）を補正のコストに使うか（`input.fuzzy.use_touch_coords`）
     pub use_touch: bool,
+    /// 誤り辞書（読みの書き間違い → 正しい読み）の候補を出すか（`input.fuzzy.misspellings`）
+    pub misspellings: bool,
     /// タッチ位置のばらつき（標準偏差。キー間隔を 1 とする）。設定項目ではなく評価用の調整値
     pub touch_sigma: f32,
     /// 補正候補を文脈つきの LM で再採点するか（`input.fuzzy.rescore`）
@@ -115,6 +118,7 @@ impl FuzzySettings {
             max_candidates: section.max_candidates,
             kinds: EditKinds::parse(&section.kinds),
             use_touch: section.use_touch_coords,
+            misspellings: section.misspellings,
             touch_sigma: nagi_fuzzy::DEFAULT_TOUCH_SIGMA,
             rescore: section.rescore,
             auto_apply: section.auto_apply,
@@ -218,6 +222,8 @@ pub struct FuzzyEngine {
     kana: KanaTable,
     /// フロントが渡したキー矩形から作った配置（直近の 1 つ）。同じ内容なら作り直さない
     custom: Mutex<Option<(SetLayoutGeometryParams, Arc<Fuzzy>)>>,
+    /// 誤り辞書（差し替え可能。既定は空）
+    misspellings: RwLock<Arc<Misspellings>>,
 }
 
 /// フロントのキー矩形から配置を作る（ラベルが 1 文字の英字のキーだけ。同じ文字は最初のキー）
@@ -273,7 +279,21 @@ impl FuzzyEngine {
             fuzzy: Fuzzy::qwerty(kana.clone()),
             kana,
             custom: Mutex::new(None),
+            misspellings: RwLock::new(Arc::new(Misspellings::empty())),
         }
+    }
+
+    /// 誤り辞書を差し替える（ユーザーの追記ファイルの再読込でも呼ぶ）
+    pub fn set_misspellings(&self, misspellings: Arc<Misspellings>) {
+        *self.misspellings.write().unwrap_or_else(|e| e.into_inner()) = misspellings;
+    }
+
+    /// 現在の誤り辞書
+    fn misspellings(&self) -> Arc<Misspellings> {
+        self.misspellings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 使う配置: フロントが渡したキー矩形（使えるものなら）、無ければ内蔵の QWERTY
@@ -376,15 +396,18 @@ impl FuzzyEngine {
             return Vec::new();
         };
         if let Some((scorer, left_context)) = rescoring.filter(|_| settings.rescore) {
-            collected.suggestions.truncate(RESCORE_MAX);
+            // 誤り辞書の候補（先頭の `fixed` 件）は再採点の並べ替えの対象外
+            let mut rest = collected.suggestions.split_off(collected.fixed);
+            rest.truncate(RESCORE_MAX);
             rerank(
-                &mut collected.suggestions,
+                &mut rest,
                 reading,
                 &collected.typed_surface,
                 scorer,
                 left_context,
                 budget,
             );
+            collected.suggestions.extend(rest);
         }
         collected.suggestions.truncate(settings.max_candidates);
         collected.suggestions
@@ -457,6 +480,82 @@ impl FuzzyEngine {
         if !settings.enabled || known || settings.max_candidates == 0 || reading.is_empty() {
             return None;
         }
+        // 誤り辞書: 辞書語の判定と編集距離の展開を通さず、決定的に先頭へ並べる
+        let (mut out, typed_surface) = if settings.misspellings {
+            self.misspelled(dict, overlay, reading)
+        } else {
+            (Vec::new(), String::new())
+        };
+        let fixed = out.len();
+        let typed_surface = (fixed > 0).then_some(typed_surface);
+        let expanded = self.collect_expanded(dict, overlay, reading, typing, settings, budget);
+        let typed_surface = match (expanded, typed_surface) {
+            (Some((list, surface)), head_surface) => {
+                for s in list {
+                    if !out.iter().any(|o| o.surface == s.surface) {
+                        out.push(s);
+                    }
+                }
+                head_surface.unwrap_or(surface)
+            }
+            (None, Some(surface)) => surface,
+            (None, None) => return None,
+        };
+        if out.is_empty() {
+            return None;
+        }
+        Some(Collected {
+            suggestions: out,
+            fixed,
+            typed_surface,
+        })
+    }
+
+    /// 誤り辞書に一致する読みの提案（辞書の語・編集距離の判定は通さない。一致しなければ空）と、
+    /// 元の読みの最良の表記。表記が元の読みの最良の表記と同じもの・重複する表記は除く
+    fn misspelled(
+        &self,
+        dict: &Dictionary,
+        overlay: &Overlay,
+        reading: &str,
+    ) -> (Vec<Suggestion>, String) {
+        let misspellings = self.misspellings();
+        let rights = misspellings.lookup(reading);
+        if rights.is_empty() {
+            return (Vec::new(), String::new());
+        }
+        let typed_surface =
+            best_path(dict, overlay, reading).map_or_else(|| reading.to_string(), |(s, _)| s);
+        let mut out: Vec<Suggestion> = Vec::new();
+        for right in rights {
+            let Some((surface, cost)) = best_path(dict, overlay, right) else {
+                continue;
+            };
+            if surface == typed_surface || out.iter().any(|s| s.surface == surface) {
+                continue;
+            }
+            out.push(Suggestion {
+                reading: right.clone(),
+                surface,
+                score: cost,
+                channel_cost: 0.0,
+                lm_margin: None,
+            });
+        }
+        (out, typed_surface)
+    }
+
+    /// 通常の補正（編集距離の展開 + 辞書による採否）の提案をスコアの良い順に返す。
+    /// クリーンな入力・補正なしなら `None`。第 2 要素は元の読みの最良の表記
+    fn collect_expanded(
+        &self,
+        dict: &Dictionary,
+        overlay: &Overlay,
+        reading: &str,
+        typing: &TypingHint<'_>,
+        settings: &FuzzySettings,
+        budget: Duration,
+    ) -> Option<(Vec<Suggestion>, String)> {
         // クリーンな入力: 読みが辞書語（システム辞書・ユーザー辞書・スニペット）として完全一致する
         if !dict.lookup(reading).is_empty()
             || !overlay.lookup(reading).is_empty()
@@ -516,10 +615,7 @@ impl FuzzyEngine {
                 .total_cmp(&b.score)
                 .then_with(|| a.reading.cmp(&b.reading))
         });
-        Some(Collected {
-            suggestions: out,
-            typed_surface,
-        })
+        Some((out, typed_surface))
     }
 }
 
@@ -542,8 +638,10 @@ pub fn covered_margin(c: &Correction, reading_chars: usize) -> f32 {
 
 /// [`FuzzyEngine::collect`] の結果
 struct Collected {
-    /// 辞書のスコアの良い順
+    /// 先頭の `fixed` 件は誤り辞書の提案（辞書の行の順）、残りは辞書のスコアの良い順
     suggestions: Vec<Suggestion>,
+    /// 先頭の誤り辞書の提案の件数（再採点の並べ替えの対象外）
+    fixed: usize,
     /// 入力そのままの読みの最良の表記（辞書に無ければ読みそのまま）
     typed_surface: String,
 }

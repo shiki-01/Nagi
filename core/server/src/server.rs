@@ -423,6 +423,16 @@ impl Server {
                 self.runtime.push_event(e);
             }
         }
+        if let (Some(path), Some(pipeline)) = (
+            self.reload.misspellings_path.clone(),
+            self.reload.pipeline.as_ref().map(|p| p.0.clone()),
+        ) {
+            let (misspellings, issues) = crate::misspell::Misspellings::load(Some(&path));
+            pipeline.set_misspellings(Arc::new(misspellings));
+            for e in crate::setup::misspell_events(&issues) {
+                self.runtime.push_event(e);
+            }
+        }
         self.reload.mark_read();
         ReloadConfigResult { ok, errors }
     }

@@ -374,6 +374,9 @@ pub struct FuzzySection {
     /// タッチ座標（キー内の位置・フリックの角度）を補正のコストに使うか。既定: true。
     /// 座標を送らない入力（物理キーボード）には影響しない。
     pub use_touch_coords: bool,
+    /// 誤り辞書（読みの書き間違い → 正しい読みの対応表）による「もしかして」候補を出すか。既定: true。
+    /// `enabled` が false のときは効かない。
+    pub misspellings: bool,
     /// 補正候補を、左文脈つきで変換モデル（LLM）に再採点させて並べ替えるか。既定: false。
     /// モデルが無い・同期予算内に終わらないときは辞書のスコアのままにする。
     pub rescore: bool,
@@ -397,6 +400,7 @@ impl Default for FuzzySection {
             max_candidates: 3,
             kinds: FUZZY_KINDS_ALL.to_string(),
             use_touch_coords: true,
+            misspellings: true,
             rescore: false,
             auto_apply: false,
             auto_apply_margin: 8,
@@ -1301,6 +1305,7 @@ const FUZZY_KEYS: &[&str] = &[
     "max_candidates",
     "kinds",
     "use_touch_coords",
+    "misspellings",
     "rescore",
     "auto_apply",
     "auto_apply_margin",
@@ -2319,6 +2324,7 @@ min_chars = 3
         assert!(!d.input.fuzzy.rescore, "再採点は既定でオフ");
         assert!(!d.input.fuzzy.auto_apply, "自動採用は既定でオフ");
         assert_eq!(d.input.fuzzy.auto_apply_margin, 8);
+        assert!(d.input.fuzzy.misspellings, "誤り辞書は既定でオン");
         assert_eq!(FuzzyStrength::Gentle.max_cost(), 3.0);
         assert_eq!(FuzzyStrength::Normal.max_cost(), 4.5);
         assert_eq!(FuzzyStrength::Aggressive.max_cost(), 6.5);
@@ -2331,6 +2337,10 @@ min_chars = 3
         assert_eq!(c.input.fuzzy.strength, FuzzyStrength::Aggressive);
         assert_eq!(c.input.fuzzy.max_candidates, 5);
         assert_eq!(c.input.fuzzy.kinds, "voicing");
+        assert!(c.input.fuzzy.misspellings, "未指定なら既定の true");
+        let (c, issues) = parse("[input.fuzzy]\nmisspellings = false\n").expect("parse");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(!c.input.fuzzy.misspellings);
 
         // 範囲外はエラー（行番号付き）、入れ子の未知キーは警告
         let (c, issues) =

@@ -296,6 +296,11 @@ pub struct Reloadable {
     pub config_path: Option<PathBuf>,
     /// ユーザー辞書のディレクトリ
     pub user_dict_dir: Option<PathBuf>,
+    /// 誤り辞書の利用者の追記ファイル（`<user_dir>/misspellings.tsv`）
+    pub misspellings_path: Option<PathBuf>,
+    /// 誤り辞書を差し替える先（変換パイプライン）。`Server` が `catch_unwind` の境界を越えて
+    /// 参照されるため `AssertUnwindSafe` で包む（差し替えは `Arc` の入れ替えだけで、不整合は残らない）
+    pub pipeline: Option<std::panic::AssertUnwindSafe<Arc<Pipeline>>>,
     /// システム辞書（オーバーレイの品詞対応づけに使う）
     pub dict: Option<Arc<Dictionary>>,
     /// コマンドラインで上書きされた待ち時間
@@ -304,6 +309,7 @@ pub struct Reloadable {
     pub applied_model: Option<String>,
     config_stamp: Option<SystemTime>,
     dict_stamp: (usize, Option<SystemTime>),
+    misspellings_stamp: Option<SystemTime>,
     last_poll: Instant,
 }
 
@@ -313,11 +319,14 @@ impl Reloadable {
         Reloadable {
             config_path: None,
             user_dict_dir: None,
+            misspellings_path: None,
+            pipeline: None,
             dict: None,
             cli_sync_budget_ms: None,
             applied_model: None,
             config_stamp: None,
             dict_stamp: (0, None),
+            misspellings_stamp: None,
             last_poll: Instant::now(),
         }
     }
@@ -330,9 +339,13 @@ impl Reloadable {
         self.last_poll = Instant::now();
         let config = self.config_path.as_deref().and_then(mtime);
         let dict = self.user_dict_dir.as_deref().map_or((0, None), dir_stamp);
-        let changed = config != self.config_stamp || dict != self.dict_stamp;
+        let misspellings = self.misspellings_path.as_deref().and_then(mtime);
+        let changed = config != self.config_stamp
+            || dict != self.dict_stamp
+            || misspellings != self.misspellings_stamp;
         self.config_stamp = config;
         self.dict_stamp = dict;
+        self.misspellings_stamp = misspellings;
         changed
     }
 
@@ -340,6 +353,7 @@ impl Reloadable {
     pub fn mark_read(&mut self) {
         self.config_stamp = self.config_path.as_deref().and_then(mtime);
         self.dict_stamp = self.user_dict_dir.as_deref().map_or((0, None), dir_stamp);
+        self.misspellings_stamp = self.misspellings_path.as_deref().and_then(mtime);
         self.last_poll = Instant::now();
     }
 }
@@ -652,6 +666,16 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
 
     let applied_model = config.conversion.model.clone();
     let mut pipeline = Pipeline::new(dict.clone(), model, runtime.clone());
+    // 曖昧入力の誤り辞書（同梱 + `<user_dir>/misspellings.tsv`）
+    let misspellings_path = user_dir
+        .as_ref()
+        .map(|d| d.join(crate::misspell::USER_FILE_NAME));
+    let (misspellings, misspell_issues) =
+        crate::misspell::Misspellings::load(misspellings_path.as_deref());
+    pipeline.set_misspellings(Arc::new(misspellings));
+    for e in misspell_events(&misspell_issues) {
+        runtime.push_event(e);
+    }
     // 英語の自動判定の語彙（任意。`cargo xtask fetch-english`）。無くても特徴量だけで動く
     match load_english_lexicon(options.data_dir.as_deref()) {
         Some(Ok(lexicon)) => {
@@ -716,6 +740,8 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
     let mut reload = Reloadable {
         config_path,
         user_dict_dir,
+        misspellings_path,
+        pipeline: Some(std::panic::AssertUnwindSafe(pipeline.clone())),
         dict,
         cli_sync_budget_ms: options.sync_budget_ms,
         applied_model,
@@ -785,6 +811,22 @@ pub fn user_dict_events(issues: &[nagi_dict::UserDictIssue]) -> Vec<Event> {
                 format!("ユーザー辞書 {} の {} 行目: {}", i.file, i.line, i.message)
             } else {
                 format!("ユーザー辞書 {}: {}", i.file, i.message)
+            },
+        })
+        .collect()
+}
+
+/// 誤り辞書の読み込みの問題を通知に直す
+pub fn misspell_events(issues: &[crate::misspell::MisspellIssue]) -> Vec<Event> {
+    issues
+        .iter()
+        .map(|i| Event {
+            level: NotifyLevel::Warning,
+            code: "misspellings_warning",
+            message: if i.line > 0 {
+                format!("誤り辞書 {} の {} 行目: {}", i.file, i.line, i.message)
+            } else {
+                format!("誤り辞書 {}: {}", i.file, i.message)
             },
         })
         .collect()
