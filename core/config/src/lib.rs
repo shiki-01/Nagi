@@ -276,7 +276,8 @@ pub struct ConversionSection {
     pub beam_width: Option<usize>,
     /// 候補ウィンドウ 1 ページの候補数。既定: 9。
     pub num_candidates: usize,
-    /// 推論スレッド数。0 = 自動。既定: 0。
+    /// 推論スレッド数。0 = 自動（`min(CPU コア数, 6)`。Light プロファイルはその半分）。
+    /// 1 以上の明示指定は上限なしでそのまま使う。既定: 0。
     pub n_threads: usize,
     /// モデル ID または GGUF パス。未指定 = プロファイルに従う。既定: None。
     #[serde(skip_serializing_if = "Option::is_none")]

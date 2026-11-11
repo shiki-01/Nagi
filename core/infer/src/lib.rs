@@ -861,6 +861,11 @@ pub mod llama {
         }
 
         fn set_n_threads(&mut self, n_threads: usize) {
+            // 同じ値なら何もしない（毎回の呼び出しでコンテキストを作り直すと、
+            // KV キャッシュの破棄と再作成で CPU を浪費するため）
+            if self.options.n_threads == n_threads {
+                return;
+            }
             self.options.n_threads = n_threads;
             // 既存の `ctx` はこの `n_threads` を反映していないため、次回 `ensure_ctx` で
             // 作り直させる（コンテキスト作成は 1 回きりなので、変更を効かせるにはこれが要る）

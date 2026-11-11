@@ -30,6 +30,21 @@ const FLUSH_LOCK_TIMEOUT: Duration = Duration::from_millis(100);
 /// 明示の flush（忘却・全削除）が待つ最長時間
 const FLUSH_LOCK_TIMEOUT_FORCED: Duration = Duration::from_secs(2);
 /// 次語予測のバイグラムを保存するファイル名（学習ファイルと同じディレクトリ）
+/// 推論スレッド数を自動判定するときの上限。
+/// 全論理コアを使うと待機中の打鍵ごとの推論で CPU が飽和する（800% 超の報告。decisions.md G-50）。
+/// 小型モデルはスレッドを増やしても頭打ちになるため、暫定で 6 に抑える。
+const AUTO_N_THREADS_MAX: usize = 6;
+
+/// 推論スレッド数を決める。`requested > 0`（明示指定）は一切変更しない。
+/// 自動（0）は `min(cpu_cores, AUTO_N_THREADS_MAX)`、Light はその半分（最小 1）。
+fn resolve_n_threads(requested: usize, cpu_cores: usize, light: bool) -> usize {
+    if requested > 0 {
+        return requested;
+    }
+    let auto = cpu_cores.clamp(1, AUTO_N_THREADS_MAX);
+    if light { (auto / 2).max(1) } else { auto }
+}
+
 const NEXT_WORD_FILE: &str = "learning-next.tsv";
 
 /// メモリ逼迫が解消（`normal`）してから、解放していた変換モデルを再読み込みするまでの待ち時間。
@@ -868,16 +883,7 @@ impl Runtime {
             0
         };
         let cpu_cores = self.system.cpu_cores.max(1);
-        let base_threads = if t.n_threads > 0 {
-            t.n_threads
-        } else {
-            cpu_cores
-        };
-        let n_threads = if profile == Profile::Light {
-            (base_threads / 2).max(1)
-        } else {
-            base_threads
-        };
+        let n_threads = resolve_n_threads(t.n_threads, cpu_cores, profile == Profile::Light);
         let beam_width = t.beam_width_override.unwrap_or(params.beam_width).max(1);
         Effective {
             use_llm: t.llm_enabled && params.use_llm && self.llm_loaded.load(Ordering::Relaxed),
@@ -1176,6 +1182,18 @@ fn flush_shared<T>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auto_n_threads_is_capped() {
+        assert_eq!(resolve_n_threads(0, 16, false), 6);
+        assert_eq!(resolve_n_threads(0, 4, false), 4);
+        assert_eq!(resolve_n_threads(0, 0, false), 1);
+        assert_eq!(resolve_n_threads(0, 16, true), 3);
+        assert_eq!(resolve_n_threads(0, 1, true), 1);
+        // 明示指定は上限・Light に関係なくそのまま
+        assert_eq!(resolve_n_threads(8, 16, false), 8);
+        assert_eq!(resolve_n_threads(8, 16, true), 8);
+    }
+
     use super::*;
 
     #[test]

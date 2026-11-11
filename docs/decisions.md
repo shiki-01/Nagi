@@ -807,6 +807,15 @@ G-25 の続き。G-24 の非同期通知基盤に乗せて、実際にライブ�
 - **影響**: `romaji/src/lib.rs`（`Backspace`・`RomajiConverter::{feed,backspace}`・`Composer::backspace`）。テストは romaji の `test_backspace_*`・`test_converter_backspace_outcomes`、engine の `api.rs`（`backspace_rolls_back_*`・`second_backspace_is_conventional`・`cursor_move_discards_backspace_history`・ライブ変換ケース）と golden `30_composing_edit.yaml`（`composing-backspace-rollback-*`）。既存テストの期待値変更なし
 - **未対応**: Undo（確定後の取り消し）や複数キーにわたる巻き戻しは対象外。`k`+`-`（k が Raw、`-` が「ー」で保留が空）も Raw を含むため巻き戻し対象（BS で保留 k に戻る）
 
+### G-50. 推論スレッド数の自動判定に上限 6 を設ける・同値の set_n_threads でコンテキストを破棄しない（2026-11-11、暫定・要レビュー）
+
+- **報告**: imserver の待機中 CPU 使用率が 800% 超になる。
+- **原因**: (1) `n_threads = 0`（自動）が全論理コアを使っていた。(2) `ConversionModel::set_n_threads` が値が同じでも毎回 LLM コンテキストを破棄し、次の推論で再作成していた（pipeline から呼ばれるたび）。
+- **修正**: (1) 自動時は `min(cpu_cores, 6)`（`AUTO_N_THREADS_MAX`、`runtime.rs`）。Light は従来どおりその半分（最小 1）。`n_threads > 0` の明示指定は変更しない。(2) `set_n_threads` は値が変わったときだけ ctx を破棄する（`infer/src/lib.rs`。llama feature 内のため単体テストは省略。モデルが要る）。
+- **暫定判断**: 上限 6 は根拠となる実測なしの暫定値。
+- **未計測**: p95 レイテンシ（Space 変換・ライブ変換）への影響。`nagi-live-bench` での実測が必要。
+- **未対応**: 打鍵ごとにスレッドが積み上がる問題（推論は取消不能で、連打すると並行して走り続ける）。
+
 
 ### H-6. iOS キーボード拡張のメモリ実測（2026-10-14、ユーザー実測・要レビュー）
 
