@@ -19,6 +19,10 @@ name: macOS UI E2E
 
 on:
   workflow_dispatch:
+  # 検証用: main に入るまでの間、このブランチへの push で起動する（main へ入れる前に削除すること）
+  push:
+    branches: [claude/ui-automation-testing-4mgml9]
+    paths: [".github/workflows/macos-e2e.yml"]
 
 defaults:
   run:
