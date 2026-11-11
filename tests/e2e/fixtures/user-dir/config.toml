@@ -1,0 +1,9 @@
+# UI E2E 用の設定。変換を決定的にするため、時間や学習で結果が変わる機能を止める
+[conversion]
+live_conversion = false
+
+[learning]
+enabled = false
+
+[update]
+auto_check = false

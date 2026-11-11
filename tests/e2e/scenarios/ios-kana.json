@@ -1,0 +1,396 @@
+{
+  "suite": "ios-kana",
+  "platforms": [
+    "ios"
+  ],
+  "scenarios": [
+    {
+      "name": "tap_row_heads",
+      "steps": [
+        {
+          "tap": [
+            "あ",
+            "か",
+            "さ",
+            "た",
+            "な"
+          ]
+        },
+        {
+          "expect": {
+            "text": "あかさたな"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tap_same_key_repeats_without_toggle",
+      "steps": [
+        {
+          "tap": [
+            "か"
+          ]
+        },
+        {
+          "expect": {
+            "text": "か"
+          }
+        },
+        {
+          "tap": [
+            "か"
+          ]
+        },
+        {
+          "expect": {
+            "text": "かか"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tap_other_key_stops_toggle",
+      "steps": [
+        {
+          "tap": [
+            "か",
+            "さ"
+          ]
+        },
+        {
+          "expect": {
+            "text": "かさ"
+          }
+        }
+      ]
+    },
+    {
+      "name": "flick_ka_row",
+      "steps": [
+        {
+          "flick": {
+            "key": "か",
+            "dir": "left"
+          }
+        },
+        {
+          "expect": {
+            "text": "き"
+          }
+        },
+        {
+          "flick": {
+            "key": "か",
+            "dir": "up"
+          }
+        },
+        {
+          "expect": {
+            "text": "きく"
+          }
+        },
+        {
+          "flick": {
+            "key": "か",
+            "dir": "right"
+          }
+        },
+        {
+          "expect": {
+            "text": "きくけ"
+          }
+        },
+        {
+          "flick": {
+            "key": "か",
+            "dir": "down"
+          }
+        },
+        {
+          "expect": {
+            "text": "きくけこ"
+          }
+        }
+      ]
+    },
+    {
+      "name": "flick_a_row",
+      "steps": [
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "left"
+          }
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "up"
+          }
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "down"
+          }
+        },
+        {
+          "expect": {
+            "text": "いうえお"
+          }
+        }
+      ]
+    },
+    {
+      "name": "flick_wa_row",
+      "steps": [
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "left"
+          }
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "expect": {
+            "text": "をん"
+          }
+        }
+      ]
+    },
+    {
+      "name": "flick_punct",
+      "steps": [
+        {
+          "flick": {
+            "key": "、。？！",
+            "dir": "left"
+          }
+        },
+        {
+          "flick": {
+            "key": "、。？！",
+            "dir": "up"
+          }
+        },
+        {
+          "flick": {
+            "key": "、。？！",
+            "dir": "right"
+          }
+        },
+        {
+          "expect": {
+            "text": "。？！"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dakuten",
+      "steps": [
+        {
+          "tap": [
+            "か"
+          ]
+        },
+        {
+          "tap": [
+            "゛゜小"
+          ]
+        },
+        {
+          "expect": {
+            "text": "が"
+          }
+        },
+        {
+          "tap": [
+            "゛゜小"
+          ]
+        },
+        {
+          "expect": {
+            "text": "か"
+          }
+        }
+      ]
+    },
+    {
+      "name": "handakuten_cycle",
+      "steps": [
+        {
+          "tap": [
+            "は"
+          ]
+        },
+        {
+          "tap": [
+            "゛゜小"
+          ]
+        },
+        {
+          "expect": {
+            "text": "ば"
+          }
+        },
+        {
+          "tap": [
+            "゛゜小"
+          ]
+        },
+        {
+          "expect": {
+            "text": "ぱ"
+          }
+        },
+        {
+          "tap": [
+            "゛゜小"
+          ]
+        },
+        {
+          "expect": {
+            "text": "は"
+          }
+        }
+      ]
+    },
+    {
+      "name": "small_tsu",
+      "steps": [
+        {
+          "tap": [
+            "た"
+          ]
+        },
+        {
+          "flick": {
+            "key": "た",
+            "dir": "up"
+          }
+        },
+        {
+          "tap": [
+            "゛゜小"
+          ]
+        },
+        {
+          "expect": {
+            "text": "たっ"
+          }
+        }
+      ]
+    },
+    {
+      "name": "backspace",
+      "steps": [
+        {
+          "tap": [
+            "あ",
+            "か"
+          ]
+        },
+        {
+          "tap": [
+            "⌫"
+          ]
+        },
+        {
+          "expect": {
+            "text": "あ"
+          }
+        },
+        {
+          "tap": [
+            "⌫"
+          ]
+        },
+        {
+          "expect": {
+            "text": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "cursor_move_insert",
+      "steps": [
+        {
+          "tap": [
+            "あ"
+          ]
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "left"
+          }
+        },
+        {
+          "tap": [
+            "←"
+          ]
+        },
+        {
+          "flick": {
+            "key": "か",
+            "dir": "up"
+          }
+        },
+        {
+          "expect": {
+            "text": "あくい"
+          }
+        }
+      ]
+    },
+    {
+      "name": "enter_commits",
+      "steps": [
+        {
+          "tap": [
+            "あ",
+            "か"
+          ]
+        },
+        {
+          "expect": {
+            "text": "あか"
+          }
+        },
+        {
+          "tap": [
+            "改行"
+          ]
+        },
+        {
+          "expect": {
+            "text": "あか"
+          }
+        },
+        {
+          "tap": [
+            "さ"
+          ]
+        },
+        {
+          "expect": {
+            "text": "あかさ"
+          }
+        }
+      ]
+    }
+  ]
+}

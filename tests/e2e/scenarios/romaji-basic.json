@@ -1,0 +1,287 @@
+{
+  "suite": "romaji-basic",
+  "platforms": [
+    "macos",
+    "windows"
+  ],
+  "scenarios": [
+    {
+      "name": "konnichiha_commit",
+      "steps": [
+        {
+          "type": "konnnichiha"
+        },
+        {
+          "expect": {
+            "marked": "こんにちは"
+          }
+        },
+        {
+          "key": "Return"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": "こんにちは"
+          }
+        }
+      ]
+    },
+    {
+      "name": "vowels_and_consonants",
+      "steps": [
+        {
+          "type": "aiueo"
+        },
+        {
+          "expect": {
+            "marked": "あいうえお"
+          }
+        },
+        {
+          "type": "ka"
+        },
+        {
+          "expect": {
+            "marked": "あいうえおか"
+          }
+        }
+      ]
+    },
+    {
+      "name": "pending_consonant_shown",
+      "steps": [
+        {
+          "type": "k"
+        },
+        {
+          "expect": {
+            "marked": "k"
+          }
+        },
+        {
+          "type": "a"
+        },
+        {
+          "expect": {
+            "marked": "か"
+          }
+        }
+      ]
+    },
+    {
+      "name": "backspace_removes_kana",
+      "steps": [
+        {
+          "type": "kai"
+        },
+        {
+          "expect": {
+            "marked": "かい"
+          }
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "expect": {
+            "marked": "か"
+          }
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "expect": {
+            "marked": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "backspace_removes_pending_romaji",
+      "steps": [
+        {
+          "type": "k"
+        },
+        {
+          "expect": {
+            "marked": "k"
+          }
+        },
+        {
+          "key": "Backspace"
+        },
+        {
+          "expect": {
+            "marked": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "escape_cancels",
+      "steps": [
+        {
+          "type": "konnnichiha"
+        },
+        {
+          "expect": {
+            "marked": "こんにちは"
+          }
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "sokuon",
+      "steps": [
+        {
+          "type": "kitte"
+        },
+        {
+          "expect": {
+            "marked": "きって"
+          }
+        },
+        {
+          "type": "gakkou"
+        },
+        {
+          "expect": {
+            "marked": "きってがっこう"
+          }
+        }
+      ]
+    },
+    {
+      "name": "youon",
+      "steps": [
+        {
+          "type": "kyou"
+        },
+        {
+          "expect": {
+            "marked": "きょう"
+          }
+        },
+        {
+          "type": "sha"
+        },
+        {
+          "expect": {
+            "marked": "きょうしゃ"
+          }
+        },
+        {
+          "type": "chou"
+        },
+        {
+          "expect": {
+            "marked": "きょうしゃちょう"
+          }
+        }
+      ]
+    },
+    {
+      "name": "n_before_consonant",
+      "steps": [
+        {
+          "type": "kanto"
+        },
+        {
+          "expect": {
+            "marked": "かんと"
+          }
+        }
+      ]
+    },
+    {
+      "name": "n_double_n",
+      "steps": [
+        {
+          "type": "kannnai"
+        },
+        {
+          "expect": {
+            "marked": "かんない"
+          }
+        }
+      ]
+    },
+    {
+      "name": "n_apostrophe",
+      "steps": [
+        {
+          "type": "kan'i"
+        },
+        {
+          "expect": {
+            "marked": "かんい"
+          }
+        }
+      ]
+    },
+    {
+      "name": "commit_then_new_input",
+      "steps": [
+        {
+          "type": "ai"
+        },
+        {
+          "key": "Return"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": "あい"
+          }
+        },
+        {
+          "type": "ue"
+        },
+        {
+          "key": "Return"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": "あいうえ"
+          }
+        }
+      ]
+    },
+    {
+      "name": "n_single_n_before_vowel_is_na_row",
+      "steps": [
+        {
+          "type": "konichiha"
+        },
+        {
+          "expect": {
+            "marked": "こにちは"
+          }
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "type": "konnichiha"
+        },
+        {
+          "expect": {
+            "marked": "こんいちは"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -6,10 +6,17 @@
 ## 前提
 
 - Xcode を手元に入れない。ビルド・実行は GitHub Actions のホストランナー（macOS / Windows）、またはローカルでは SwiftPM・Cargo のみで完結させる
-- 変換は決定的にする: LLM 無効（`--no-llm`）、システム辞書なし、ユーザー辞書は `fixtures/user-dir/` のものだけを使う
+- 変換は決定的にする: LLM 無効（`--no-llm`）、システム辞書は「空の最小辞書」、ユーザー辞書は `fixtures/user-dir/` のものだけを使う
+  - システム辞書が無いとユーザー辞書が重ならない（`core/server/src/setup.rs`）ため、完全な辞書なしにはできない。`cargo xtask e2e-fixture-data --out <dir>` が `<dir>/dict/nagi-dict.bin`（語彙なしの最小辞書）を出力するので、`imserver --data-dir <dir>` / `NAGI_DATA_DIR` に渡す
 - 各ドライバーは次の環境を用意してからシナリオを実行する
   - エンジンの設定ディレクトリ: `NAGI_CONFIG_DIR` を `fixtures/user-dir/` のコピー（一時ディレクトリ）に向ける
   - 各シナリオの開始時にテキスト欄を空にし、IME を日本語（ひらがな）モードにする
+
+## 入力の癖（シナリオを書くときの注意）
+
+- 「こんにちは」は `konnnichiha`（`nn` で「ん」）。`konnichiha` は「こんいちは」になる
+- 語尾の `n` は未確定のまま残る（`henkan` → 「へんかn」）。「へんかん」にするには `henkann`
+- iOS の `tap` は `input.toggle_input=false`（既定）が前提。同じキーの連続タップはトグルしない
 
 ## ファイル
 
@@ -26,7 +33,7 @@
     {
       "name": "konnichiha_commit",
       "steps": [
-        { "type": "konnichiha" },
+        { "type": "konnnichiha" },
         { "expect": { "marked": "こんにちは" } },
         { "key": "Return" },
         { "expect": { "marked": "", "committed": "こんにちは" } }

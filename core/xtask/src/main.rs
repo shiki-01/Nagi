@@ -9,6 +9,7 @@ mod build_ios_xcframework;
 mod build_kana_lm;
 mod bundle_macos;
 mod bundle_windows;
+mod e2e;
 mod fetch_dict;
 mod fetch_english;
 mod fetch_loanword;
@@ -162,6 +163,28 @@ enum Task {
         #[arg(long, default_value = "all")]
         platform: String,
     },
+    /// UI E2E の共通シナリオ（tests/e2e/scenarios、macos / windows 向け）を imserver へ直接再生して検証する
+    /// （OS 非依存。先に `cargo build -p nagi-server --bin imserver` が要る）
+    E2eHeadless {
+        /// imserver のパス（既定は target/debug/imserver）
+        #[arg(long)]
+        imserver: Option<std::path::PathBuf>,
+        /// results.json の出力先ディレクトリ（既定は target/e2e-headless）
+        #[arg(long)]
+        out_dir: Option<std::path::PathBuf>,
+        /// 指定したスイート名だけ実行する
+        #[arg(long)]
+        suite: Option<String>,
+        /// ios 向けスイート（tap / flick）も、コアの touch API（insert_reading / perform_action）で再生する
+        #[arg(long)]
+        ios: bool,
+    },
+    /// UI E2E 用の最小システム辞書（空。ユーザー辞書の重ね合わせに必要）を `<out>/dict/nagi-dict.bin` に書く。
+    /// 実ドライバーは `imserver --data-dir <out>` で使う
+    E2eFixtureData {
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// iOS 用 XCFramework を生成する（nagi-ffi を aarch64-apple-ios/sim ターゲット向けにビルド）
     BuildIosXcframework {
         /// feature llama を有効化する
@@ -237,6 +260,18 @@ fn main() -> ExitCode {
             out,
         }),
         Task::GenLicenses { platform } => gen_licenses::run(&platform),
+        Task::E2eHeadless {
+            imserver,
+            out_dir,
+            suite,
+            ios,
+        } => e2e::run(e2e::Options {
+            imserver,
+            out_dir,
+            suite,
+            ios,
+        }),
+        Task::E2eFixtureData { out } => e2e::run_fixture_data(out),
         Task::BuildIosXcframework { llama, out_dir } => {
             build_ios_xcframework::run(build_ios_xcframework::Options { llama, out_dir })
         }

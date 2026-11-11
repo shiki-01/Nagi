@@ -1,0 +1,130 @@
+{
+  "suite": "convert-userdict",
+  "platforms": [
+    "macos",
+    "windows"
+  ],
+  "scenarios": [
+    {
+      "name": "space_converts_to_userdict_word",
+      "steps": [
+        {
+          "type": "tesutohenkann"
+        },
+        {
+          "expect": {
+            "marked": "てすとへんかん"
+          }
+        },
+        {
+          "key": "Space"
+        },
+        {
+          "expect": {
+            "marked": "テスト変換",
+            "candidates_contain": [
+              "テスト変換",
+              "テスト返還"
+            ]
+          }
+        },
+        {
+          "key": "Return"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": "テスト変換"
+          }
+        }
+      ]
+    },
+    {
+      "name": "space_twice_selects_next_candidate",
+      "steps": [
+        {
+          "type": "tesutohenkann"
+        },
+        {
+          "key": "Space"
+        },
+        {
+          "key": "Space"
+        },
+        {
+          "expect": {
+            "marked": "テスト返還"
+          }
+        },
+        {
+          "key": "Return"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": "テスト返還"
+          }
+        }
+      ]
+    },
+    {
+      "name": "escape_returns_to_reading",
+      "steps": [
+        {
+          "type": "tesutohenkann"
+        },
+        {
+          "key": "Space"
+        },
+        {
+          "expect": {
+            "marked": "テスト変換"
+          }
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "expect": {
+            "marked": "てすとへんかん",
+            "committed": ""
+          }
+        },
+        {
+          "key": "Return"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": "てすとへんかん"
+          }
+        }
+      ]
+    },
+    {
+      "name": "userdict_second_word",
+      "steps": [
+        {
+          "type": "kyounotenki"
+        },
+        {
+          "key": "Space"
+        },
+        {
+          "expect": {
+            "marked": "今日の天気"
+          }
+        },
+        {
+          "key": "Return"
+        },
+        {
+          "expect": {
+            "marked": "",
+            "committed": "今日の天気"
+          }
+        }
+      ]
+    }
+  ]
+}
