@@ -84,15 +84,51 @@ jobs:
           NAGI_APP: ${{ github.workspace }}/core/target/macos-bundle/Nagi.app
           NAGI_E2E_OUT: ${{ github.workspace }}/e2e-out
           NAGI_FIXTURE_DATA: ${{ github.workspace }}/e2e-out/fixture-data
-        run: tests/e2e/macos/run.sh
+        run: |
+          mkdir -p e2e-out
+          tests/e2e/macos/run.sh 2>&1 | tee e2e-out/run.log
 
-      - name: collect IME logs
+      # 入力ソース登録まわりの切り分け用診断（成功時も取る）。ステップサマリにも書く
+      - name: diagnostics
         if: always()
         run: |
           mkdir -p e2e-out
-          log show --last 15m --style compact --predicate 'process == "NagiIMEApp" OR process == "imserver" OR process == "NagiTestHost"' > e2e-out/unified.log 2>&1 || true
+          {
+            echo "## 入力ソース診断"
+            echo '### run.log (入力ソース関連)'
+            echo '```'
+            grep -E '入力ソース|段階|試行|TISRegister|defaults|killall|sudo|\[入力ソース診断\]|bundle=|権限|警告|PASS|FAIL|error' e2e-out/run.log | tail -n 150 || true
+            echo '```'
+            echo '### 配置'
+            echo '```'
+            ls -la ~/Library/Input\ Methods /Library/Input\ Methods 2>&1 || true
+            echo '```'
+            echo '### NagiIMEApp --register / --diagnose (配置済みアプリ)'
+            echo '```'
+            for d in "$HOME/Library/Input Methods" "/Library/Input Methods"; do
+              if [ -x "$d/Nagi.app/Contents/MacOS/NagiIMEApp" ]; then
+                echo "-- $d: --register"; "$d/Nagi.app/Contents/MacOS/NagiIMEApp" --register 2>&1 || true
+                echo "-- $d: --diagnose"; "$d/Nagi.app/Contents/MacOS/NagiIMEApp" --diagnose 2>&1 || true
+              fi
+            done
+            echo '```'
+            echo '### pluginkit / lsregister'
+            echo '```'
+            pluginkit -mA 2>&1 | grep -i nagi || echo "(pluginkit: nagi なし)"
+            /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -dump 2>/dev/null | grep -i -B2 -A8 'inputmethod.nagi' | head -n 60 || echo "(lsregister: nagi なし)"
+            echo '```'
+            echo '### HIToolbox defaults'
+            echo '```'
+            defaults read com.apple.HIToolbox 2>&1 | head -n 80 || true
+            echo '```'
+            echo '### unified log (NagiIMEApp / HIToolbox / imklaunchagent)'
+            echo '```'
+            /usr/bin/log show --last 15m --style compact --predicate 'process == "NagiIMEApp" OR process == "imklaunchagent" OR process == "TextInputMenuAgent" OR subsystem == "com.apple.HIToolbox"' 2>&1 | grep -i -E 'nagi|inputmethod|error|fail' | tail -n 80 || true
+            echo '```'
+          } > e2e-out/diagnostics.md 2>&1
+          cat e2e-out/diagnostics.md >> "$GITHUB_STEP_SUMMARY"
+          /usr/bin/log show --last 15m --style compact --predicate 'process == "NagiIMEApp" OR process == "imserver" OR process == "NagiTestHost"' > e2e-out/unified.log 2>&1 || true
           defaults read com.apple.HIToolbox > e2e-out/hitoolbox.txt 2>&1 || true
-          ~/Library/Input\ Methods/Nagi.app/Contents/MacOS/NagiIMEApp --diagnose > e2e-out/diagnose.txt 2>&1 || true
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -103,6 +139,7 @@ jobs:
             e2e-out/screenshots
             e2e-out/host.log
             e2e-out/unified.log
-            e2e-out/diagnose.txt
             e2e-out/hitoolbox.txt
+            e2e-out/diagnostics.md
+            e2e-out/run.log
           if-no-files-found: warn

@@ -233,25 +233,68 @@ final class Runner {
         return nil
     }
 
-    /// 成功なら nil、失敗なら終了コード
+    /// 成功なら nil、失敗なら終了コード。失敗しても止めずに段階的に別の方法を試し、各段階の状態を出力する
     private func selectInputSource() -> Int32? {
         let id = japaneseInputSourceID
         if InputSources.currentID() == id { return nil }
-        let report = InputSources.enableAndSelect(id: id)
-        print("入力ソース \(id): found=\(report.found) enable=\(report.enableStatus) select=\(report.selectStatus)")
-        print("入力ソースの状態（選択前）:")
-        InputSources.dump(matching: "nagi").forEach { print($0) }
-        if InputSources.selectWithRetry(id: id, timeout: 30, log: { print($0) }) { return nil }
+        let log: (String) -> Void = { print($0) }
 
-        print("TISSelectInputSource で選べませんでした。defaults (com.apple.HIToolbox) によるフォールバックを試します")
-        if InputSources.selectViaDefaults(bundleID: bundleID, modeID: id, log: { print($0) }) { return nil }
+        func report(_ title: String) {
+            print("[入力ソース診断] \(title)")
+            InputSources.dump().forEach { print($0) }
+        }
+        report("選択前")
 
-        print("入力ソースの状態（失敗後）:")
-        InputSources.dump(matching: "nagi").forEach { print($0) }
+        // 段階 1: enable -> 待機 -> select のリトライ
+        print("段階 1: TIS select リトライ")
+        if InputSources.selectWithRetry(id: id, timeout: 15, log: log) { return nil }
+        report("段階 1 後")
+
+        // 段階 2: ドライバー自身から登録し直す + 親(bundle id)の選択
+        print("段階 2: ドライバーからの TISRegisterInputSource + 親の選択")
+        if let app = config.app {
+            let installed = fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Input Methods/\(URL(fileURLWithPath: app).lastPathComponent)")
+            print("  TISRegisterInputSource(\(installed.path)) -> \(InputSources.register(appURL: installed))")
+        }
+        print("  \(InputSources.selectParent(bundleID: bundleID))")
+        pump(2)
+        if InputSources.selectWithRetry(id: id, timeout: 10, log: log) { return nil }
+        report("段階 2 後")
+
+        // 段階 3: /Library/Input Methods（システム領域）へ sudo で配置し、IMK のエージェントを再起動する
+        print("段階 3: /Library/Input Methods へ配置 + imklaunchagent 再起動")
+        if let app = config.app {
+            let name = URL(fileURLWithPath: app).lastPathComponent
+            let dest = "/Library/Input Methods/\(name)"
+            for (cmd, args) in [
+                ("/usr/bin/sudo", ["-n", "/bin/rm", "-rf", dest]),
+                ("/usr/bin/sudo", ["-n", "/bin/cp", "-R", app, "/Library/Input Methods/"]),
+            ] {
+                let result = runProcess(cmd, args)
+                print("  \(args.joined(separator: " ")) -> \(result.status) \(result.output)")
+            }
+            // ~/Library 側の同名アプリと二重にならないよう退避はしない（どちらが認識されるかを診断で見る）
+            print("  TISRegisterInputSource(\(dest)) -> \(InputSources.register(appURL: URL(fileURLWithPath: dest)))")
+        }
+        for agent in ["imklaunchagent", "TextInputMenuAgent", "TextInputSwitcher"] {
+            let result = runProcess("/usr/bin/killall", [agent])
+            print("  killall \(agent) -> \(result.status)")
+        }
+        pump(3)
+        if InputSources.selectWithRetry(id: id, timeout: 15, log: log) { return nil }
+        report("段階 3 後")
+
+        // 段階 4: defaults (com.apple.HIToolbox) による選択
+        print("段階 4: defaults com.apple.HIToolbox")
+        if InputSources.selectViaDefaults(bundleID: bundleID, modeID: id, log: log) { return nil }
+
+        report("最終（失敗）")
         screenshot(named: "select-input-source-failed")
         return fail(
             ExitCode.unreachable,
             "入力ソース \(id) を選択できません（現在: \(InputSources.currentID() ?? "nil")）。"
+                + "出力の [入力ソース診断] で Nagi が一覧に存在するか・enabled / selectCapable を確認してください。"
                 + "GUI セッションに紐づかない環境、またはシステム設定での手動追加が必要な環境の可能性があります")
     }
 
@@ -334,7 +377,7 @@ final class Runner {
             lines.append("  Nagi の入力ソースが選択されていません（TISSelectInputSource が拒否された可能性）")
         }
         lines.append("  入力ソース一覧:")
-        lines.append(contentsOf: InputSources.dump(matching: "nagi"))
+        lines.append(contentsOf: InputSources.dump())
         lines.append("  それ以外: IME プロセス/エンジンの起動失敗。`log show --predicate 'process == \"\(executableName())\"' --last 5m` を確認")
         return fail(ExitCode.unreachable, lines.joined(separator: "\n"))
     }

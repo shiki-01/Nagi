@@ -135,20 +135,37 @@ enum InputSources {
             + " selected=\(flag(boolProperty(source, "TISPropertyInputSourceIsSelected")))"
     }
 
-    /// 診断: Nagi 関連と com.apple.keylayout.* の入力ソースを列挙する（全件だと多いので絞る）
-    static func dump(matching needle: String) -> [String] {
+    /// 診断: Nagi 関連（bundle id / ID に "com.shiki.inputmethod.Nagi" を含む）と、キーボードレイアウト以外の
+    /// 全入力ソースだけを列挙する（レイアウトは列挙しない）
+    static func dump() -> [String] {
         let all = find(nil)
-        var lines = ["入力ソース総数: \(all.count)"]
+        var lines = ["入力ソース総数: \(all.count)（Nagi 関連と非レイアウト型のみ表示）"]
+        var shown = 0
         for source in all {
             let id = property(source, keyInputSourceID) ?? ""
             let bundle = property(source, "TISPropertyBundleID") ?? ""
-            if id.lowercased().contains(needle.lowercased()) || bundle.lowercased().contains(needle.lowercased())
-                || id.hasPrefix("com.apple.keylayout.")
-            {
-                lines.append("  " + describe(source))
+            let type = property(source, "TISPropertyInputSourceType") ?? ""
+            let isNagi = id.contains("com.shiki.inputmethod.Nagi") || bundle.contains("com.shiki.inputmethod.Nagi")
+            if isNagi || type != "TISTypeKeyboardLayout" {
+                lines.append("  " + describe(source) + (bundle.isEmpty ? "" : " bundle=\(bundle)"))
+                shown += 1
             }
         }
+        if shown == 0 { lines.append("  (該当なし: Nagi は TIS の一覧に存在しない)") }
         return lines
+    }
+
+    /// 親の入力メソッド（bundle id そのもの）を enable + select してみる
+    static func selectParent(bundleID: String) -> String {
+        guard let parent = source(id: bundleID) else { return "親(\(bundleID)) は一覧に無い" }
+        let enable = TISEnableInputSource(parent)
+        let select = TISSelectInputSource(parent)
+        return "親(\(bundleID)) enable=\(enable) select=\(select) | \(describe(parent))"
+    }
+
+    /// ドライバー自身から Nagi.app の URL で TISRegisterInputSource を呼ぶ
+    static func register(appURL: URL) -> Int32 {
+        TISRegisterInputSource(appURL as CFURL)
     }
 
     /// 入力ソース（入力モード）を有効化して選択する（1 回だけ試す）
