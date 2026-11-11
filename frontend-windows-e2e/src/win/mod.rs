@@ -82,11 +82,13 @@ impl WinHost {
     /// 未確定文字列を確実に消し、テキスト欄を空にする。
     /// Escape → Escape → Backspace（文字数 + 2 回）→ Return（確定して捨てる）の順に、消えるまで強くしていく
     fn force_clear(&mut self) -> Result<(), String> {
+        let mut cleared_by_engine = false;
         for step in 0..4 {
             let obs = self.read_observation();
             if obs.marked.is_empty() {
                 break;
             }
+            let before = self.probe.event_count("engine_result");
             match step {
                 0 | 1 => self.press("Escape")?,
                 2 => {
@@ -97,15 +99,32 @@ impl WinHost {
                 _ => self.press("Return")?,
             }
             pump(150);
+            let after = self.read_observation();
+            // 未確定が消えたと観測できない場合でも、直後のエンジン応答が preedit なしならクリア成立とみなす
+            if after.marked.is_empty() {
+                break;
+            }
+            if self.probe.event_count("engine_result") > before
+                && self.probe.last_has_preedit() == Some(false)
+            {
+                cleared_by_engine = true;
+                break;
+            }
         }
         let obs = self.read_observation();
-        println!("[clear] marked={:?} edit_text={:?}", obs.marked, obs.raw);
+        println!(
+            "[clear] marked={:?} edit_text={:?} cleared_by_engine={cleared_by_engine}",
+            obs.marked, obs.raw
+        );
         host::set_edit_text(self.edit, "");
         host::focus(self.edit);
-        if obs.marked.is_empty() {
+        if obs.marked.is_empty() || cleared_by_engine {
             Ok(())
         } else {
-            Err("未確定文字列を消せません".to_owned())
+            Err(format!(
+                "未確定文字列を消せません\n--- probe 末尾（最大 60 行）---\n{}",
+                self.probe.tail()
+            ))
         }
     }
 
@@ -145,9 +164,25 @@ impl WinHost {
                 input::mode_name(),
                 host::describe_focus(&self.window)
             );
+            let counts = |p: &ProbeReader| {
+                [
+                    p.event_count("test_key_down"),
+                    p.event_count("key_down"),
+                    p.event_count("engine_result"),
+                ]
+            };
+            self.probe.poll();
+            let before = counts(&self.probe);
             self.type_text("a")?;
             pump(400);
             let obs = self.read_observation();
+            let after = counts(&self.probe);
+            println!(
+                "[ready round={round}] 'a' 1 回あたりの件数: test_key_down={} key_down={} engine_result={}",
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2]
+            );
             println!(
                 "[ready round={round}] marked={:?} edit_text={:?} probe_lines={}",
                 obs.marked,

@@ -667,7 +667,8 @@ impl Core {
                 crate::e2e_probe::record_event(
                     "engine_result",
                     &format!(
-                        "consumed={} has_preedit={} has_commit={}",
+                        "n={} consumed={} has_preedit={} has_commit={}",
+                        crate::e2e_probe::bump_engine_results(),
                         result.consumed,
                         result.preedit.is_some(),
                         result.commit.is_some()
@@ -760,13 +761,19 @@ impl Core {
             let eaten = outcome.eaten;
             crate::e2e_probe::record_event(
                 "test_key_down",
-                &format!("vk={} eaten={eaten}", wparam.0 & 0xFFFF),
+                &format!(
+                    "vk={} lparam=0x{:X} id=0x{id:X} eaten={eaten} test_n={}",
+                    wparam.0 & 0xFFFF,
+                    lparam.0,
+                    crate::e2e_probe::bump_test_evals()
+                ),
             );
             self.handoff.borrow_mut().store(id, outcome);
             return eaten;
         }
         self.pump_events(context, Timing::Sync);
         let cached = self.handoff.borrow_mut().take(id);
+        let handoff_hit = cached.is_some();
         let outcome = cached.unwrap_or_else(|| self.evaluate(context, wparam, lparam, false));
         if let Some(ctx) = context
             && self.apply(ctx, outcome.plan, Timing::Sync).is_err()
@@ -776,7 +783,13 @@ impl Core {
         }
         crate::e2e_probe::record_event(
             "key_down",
-            &format!("vk={} eaten={}", wparam.0 & 0xFFFF, outcome.eaten),
+            &format!(
+                "vk={} lparam=0x{:X} id=0x{id:X} handoff={} eaten={}",
+                wparam.0 & 0xFFFF,
+                lparam.0,
+                if handoff_hit { "hit" } else { "miss" },
+                outcome.eaten
+            ),
         );
         self.finish(&outcome.followup);
         if outcome.followup.reconvert
@@ -973,6 +986,8 @@ impl ITfCompositionSink_Impl for CompositionSink_Impl {
             || {
                 // アプリ側が composition を終了した（フォーカス移動・クリック等）。エンジンの状態も揃える
                 *self.core.composition.borrow_mut() = None;
+                // E2E プローブ: composition が（アプリ側の都合で）空になったことを記録する
+                crate::e2e_probe::record(Some(""), "");
                 self.core.handoff.borrow_mut().clear();
                 self.core.candidate_window.hide();
                 let _ = self.core.engine.reset(&self.core.session_id);

@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::tsf_log;
 
@@ -31,6 +32,27 @@ fn path() -> Option<&'static PathBuf> {
             .map(PathBuf::from)
     })
     .as_ref()
+}
+
+static TEST_EVALS: AtomicU32 = AtomicU32::new(0);
+static ENGINE_RESULTS: AtomicU32 = AtomicU32::new(0);
+
+/// `OnTestKeyDown` の評価回数を数える（プローブ有効時のみ。無効なら 0）
+pub fn bump_test_evals() -> u32 {
+    if path().is_some() {
+        TEST_EVALS.fetch_add(1, Ordering::Relaxed) + 1
+    } else {
+        0
+    }
+}
+
+/// エンジンからの `process_key` 応答の件数を数える（プローブ有効時のみ。無効なら 0）
+pub fn bump_engine_results() -> u32 {
+    if path().is_some() {
+        ENGINE_RESULTS.fetch_add(1, Ordering::Relaxed) + 1
+    } else {
+        0
+    }
 }
 
 /// JSON の文字列リテラル（引用符つき）にする。非 ASCII はそのまま（UTF-8）

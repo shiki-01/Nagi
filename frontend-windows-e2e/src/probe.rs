@@ -9,6 +9,8 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 struct Line {
     marked: Option<String>,
+    event: Option<String>,
+    detail: Option<String>,
     #[serde(default)]
     committed_delta: String,
 }
@@ -21,6 +23,8 @@ pub struct ProbeReader {
     marked: String,
     committed: String,
     lines: u64,
+    events: std::collections::HashMap<String, u64>,
+    last_has_preedit: Option<bool>,
     tail: std::collections::VecDeque<String>,
 }
 
@@ -33,6 +37,8 @@ impl ProbeReader {
             marked: String::new(),
             committed: String::new(),
             lines: 0,
+            events: std::collections::HashMap::new(),
+            last_has_preedit: None,
             tail: std::collections::VecDeque::new(),
         };
         reader.reset();
@@ -62,13 +68,25 @@ impl ProbeReader {
             return;
         };
         for raw in buf[..end].split(|&b| b == b'\n') {
-            if self.tail.len() >= 40 {
+            if self.tail.len() >= 60 {
                 self.tail.pop_front();
             }
             self.tail
                 .push_back(String::from_utf8_lossy(raw).into_owned());
             if let Ok(line) = serde_json::from_slice::<Line>(raw) {
                 self.lines += 1;
+                if let Some(ev) = &line.event {
+                    *self.events.entry(ev.clone()).or_insert(0) += 1;
+                    if ev == "engine_result"
+                        && let Some(d) = &line.detail
+                    {
+                        if d.contains("has_preedit=true") {
+                            self.last_has_preedit = Some(true);
+                        } else if d.contains("has_preedit=false") {
+                            self.last_has_preedit = Some(false);
+                        }
+                    }
+                }
                 if let Some(m) = line.marked {
                     self.marked = m;
                 }
@@ -88,7 +106,17 @@ impl ProbeReader {
         &self.committed
     }
 
-    /// 直近に取り込んだ行（診断用。最大 40 行）
+    /// イベント行（`event`）の累計件数
+    pub fn event_count(&self, name: &str) -> u64 {
+        self.events.get(name).copied().unwrap_or(0)
+    }
+
+    /// 最後の `engine_result` の `has_preedit`
+    pub fn last_has_preedit(&self) -> Option<bool> {
+        self.last_has_preedit
+    }
+
+    /// 直近に取り込んだ行（診断用。最大 60 行）
     pub fn tail(&self) -> String {
         self.tail.iter().cloned().collect::<Vec<_>>().join("\n")
     }
