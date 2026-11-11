@@ -127,7 +127,10 @@ impl<T> HandoffCache<T> {
 
 /// キー識別子。仮想キーと lParam（リピート回数・スキャンコード・フラグ）から作る
 pub fn key_id(vk: u16, lparam: isize) -> u64 {
-    (u64::from(vk) << 48) ^ (lparam as u64 & 0x0000_FFFF_FFFF_FFFF)
+    // lParam の下位 16bit はリピート回数。OnTestKeyDown と OnKeyDown で値が異なることがある
+    // （Windows CI の実測: 0x1E0001 と 0x1E0000）ため、照合に含めない。含めると結果の引き継ぎが
+    // 外れ、同じキーをエンジンが 2 回評価してしまう
+    (u64::from(vk) << 48) ^ (lparam as u64 & 0x0000_FFFF_FFFF_0000)
 }
 
 #[cfg(test)]
@@ -277,8 +280,20 @@ mod tests {
     }
 
     #[test]
+    fn handoff_survives_repeat_count_difference() {
+        // OnTestKeyDown (lParam=0x1E0001) の結果を OnKeyDown (0x1E0000) が受け取れること
+        let mut c = HandoffCache::new();
+        c.store(key_id(0x41, 0x1E0001), "a");
+        assert_eq!(c.take(key_id(0x41, 0x1E0000)), Some("a"));
+    }
+
+    #[test]
     fn key_id_distinguishes_vk_and_lparam() {
-        assert_ne!(key_id(0x41, 1), key_id(0x42, 1));
-        assert_ne!(key_id(0x41, 1), key_id(0x41, 2));
+        assert_ne!(key_id(0x41, 0x1E0001), key_id(0x42, 0x1E0001));
+        // スキャンコード（bit16-23）が違えば別のキー
+        assert_ne!(key_id(0x41, 0x1E0001), key_id(0x41, 0x300001));
+        // リピート回数（下位16bit）の違いは同じキーとして扱う
+        assert_eq!(key_id(0x41, 0x1E0001), key_id(0x41, 0x1E0000));
+        assert_eq!(key_id(0x41, 0x1E0001), key_id(0x41, 0x1E0002));
     }
 }
