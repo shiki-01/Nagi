@@ -370,11 +370,15 @@ public struct ServerCapabilities: Codable {
 	public let live_conversion: Bool
 	/// スタイル変換に対応しているか
 	public let style_conversion: Bool
+	/// 抑制語（`suppress_candidate` / `unsuppress_candidate` / `list_suppressed`）に対応しているか。
+	/// 古いサーバーは省略する（省略は非対応と同じ）
+	public let suppression: Bool?
 
-	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool) {
+	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool, suppression: Bool?) {
 		self.reconvert = reconvert
 		self.live_conversion = live_conversion
 		self.style_conversion = style_conversion
+		self.suppression = suppression
 	}
 }
 
@@ -682,6 +686,29 @@ public struct LayoutKey: Codable {
 		self.y = y
 		self.w = w
 		self.h = h
+	}
+}
+
+/// 抑制語 1 件
+public struct SuppressedItem: Codable {
+	/// 読み（ひらがな）
+	public let reading: String
+	/// 表記
+	public let surface: String
+
+	public init(reading: String, surface: String) {
+		self.reading = reading
+		self.surface = surface
+	}
+}
+
+/// `list_suppressed` メソッドの応答
+public struct ListSuppressedResult: Codable {
+	/// 登録されている抑制語（読み・表記の順）
+	public let items: [SuppressedItem]
+
+	public init(items: [SuppressedItem]) {
+		self.items = items
 	}
 }
 
@@ -1512,6 +1539,19 @@ public struct StatusResult: Codable {
 		self.user_dict_entries = user_dict_entries
 		self.config_path = config_path
 		self.config_error = config_error
+	}
+}
+
+/// `suppress_candidate` / `unsuppress_candidate` メソッドの要求パラメータ
+public struct SuppressCandidateParams: Codable {
+	/// 読み（ひらがな。カタカナは変換して扱う）
+	public let reading: String
+	/// 候補に出さない表記
+	public let surface: String
+
+	public init(reading: String, surface: String) {
+		self.reading = reading
+		self.surface = surface
 	}
 }
 

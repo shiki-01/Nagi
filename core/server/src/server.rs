@@ -13,10 +13,11 @@ use nagi_protocol::jsonrpc::{
 use nagi_protocol::methods::{
     ConfigError, EmptyResult, GlideInputParams, ImportSkipReason, ImportUserDictParams,
     ImportUserDictResult, InitializeParams, InitializeResult, InsertReadingTouchParams,
-    NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams, ReloadConfigResult,
-    RestoreSessionParams, SelectCandidateParams, ServerCapabilities, SessionParams,
-    SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams, UpdateCandidatesParams,
-    UpdatePreeditParams, UserDictFormat, method,
+    ListSuppressedResult, NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams,
+    ReloadConfigResult, RestoreSessionParams, SelectCandidateParams, ServerCapabilities,
+    SessionParams, SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams,
+    SuppressCandidateParams, SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams,
+    UserDictFormat, method,
 };
 use nagi_protocol::settings::{UpdateSettingsParams, UpdateSettingsResult};
 use nagi_protocol::view::InputMode;
@@ -433,8 +434,47 @@ impl Server {
                 self.runtime.push_event(e);
             }
         }
+        if let (Some(path), Some(pipeline)) = (
+            self.reload.suppressed_path.clone(),
+            self.reload.pipeline.as_ref().map(|p| p.0.clone()),
+        ) {
+            let (suppressions, issues) = crate::suppress::Suppressions::load(&path);
+            pipeline.set_suppressions(Arc::new(suppressions));
+            for e in crate::setup::suppress_events(&issues) {
+                self.runtime.push_event(e);
+            }
+        }
         self.reload.mark_read();
         ReloadConfigResult { ok, errors }
+    }
+
+    /// 抑制語を編集して即座にファイルへ保存し、パイプラインへ反映する。
+    /// `edit` は変更があれば `Ok(true)`、不正な入力なら理由を返す
+    fn edit_suppressions(
+        &mut self,
+        edit: impl FnOnce(&mut crate::suppress::Suppressions) -> Result<bool, &'static str>,
+    ) -> Result<(), ErrorObject> {
+        let (Some(path), Some(pipeline)) = (
+            self.reload.suppressed_path.clone(),
+            self.reload.pipeline.as_ref().map(|p| p.0.clone()),
+        ) else {
+            return Err(ErrorObject::new(
+                error_code::ENGINE_FAILURE,
+                "抑制語の保存先がありません",
+            ));
+        };
+        let mut next = (*pipeline.suppressions()).clone();
+        let changed =
+            edit(&mut next).map_err(|m| ErrorObject::new(error_code::INVALID_PARAMS, m))?;
+        if changed {
+            next.save(&path).map_err(|_| {
+                ErrorObject::new(error_code::ENGINE_FAILURE, "抑制語を保存できません")
+            })?;
+            pipeline.set_suppressions(Arc::new(next));
+            // 自分で書いた分は再読み込みしない
+            self.reload.mark_suppressed_read();
+        }
+        Ok(())
     }
 
     /// 他の IME のユーザー辞書を取り込み、ユーザー辞書ディレクトリの `imported.tsv`（Mozc TSV）に追記する。
@@ -586,6 +626,7 @@ impl Server {
                         reconvert: true,
                         live_conversion: false,
                         style_conversion: false,
+                        suppression: Some(true),
                     },
                 })
             }
@@ -715,6 +756,31 @@ impl Server {
                 self.require_initialized()?;
                 self.runtime.learn_clear();
                 to_value(EmptyResult {})
+            }
+            method::SUPPRESS_CANDIDATE => {
+                self.require_initialized()?;
+                let p: SuppressCandidateParams = params(req)?;
+                self.edit_suppressions(|s| s.add(&p.reading, &p.surface))?;
+                to_value(EmptyResult {})
+            }
+            method::UNSUPPRESS_CANDIDATE => {
+                self.require_initialized()?;
+                let p: SuppressCandidateParams = params(req)?;
+                self.edit_suppressions(|s| Ok(s.remove(&p.reading, &p.surface)))?;
+                to_value(EmptyResult {})
+            }
+            method::LIST_SUPPRESSED => {
+                self.require_initialized()?;
+                let items = self
+                    .reload
+                    .pipeline
+                    .as_ref()
+                    .map(|p| p.0.suppressions().list())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(reading, surface)| SuppressedItem { reading, surface })
+                    .collect();
+                to_value(ListSuppressedResult { items })
             }
             method::GET_SETTINGS => {
                 self.require_initialized()?;

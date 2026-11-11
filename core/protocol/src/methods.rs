@@ -30,6 +30,12 @@ pub mod method {
     pub const UPDATE_SETTINGS: &str = "update_settings";
     /// `import_user_dict` メソッド（他の IME のユーザー辞書の取り込み）
     pub const IMPORT_USER_DICT: &str = "import_user_dict";
+    /// `suppress_candidate` メソッド（この読みでこの表記を候補に出さない登録）
+    pub const SUPPRESS_CANDIDATE: &str = "suppress_candidate";
+    /// `unsuppress_candidate` メソッド（抑制語の解除）
+    pub const UNSUPPRESS_CANDIDATE: &str = "unsuppress_candidate";
+    /// `list_suppressed` メソッド（抑制語の一覧）
+    pub const LIST_SUPPRESSED: &str = "list_suppressed";
     /// `get_key_table` メソッド（タッチ入力: 12 キーの文字表と濁点・小書きの循環）
     pub const GET_KEY_TABLE: &str = "get_key_table";
     /// `unload_model` メソッド（変換モデルだけをメモリから解放し、辞書のみで動く状態にする）
@@ -122,6 +128,10 @@ pub struct ServerCapabilities {
     pub live_conversion: bool,
     /// スタイル変換に対応しているか
     pub style_conversion: bool,
+    /// 抑制語（`suppress_candidate` / `unsuppress_candidate` / `list_suppressed`）に対応しているか。
+    /// 古いサーバーは省略する（省略は非対応と同じ）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub suppression: Option<bool>,
 }
 
 /// `initialize` メソッドの応答
@@ -830,6 +840,34 @@ pub struct ImportSkipReason {
     pub count: u32,
     /// 最初に見つかった行番号（plist では辞書の通し番号）
     pub first_line: u32,
+}
+
+/// `suppress_candidate` / `unsuppress_candidate` メソッドの要求パラメータ
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuppressCandidateParams {
+    /// 読み（ひらがな。カタカナは変換して扱う）
+    pub reading: String,
+    /// 候補に出さない表記
+    pub surface: String,
+}
+
+/// 抑制語 1 件
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuppressedItem {
+    /// 読み（ひらがな）
+    pub reading: String,
+    /// 表記
+    pub surface: String,
+}
+
+/// `list_suppressed` メソッドの応答
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListSuppressedResult {
+    /// 登録されている抑制語（読み・表記の順）
+    pub items: Vec<SuppressedItem>,
 }
 
 /// `import_user_dict` メソッドの応答

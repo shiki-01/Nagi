@@ -29,7 +29,7 @@ use nagi_rewriter::{EmojiRewriter, Rewriter, RewriterChain};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 /// 1 回の LLM 変換に渡す読みの最大文字数。超える場合は文節境界で分けて順に変換する
@@ -226,6 +226,8 @@ pub struct Pipeline {
     english: nagi_english::Judge,
     /// カタカナ語の原語の候補（索引は `data/loanword/loanword.fst`。無ければ出さない）
     loanword: Option<nagi_loanword::LoanwordRewriter>,
+    /// 利用者が登録した抑制語（`<user-dir>/suppressed.tsv`）。候補の統合直後に該当を除く
+    suppressions: RwLock<Arc<crate::suppress::Suppressions>>,
 }
 
 /// dict・LLM の有無からバックエンド名を決める（`Pipeline::new` と `name()` の重複を1箇所にまとめる）
@@ -303,6 +305,55 @@ impl Pipeline {
             glide: GlideEngine::default(),
             english: nagi_english::Judge::standard(None),
             loanword: None,
+            suppressions: RwLock::new(Arc::new(crate::suppress::Suppressions::empty())),
+        }
+    }
+
+    /// 抑制語を差し替える（起動時・ファイルの再読み込み時・登録/解除のあと）
+    pub fn set_suppressions(&self, suppressions: Arc<crate::suppress::Suppressions>) {
+        *self.suppressions.write().unwrap_or_else(|e| e.into_inner()) = suppressions;
+    }
+
+    /// 現在の抑制語
+    pub fn suppressions(&self) -> Arc<crate::suppress::Suppressions> {
+        self.suppressions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// 文節の `surface` が、`reading` の抑制語に当たるか。読みそのままの表記は対象外
+    fn is_suppressed(&self, reading: &str, surface: &str) -> bool {
+        surface != reading && self.suppressions().contains(reading, surface)
+    }
+
+    /// 文の中に、抑制語に当たる文節があるか
+    fn sentence_has_suppressed(&self, segments: &[BackendSegment]) -> bool {
+        let sup = self.suppressions();
+        !sup.is_empty()
+            && segments
+                .iter()
+                .any(|s| s.surface != s.reading && sup.contains(&s.reading, &s.surface))
+    }
+
+    /// 抑制語に当たる文節の表記を、抑制されていない次点（辞書の候補 → 読みそのまま）に置き換える
+    fn replace_suppressed(&self, segments: &mut [BackendSegment], overlay: &Overlay) {
+        let sup = self.suppressions();
+        if sup.is_empty() {
+            return;
+        }
+        for seg in segments.iter_mut() {
+            if seg.surface == seg.reading || !sup.contains(&seg.reading, &seg.surface) {
+                continue;
+            }
+            let next = self.dict.as_ref().and_then(|dict| {
+                dict.segment_candidates_with(&seg.reading, 30, Some(overlay))
+                    .into_iter()
+                    .map(|c| c.surface)
+                    .find(|s| *s != seg.reading && !sup.contains(&seg.reading, s))
+            });
+            seg.surface = next.unwrap_or_else(|| seg.reading.clone());
+            seg.sources = vec![source_of(&seg.surface, &seg.reading)];
         }
     }
 
@@ -1177,6 +1228,17 @@ impl Pipeline {
                     .map(|f| f.reading.clone());
             }
         }
+        // 抑制語を除く（切り詰めの前。読みそのままは空にならないよう残す）
+        let sup = self.suppressions();
+        if !sup.is_empty() {
+            out.retain(|c| {
+                c.surface == reading
+                    || !(sup.contains(reading, &c.surface)
+                        || c.reading
+                            .as_deref()
+                            .is_some_and(|r| sup.contains(r, &c.surface)))
+            });
+        }
         truncate_keeping_fuzzy(&mut out, limit);
         out
     }
@@ -1233,6 +1295,7 @@ impl ConversionBackend for Pipeline {
             Some(dict) => self.dict_segments(dict, reading, &overlay),
         };
         self.apply_preferences(&mut segments, left_context, &eff, &overlay);
+        self.replace_suppressed(&mut segments, &overlay);
         segments
     }
 
@@ -1385,9 +1448,12 @@ impl ConversionBackend for Pipeline {
         if prev.is_empty() || !self.runtime.learning_allowed(ctx.secure_input, ctx.app_id) {
             return Vec::new();
         }
+        // 次の語の読みは分からないので、抑制語は表記だけで照合する
+        let sup = self.suppressions();
         self.runtime
             .next_word_lookup(prev, limit)
             .into_iter()
+            .filter(|(surface, _)| !sup.contains_surface(surface))
             .map(|(surface, _)| BackendCandidate {
                 surface,
                 sources: vec![CandidateSource::Learned],
@@ -1405,8 +1471,10 @@ impl ConversionBackend for Pipeline {
         let mut out: Vec<BackendCandidate> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+        let sup = self.suppressions();
         for (surface, _score) in self.runtime.learn_predict(prefix, hash, limit) {
-            if seen.insert(surface.clone()) {
+            // 学習の予測は読みが分からないので、抑制語は表記だけで照合する
+            if !sup.contains_surface(&surface) && seen.insert(surface.clone()) {
                 out.push(BackendCandidate {
                     surface,
                     sources: vec![CandidateSource::Learned],
@@ -1414,8 +1482,8 @@ impl ConversionBackend for Pipeline {
                 });
             }
         }
-        for (_, entry) in overlay.lookup_prefix(prefix, limit) {
-            if seen.insert(entry.surface.clone()) {
+        for (reading, entry) in overlay.lookup_prefix(prefix, limit) {
+            if !self.is_suppressed(reading, &entry.surface) && seen.insert(entry.surface.clone()) {
                 out.push(BackendCandidate {
                     surface: entry.surface.clone(),
                     sources: vec![CandidateSource::UserDict],
@@ -1511,6 +1579,9 @@ impl ConversionBackend for Pipeline {
                     }],
                 };
                 self.apply_preferences(&mut segments, left_context, &eff, &overlay);
+                if self.sentence_has_suppressed(&segments) {
+                    continue;
+                }
                 out.push(BackendSentence { segments });
             }
         }
@@ -1525,17 +1596,19 @@ impl ConversionBackend for Pipeline {
                     continue;
                 }
                 seen.push(surface.clone());
-                out.push(BackendSentence {
-                    segments: c
-                        .segments
-                        .into_iter()
-                        .map(|s| BackendSegment {
-                            reading: s.reading,
-                            surface: s.surface,
-                            sources: vec![CandidateSource::SystemDict],
-                        })
-                        .collect(),
-                });
+                let segments: Vec<BackendSegment> = c
+                    .segments
+                    .into_iter()
+                    .map(|s| BackendSegment {
+                        reading: s.reading,
+                        surface: s.surface,
+                        sources: vec![CandidateSource::SystemDict],
+                    })
+                    .collect();
+                if self.sentence_has_suppressed(&segments) {
+                    continue;
+                }
+                out.push(BackendSentence { segments });
             }
         }
 

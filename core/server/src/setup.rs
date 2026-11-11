@@ -298,6 +298,8 @@ pub struct Reloadable {
     pub user_dict_dir: Option<PathBuf>,
     /// 誤り辞書の利用者の追記ファイル（`<user_dir>/misspellings.tsv`）
     pub misspellings_path: Option<PathBuf>,
+    /// 抑制語のファイル（`<user_dir>/suppressed.tsv`）
+    pub suppressed_path: Option<PathBuf>,
     /// 誤り辞書を差し替える先（変換パイプライン）。`Server` が `catch_unwind` の境界を越えて
     /// 参照されるため `AssertUnwindSafe` で包む（差し替えは `Arc` の入れ替えだけで、不整合は残らない）
     pub pipeline: Option<std::panic::AssertUnwindSafe<Arc<Pipeline>>>,
@@ -310,6 +312,7 @@ pub struct Reloadable {
     config_stamp: Option<SystemTime>,
     dict_stamp: (usize, Option<SystemTime>),
     misspellings_stamp: Option<SystemTime>,
+    suppressed_stamp: Option<SystemTime>,
     last_poll: Instant,
 }
 
@@ -320,6 +323,7 @@ impl Reloadable {
             config_path: None,
             user_dict_dir: None,
             misspellings_path: None,
+            suppressed_path: None,
             pipeline: None,
             dict: None,
             cli_sync_budget_ms: None,
@@ -327,6 +331,7 @@ impl Reloadable {
             config_stamp: None,
             dict_stamp: (0, None),
             misspellings_stamp: None,
+            suppressed_stamp: None,
             last_poll: Instant::now(),
         }
     }
@@ -340,13 +345,21 @@ impl Reloadable {
         let config = self.config_path.as_deref().and_then(mtime);
         let dict = self.user_dict_dir.as_deref().map_or((0, None), dir_stamp);
         let misspellings = self.misspellings_path.as_deref().and_then(mtime);
+        let suppressed = self.suppressed_path.as_deref().and_then(mtime);
         let changed = config != self.config_stamp
             || dict != self.dict_stamp
-            || misspellings != self.misspellings_stamp;
+            || misspellings != self.misspellings_stamp
+            || suppressed != self.suppressed_stamp;
         self.config_stamp = config;
         self.dict_stamp = dict;
         self.misspellings_stamp = misspellings;
+        self.suppressed_stamp = suppressed;
         changed
+    }
+
+    /// 抑制語のファイルだけ、現在の目印を記録し直す（自分で書いた直後。他の変更の検知は妨げない）
+    pub fn mark_suppressed_read(&mut self) {
+        self.suppressed_stamp = self.suppressed_path.as_deref().and_then(mtime);
     }
 
     /// 現在の目印を記録し直す（読み込み直後）
@@ -354,6 +367,7 @@ impl Reloadable {
         self.config_stamp = self.config_path.as_deref().and_then(mtime);
         self.dict_stamp = self.user_dict_dir.as_deref().map_or((0, None), dir_stamp);
         self.misspellings_stamp = self.misspellings_path.as_deref().and_then(mtime);
+        self.suppressed_stamp = self.suppressed_path.as_deref().and_then(mtime);
         self.last_poll = Instant::now();
     }
 }
@@ -676,6 +690,17 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
     for e in misspell_events(&misspell_issues) {
         runtime.push_event(e);
     }
+    // 抑制語（`<user_dir>/suppressed.tsv`）
+    let suppressed_path = user_dir
+        .as_ref()
+        .map(|d| d.join(crate::suppress::USER_FILE_NAME));
+    if let Some(path) = &suppressed_path {
+        let (suppressions, issues) = crate::suppress::Suppressions::load(path);
+        pipeline.set_suppressions(Arc::new(suppressions));
+        for e in suppress_events(&issues) {
+            runtime.push_event(e);
+        }
+    }
     // 英語の自動判定の語彙（任意。`cargo xtask fetch-english`）。無くても特徴量だけで動く
     match load_english_lexicon(options.data_dir.as_deref()) {
         Some(Ok(lexicon)) => {
@@ -741,6 +766,7 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
         config_path,
         user_dict_dir,
         misspellings_path,
+        suppressed_path,
         pipeline: Some(std::panic::AssertUnwindSafe(pipeline.clone())),
         dict,
         cli_sync_budget_ms: options.sync_budget_ms,
@@ -827,6 +853,22 @@ pub fn misspell_events(issues: &[crate::misspell::MisspellIssue]) -> Vec<Event> 
                 format!("誤り辞書 {} の {} 行目: {}", i.file, i.line, i.message)
             } else {
                 format!("誤り辞書 {}: {}", i.file, i.message)
+            },
+        })
+        .collect()
+}
+
+/// 抑制語の読み込みの問題を通知に直す（登録内容は含めない）
+pub fn suppress_events(issues: &[crate::suppress::SuppressIssue]) -> Vec<Event> {
+    issues
+        .iter()
+        .map(|i| Event {
+            level: NotifyLevel::Warning,
+            code: "suppressed_warning",
+            message: if i.line > 0 {
+                format!("抑制語 {} の {} 行目: {}", i.file, i.line, i.message)
+            } else {
+                format!("抑制語 {}: {}", i.file, i.message)
             },
         })
         .collect()

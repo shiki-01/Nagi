@@ -7,6 +7,7 @@
 //! - [`fuzzy`] — 曖昧入力（タイプミス補正の「もしかして」候補）
 //! - [`fuzzy_eval`] — 曖昧入力の評価用部品（タイプミスの注入・集計。`nagi-fuzzy-eval`）
 //! - [`misspell`] — 誤り辞書（読みの書き間違い → 正しい読み。曖昧入力の「もしかして」候補）
+//! - [`suppress`] — 抑制語（利用者が登録した「この読みでこの表記は候補に出さない」）
 //! - [`glide`] — グライド入力（なぞり軌跡から読みの候補を求める認識器と索引）
 //! - [`pipeline`] — 学習 → ユーザー辞書 → LLM → システム辞書 の変換パイプライン
 //! - [`runtime`] — 環境プロファイル・学習・ユーザー辞書・ランキング設定・通知の共有状態
@@ -31,6 +32,7 @@ pub mod server;
 pub mod settings;
 pub mod setup;
 pub mod stderr_log;
+pub mod suppress;
 pub mod update_check;
 
 pub use pipeline::Pipeline;
