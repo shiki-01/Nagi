@@ -313,3 +313,9 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 
 - 実装済み: 成立する読み（Covered）への一律 5 倍ペナルティを、操作種別・編集コスト・読みの長さによるマージンに置き換え（Covered の上位 5 件の正解率 +4〜+15pt、クリーン文節の誤表示 0.13%）、誤り辞書（同梱 76 件 + `<user-dir>/misspellings.tsv`、設定 `input.fuzzy.misspellings`）、`nagi-fuzzy-eval` のクラス別内訳・音韻ノイズ・`--tsv`・`--dump-rows`・`--no-time-limit`・`--legacy-penalty`
 - 未完了: 実機での誤表示の確認（特に iOS の固定表示。H-73）、実際の誤りの分布での再較正（音韻ノイズの重みは仮）、かな n-gram LM・単語頻度較正・遡及再評価（H-88 の「未着手」）、`cargo xtask check-types`（typeshare が無く未実行）
+
+## 曖昧入力: H-88 の未着手項目の実施（2026-11-11、決定は decisions.md H-89）
+
+- 実装済み: かな n-gram LM と `cargo xtask build-kana-lm`（判定には未使用）、読みの周辺コスト API（判定には未使用）、強度のマージン反映（弱 1.5 / 中 1.0 / 強 0.8）、採用/却下の個人化（`fuzzy_stats.json`・`get_fuzzy_stats`・`input.fuzzy.personalize`）、抑制語（`suppressed.tsv`・3 メソッド）、確定後の遡及再評価（`input.fuzzy.retro_review`・`retro_review` 通知・`accept_retro_review`。既定オフ）、`nagi-fuzzy-eval` の `--retro` と再採点の式の比較の拡張
+- 結論: LLM 再採点は式を変えても辞書のみを上回らず既定オフのまま。かな LM・周辺確率も上乗せ無し
+- 未完了: フロント側の UI（強度設定・補正の振り返り・抑制語の登録・遡及再評価の置換）、実機での誤表示の確認、個人化の定数の検証、実誤りデータでの再較正
