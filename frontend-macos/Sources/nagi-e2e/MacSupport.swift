@@ -88,8 +88,8 @@ final class KeyPoster {
 enum InputSources {
     private static let keyInputSourceID = "TISPropertyInputSourceID"
 
-    private static func find(_ filter: CFDictionary?) -> [TISInputSource] {
-        guard let list = TISCreateInputSourceList(filter, true)?.takeRetainedValue() else { return [] }
+    private static func find(_ filter: CFDictionary?, includeAllInstalled: Bool = true) -> [TISInputSource] {
+        guard let list = TISCreateInputSourceList(filter, includeAllInstalled)?.takeRetainedValue() else { return [] }
         var result: [TISInputSource] = []
         for i in 0..<CFArrayGetCount(list) {
             guard let pointer = CFArrayGetValueAtIndex(list, i) else { continue }
@@ -122,17 +122,51 @@ enum InputSources {
 
     /// id 一致の入力ソース（includeAllInstalled: 無効なものも含む）
     private static func source(id: String) -> TISInputSource? {
-        find([keyInputSourceID: id] as CFDictionary).first
+        // フィルタ付きの参照を使い回さず、毎回リスト全体から ID 完全一致で取り直す
+        find(nil).first { property($0, keyInputSourceID) == id }
     }
 
-    /// 1 行の説明（ID / 種別 / enabled / select-capable）
-    static func describe(_ source: TISInputSource) -> String {
+    /// 有効な入力ソースの ID 集合（includeAllInstalled: false の一覧）。
+    /// IsEnabled プロパティが取れない環境でも「有効か」を判定するための導出値
+    static func enabledIDs() -> Set<String> {
+        Set(find(nil, includeAllInstalled: false).compactMap { property($0, keyInputSourceID) })
+    }
+
+    /// 有効化の確認（導出値）
+    static func isEnabled(id: String) -> Bool { enabledIDs().contains(id) }
+
+    /// 1 行の説明。enabled / selected はプロパティ値（取れなければ "-"）と、導出値（d:）を併記する。
+    /// 導出値: enabled = 有効一覧に含まれるか、selected = 現在のキーボード入力ソースか
+    static func describe(_ source: TISInputSource, enabledSet: Set<String>? = nil) -> String {
         func flag(_ value: Bool?) -> String { value.map { $0 ? "yes" : "no" } ?? "-" }
-        return "\(property(source, keyInputSourceID) ?? "?") type=\(property(source, "TISPropertyInputSourceType") ?? "-")"
-            + " enabled=\(flag(boolProperty(source, "TISPropertyInputSourceIsEnabled")))"
+        let id = property(source, keyInputSourceID) ?? "?"
+        let enabledNow = (enabledSet ?? enabledIDs()).contains(id)
+        return "\(id) type=\(property(source, "TISPropertyInputSourceType") ?? "-")"
+            + " enabled=\(flag(boolProperty(source, "TISPropertyInputSourceIsEnabled")))(d:\(enabledNow ? "yes" : "no"))"
             + " enableCapable=\(flag(boolProperty(source, "TISPropertyInputSourceIsEnableCapable")))"
             + " selectCapable=\(flag(boolProperty(source, "TISPropertyInputSourceIsSelectCapable")))"
-            + " selected=\(flag(boolProperty(source, "TISPropertyInputSourceIsSelected")))"
+            + " selected=\(flag(boolProperty(source, "TISPropertyInputSourceIsSelected")))(d:\(currentID() == id ? "yes" : "no"))"
+    }
+
+    /// 段階の要約: 各 ID について enable の戻り値、その後の有効状態(導出)、select の戻り値、現在の入力ソースを 1 行で返す。
+    /// 最後の ID が最終的に選択される（Japanese を最後に渡すこと）
+    static func probe(ids: [String]) -> [String] {
+        var lines: [String] = []
+        for id in ids {
+            guard let target = source(id: id) else {
+                lines.append("  \(id): 一覧に無い")
+                continue
+            }
+            let enable = TISEnableInputSource(target)
+            pump(0.5)
+            let enabledAfter = isEnabled(id: id)
+            let fresh = source(id: id) ?? target
+            let select = TISSelectInputSource(fresh)
+            pump(0.5)
+            lines.append(
+                "  \(id): enable=\(enable) enabled(d)=\(enabledAfter) select=\(select) current=\(currentID() ?? "nil")")
+        }
+        return lines
     }
 
     /// 診断: Nagi 関連（bundle id / ID に "com.shiki.inputmethod.Nagi" を含む）と、キーボードレイアウト以外の

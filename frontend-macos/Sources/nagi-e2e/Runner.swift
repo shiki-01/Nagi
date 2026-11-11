@@ -239,16 +239,22 @@ final class Runner {
         if InputSources.currentID() == id { return nil }
         let log: (String) -> Void = { print($0) }
 
-        func report(_ title: String) {
+        let modeIDs = ["\(bundleID).Roman", id]  // Japanese を最後（最終的に選択される）
+        func report(_ title: String) -> Bool {
             print("[入力ソース診断] \(title)")
             InputSources.dump().forEach { print($0) }
+            print("  段階要約 \(title):")
+            InputSources.probe(ids: modeIDs).forEach { print($0) }
+            let ok = InputSources.currentID() == id
+            if ok { print("  -> 選択成功") }
+            return ok
         }
-        report("選択前")
+        if report("選択前") { return nil }
 
         // 段階 1: enable -> 待機 -> select のリトライ
         print("段階 1: TIS select リトライ")
         if InputSources.selectWithRetry(id: id, timeout: 15, log: log) { return nil }
-        report("段階 1 後")
+        if report("段階 1 後") { return nil }
 
         // 段階 2: ドライバー自身から登録し直す + 親(bundle id)の選択
         print("段階 2: ドライバーからの TISRegisterInputSource + 親の選択")
@@ -260,7 +266,7 @@ final class Runner {
         print("  \(InputSources.selectParent(bundleID: bundleID))")
         pump(2)
         if InputSources.selectWithRetry(id: id, timeout: 10, log: log) { return nil }
-        report("段階 2 後")
+        if report("段階 2 後") { return nil }
 
         // 段階 3: /Library/Input Methods（システム領域）へ sudo で配置し、IMK のエージェントを再起動する
         print("段階 3: /Library/Input Methods へ配置 + imklaunchagent 再起動")
@@ -283,13 +289,13 @@ final class Runner {
         }
         pump(3)
         if InputSources.selectWithRetry(id: id, timeout: 15, log: log) { return nil }
-        report("段階 3 後")
+        if report("段階 3 後") { return nil }
 
         // 段階 4: defaults (com.apple.HIToolbox) による選択
         print("段階 4: defaults com.apple.HIToolbox")
         if InputSources.selectViaDefaults(bundleID: bundleID, modeID: id, log: log) { return nil }
 
-        report("最終（失敗）")
+        _ = report("最終（失敗）")
         screenshot(named: "select-input-source-failed")
         return fail(
             ExitCode.unreachable,
