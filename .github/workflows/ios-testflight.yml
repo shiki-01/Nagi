@@ -157,6 +157,15 @@ jobs:
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             | tee build/xcodebuild-archive.log | tail -n 40
 
+      - name: アーカイブの失敗箇所を表示
+        if: failure()
+        working-directory: frontend-ios-spike
+        run: |
+          # `tail -n 40` ではエラー行が残らないので、失敗時だけログ全体から error 行と前後を出す
+          if [ -f build/xcodebuild-archive.log ]; then
+            grep -n -B2 -A6 "error:" build/xcodebuild-archive.log | head -n 120 || true
+          fi
+
       - name: ExportOptions.plist を生成
         working-directory: frontend-ios-spike
         env:
