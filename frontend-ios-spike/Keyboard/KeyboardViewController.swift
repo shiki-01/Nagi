@@ -105,11 +105,8 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
         DiagLog.logSync("viewDidDisappear instance=#\(instanceNumber) \(viewState())")
     }
 
-    override func didReceiveMemoryWarning() {
-        super.didReceiveMemoryWarning()
-        let stats = MemoryProbe.getStats()
-        DiagLog.logSync("didReceiveMemoryWarning instance=#\(instanceNumber) footprint=\(Int(stats.physFootprintMB))MB available=\(Int(stats.availableMemoryMB))MB")
-    }
+    // didReceiveMemoryWarning は「メモリ警告」の節（下）に 1 つだけ置く（診断ログもそこで書く）。
+    // 二重に override するとコンパイルエラーになる
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
@@ -399,6 +396,9 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
     /// （強制終了される前に軽くする）
     override func didReceiveMemoryWarning() {
         super.didReceiveMemoryWarning()
+        // 起動不具合の切り分け用の診断ログ（H-87。警告時点のメモリを同期書き込みで残す）
+        let stats = MemoryProbe.getStats()
+        DiagLog.logSync("didReceiveMemoryWarning instance=#\(instanceNumber) footprint=\(Int(stats.physFootprintMB))MB available=\(Int(stats.availableMemoryMB))MB")
         // 背景画像は真っ先に手放す（色だけで描く）。プロセス共通のキャッシュなので現在のホストかは問わない
         KeyImageCache.shared.suspend()
         // 共有のモデルは現在のホストの VC だけが扱う（同じプロセスの VC には同じ警告が届く）
