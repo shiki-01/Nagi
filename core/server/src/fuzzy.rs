@@ -13,7 +13,8 @@ use nagi_dict::{Dictionary, Overlay, PathInfo};
 use nagi_engine::TypingHint;
 use nagi_engine::touch::{DakutenOrder, key_table};
 use nagi_fuzzy::{
-    Correction, EditKinds, Fuzzy, KanaTable, Key, KeyLayout, Params, ReadingIndex, covered,
+    Correction, EditKind, EditKinds, Fuzzy, KanaTable, Key, KeyLayout, Params, ReadingIndex,
+    covered,
 };
 use nagi_protocol::SetLayoutGeometryParams;
 use nagi_romaji::RomajiTable;
@@ -27,12 +28,31 @@ use std::time::Duration;
 /// 評価（`docs/decisions.md` H-24）で調整する前提の初期値
 pub const LEXICON_COST_PER_EDIT_COST: f32 = 500.0;
 
-/// 元の読みが辞書の語の連なりとして成り立つ場合に、編集コストへ掛ける係数。
+/// 元の読みが辞書の語の連なりとして成り立つ（covered）場合の採否の余裕（マージン）の基本値。
+/// 補正が濁点・半濁点・小書きの付け忘れ/過剰（Voicing）だけのとき。
 ///
-/// 辞書に無い文字（未変換の英字）を含む読みは、ほぼ確実に打ち間違いなので `1.0` のまま。
-/// かなだけで語として成り立つ読みは、別の語への「補正」がクリーンな入力の誤訂正になりやすい
-/// （評価で、係数 1 だと辞書語でない文節の約 2 割に補正候補が出た）ので、5 倍の証拠を求める
-pub const VALID_READING_PENALTY: f32 = 5.0;
+/// 採用条件は `score + margin < typed_cost`。マージンは補正の種類・編集コスト・元の読みの長さで
+/// 連続的に変える（かつての一律 5 倍の係数より、正解を出せた入力が多く誤表示が少なかった）。
+/// 根拠は 2 つの乱数 seed の合算による診断分析（正解を出せた入力 316 → 413、クリーン入力の
+/// 誤表示 0/782 → 2/782）。クリーンの誤表示 0.5% 以下を採る基準で選んだ値で、音韻ノイズの
+/// 重みは仮の値であり実測ではない。評価データへの過学習の恐れがあるので、実利用の
+/// データで再評価する前提
+pub const MARGIN_VOICING: f32 = 1000.0;
+
+/// covered の読みで、Voicing 以外の操作（置換・脱落・挿入・転置など）を含む補正のマージンの基本値。
+/// 根拠は [`MARGIN_VOICING`] と同じ（Voicing は打ち間違いとして起きやすいので余裕を小さくする）
+pub const MARGIN_OTHER: f32 = 2500.0;
+
+/// マージンに足す、編集コスト 1.0 あたりの係数（`LEXICON_COST_PER_EDIT_COST` に対する比）。
+/// 編集コストが大きい補正ほど余裕を多く求める。根拠は [`MARGIN_VOICING`] と同じ
+pub const MARGIN_PER_EDIT_COST: f32 = 0.5;
+
+/// 短い読みは偶然別の語に一致しやすいので、元の読みが [`SHORT_READING_CHARS`] 文字に満たない
+/// 分だけ、1 文字あたりこの値をマージンに足す。根拠は [`MARGIN_VOICING`] と同じ
+pub const MARGIN_PER_SHORT_CHAR: f32 = 200.0;
+
+/// 「短い読み」とみなす文字数の境界（これ未満の分がマージンに加わる）
+pub const SHORT_READING_CHARS: usize = 6;
 
 /// 展開に使う時間の上限の目安（ミリ秒）。同期予算 `sync_budget` が小さければそちらに合わせる
 /// （debug ビルドは release の 10 倍ほど遅く、2ms ではテストが不安定になるので緩める）
@@ -75,6 +95,9 @@ pub struct FuzzySettings {
     /// 展開の時間上限を外す（ノード数の上限だけにする）。設定項目ではなく評価用の値で、
     /// 時間による打ち切りで結果が実行ごとに揺れるのを防ぎ、前後比較を決定的にするために使う
     pub no_time_limit: bool,
+    /// 採否の規則を従来の式（covered なら編集コストを一律 5 倍、マージンなし）に戻す。
+    /// 設定項目ではなく評価用の値で、新旧の比較のために残す
+    pub legacy_penalty: bool,
 }
 
 impl Default for FuzzySettings {
@@ -97,6 +120,7 @@ impl FuzzySettings {
             auto_apply: section.auto_apply,
             auto_apply_margin: section.auto_apply_margin as f32,
             no_time_limit: false,
+            legacy_penalty: false,
         }
     }
 }
@@ -449,19 +473,31 @@ impl FuzzyEngine {
         let typed_cost = typed.as_ref().map_or(f32::MAX, |(_, c)| *c);
         let typed_surface = typed.map_or_else(|| reading.to_string(), |(s, _)| s);
         // 元の読みがすでに辞書の語の連なりとして成り立っている（かなの打ち間違いが別の語になった
-        // 可能性より、打った通りである可能性が高い）ときは、補正に強い証拠を求める
-        let per_edit = if covered(&DictIndex(dict), reading) {
-            LEXICON_COST_PER_EDIT_COST * VALID_READING_PENALTY
-        } else {
-            LEXICON_COST_PER_EDIT_COST
-        };
+        // 可能性より、打った通りである可能性が高い）ときは、補正に強い証拠（マージン）を求める
+        let is_covered = covered(&DictIndex(dict), reading);
+        let reading_chars = reading.chars().count();
         let mut out: Vec<Suggestion> = Vec::new();
         for c in corrections {
             let Some((surface, cost)) = best_path(dict, overlay, &c.reading) else {
                 continue;
             };
-            let score = cost + c.cost * per_edit;
-            if score >= typed_cost || out.iter().any(|s| s.surface == surface) {
+            let (score, margin) = if settings.legacy_penalty {
+                let per_edit = if is_covered {
+                    LEXICON_COST_PER_EDIT_COST * LEGACY_VALID_READING_PENALTY
+                } else {
+                    LEXICON_COST_PER_EDIT_COST
+                };
+                (cost + c.cost * per_edit, 0.0)
+            } else {
+                let score = cost + c.cost * LEXICON_COST_PER_EDIT_COST;
+                let margin = if is_covered {
+                    covered_margin(&c, reading_chars)
+                } else {
+                    0.0
+                };
+                (score, margin)
+            };
+            if score + margin >= typed_cost || out.iter().any(|s| s.surface == surface) {
                 continue;
             }
             out.push(Suggestion {
@@ -485,6 +521,23 @@ impl FuzzyEngine {
             typed_surface,
         })
     }
+}
+
+/// 従来方式（`legacy_penalty`）で covered の読みの編集コストに掛ける係数
+const LEGACY_VALID_READING_PENALTY: f32 = 5.0;
+
+/// covered の読みに対する補正の採否のマージン（辞書コスト尺度）。
+/// `reading_chars` は元の読みの文字数
+pub fn covered_margin(c: &Correction, reading_chars: usize) -> f32 {
+    let voicing_only = !c.ops.is_empty() && c.ops.iter().all(|op| op.kind == EditKind::Voicing);
+    let base = if voicing_only {
+        MARGIN_VOICING
+    } else {
+        MARGIN_OTHER
+    };
+    let short = SHORT_READING_CHARS.saturating_sub(reading_chars) as f32;
+    base + MARGIN_PER_EDIT_COST * c.cost * LEXICON_COST_PER_EDIT_COST
+        + MARGIN_PER_SHORT_CHAR * short
 }
 
 /// [`FuzzyEngine::collect`] の結果

@@ -77,12 +77,15 @@ fn main() {
     let mut profiles: Vec<NoiseProfile> = vec![NoiseProfile::Uniform, NoiseProfile::Phonetic];
     let mut tsv_out: Option<PathBuf> = None;
     let mut no_time_limit = false;
+    let mut legacy_penalty = false;
     let mut dump_path: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             // 展開の時間上限を外し、結果を実行ごとに同一にする（前後比較用。遅延の数値は参考にならない）
             "--no-time-limit" => no_time_limit = true,
+            // 採否の規則を従来の式（covered なら編集コスト 5 倍）に戻す（新旧の比較用）
+            "--legacy-penalty" => legacy_penalty = true,
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
             "--seed" => seed = args.next().and_then(|v| v.parse().ok()).unwrap_or(1),
             "--strength" => {
@@ -211,6 +214,7 @@ fn main() {
         use_touch: true,
         touch_sigma: model_sigma,
         no_time_limit,
+        legacy_penalty,
         // 再採点・自動採用は `--rescore` の節で別に扱う（ここは辞書のスコアだけの M1 / M2 の比較）
         ..FuzzySettings::default()
     };

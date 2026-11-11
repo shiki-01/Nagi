@@ -701,3 +701,176 @@ fn diagnose_returns_rows_without_the_acceptance_gate() {
             .is_none()
     );
 }
+
+/// covered の読みの採否のマージン（連続的な余裕）の検証。
+/// 「かんし」は「かん」+「し」として辞書の語の連なりになる（covered）が語としては完全一致しない。
+/// 濁点の付け忘れ補正（「かんじ」）の語コストを動かして、境界を測る
+mod covered_margin {
+    use super::*;
+    use nagi_dict::Overlay;
+    use nagi_fuzzy::{Correction, EditKind, EditOp};
+    use nagi_server::fuzzy::{
+        FuzzyEngine, FuzzySettings, LEXICON_COST_PER_EDIT_COST, MARGIN_OTHER, MARGIN_PER_EDIT_COST,
+        MARGIN_PER_SHORT_CHAR, MARGIN_VOICING, SHORT_READING_CHARS, covered_margin,
+    };
+    use std::time::Duration;
+
+    const READING: &str = "かんし";
+    const FIXED: &str = "かんじ";
+
+    fn dict_with_word_cost(cost: i64) -> std::sync::Arc<nagi_dict::Dictionary> {
+        dict_with_extra(&format!(
+            "かん\t1\t1\t3000\t感\nし\t1\t1\t3000\t氏\nかんじ\t1\t1\t{cost}\t幹事\n"
+        ))
+    }
+
+    fn settings(legacy_penalty: bool) -> FuzzySettings {
+        FuzzySettings {
+            no_time_limit: true,
+            enabled: true,
+            legacy_penalty,
+            ..FuzzySettings::default()
+        }
+    }
+
+    fn suggest(dict: &nagi_dict::Dictionary, legacy: bool) -> Vec<nagi_server::fuzzy::Suggestion> {
+        FuzzyEngine::new().suggest(
+            dict,
+            &Overlay::default(),
+            READING,
+            &TypingHint::default(),
+            &settings(legacy),
+            false,
+            Duration::from_millis(150),
+        )
+    }
+
+    /// 診断から (元の読みのコスト, 補正のコスト - 語コスト, 編集コスト, 補正の種類) を得る
+    fn measure() -> (f32, f32, f32, String) {
+        let dict = dict_with_word_cost(3000);
+        let d = FuzzyEngine::new()
+            .diagnose(
+                &dict,
+                &Overlay::default(),
+                READING,
+                &TypingHint::default(),
+                &settings(false),
+                Duration::from_millis(150),
+            )
+            .unwrap();
+        assert!(d.covered && !d.exact, "{d:?}");
+        let r = d.rows.iter().find(|r| r.reading == FIXED).unwrap();
+        (
+            d.typed.unwrap().total_cost as f32,
+            r.corrected_cost as f32 - 3000.0,
+            r.channel_cost,
+            r.kinds.clone(),
+        )
+    }
+
+    /// 補正後の語コストを、元の読みのコストとの余裕が `slack`（`score` を引いた残り）になるよう決める
+    fn cost_for_slack(slack: f32) -> i64 {
+        let (typed, offset, edit, _) = measure();
+        (typed - edit * LEXICON_COST_PER_EDIT_COST - offset - slack).round() as i64
+    }
+
+    fn voicing_margin(edit: f32) -> f32 {
+        let short = SHORT_READING_CHARS.saturating_sub(READING.chars().count()) as f32;
+        MARGIN_VOICING
+            + MARGIN_PER_EDIT_COST * edit * LEXICON_COST_PER_EDIT_COST
+            + MARGIN_PER_SHORT_CHAR * short
+    }
+
+    #[test]
+    fn voicing_is_suggested_only_with_slack_beyond_the_margin() {
+        let (_, _, edit, kinds) = measure();
+        assert_eq!(kinds, "Voicing");
+        let m = voicing_margin(edit);
+        // 余裕がマージンを超える: 出る。score はマージンを含まない（語コスト + 編集コスト × 500）
+        let dict = dict_with_word_cost(cost_for_slack(m + 50.0));
+        let got = suggest(&dict, false);
+        let s = got
+            .iter()
+            .find(|s| s.reading == FIXED)
+            .unwrap_or_else(|| panic!("{got:?}"));
+        assert_eq!(s.surface, "幹事");
+        let (_, offset, _, _) = measure();
+        let expect = cost_for_slack(m + 50.0) as f32 + offset + edit * LEXICON_COST_PER_EDIT_COST;
+        assert!((s.score - expect).abs() < 1.0, "{} vs {expect}", s.score);
+        // 補正のほうが良い（score < typed_cost）がマージンには届かない: 出ない
+        let dict = dict_with_word_cost(cost_for_slack(m - 50.0));
+        assert!(suggest(&dict, false).iter().all(|s| s.reading != FIXED));
+    }
+
+    #[test]
+    fn substitute_needs_more_slack_than_voicing() {
+        let c = |kind| Correction {
+            reading: String::new(),
+            cost: 1.0,
+            ops: vec![EditOp {
+                kind,
+                pos: 0,
+                typed: None,
+                intended: None,
+            }],
+        };
+        let voicing = covered_margin(&c(EditKind::Voicing), 6);
+        let substitute = covered_margin(&c(EditKind::Substitute), 6);
+        assert_eq!(substitute - voicing, MARGIN_OTHER - MARGIN_VOICING);
+        assert!(substitute > voicing);
+        // Voicing に別の操作が混ざればその他扱い
+        let mut mixed = c(EditKind::Voicing);
+        mixed.ops.push(c(EditKind::Substitute).ops[0]);
+        assert_eq!(covered_margin(&mixed, 6), substitute);
+    }
+
+    #[test]
+    fn shorter_readings_get_larger_margins() {
+        let c = Correction {
+            reading: String::new(),
+            cost: 1.0,
+            ops: vec![EditOp {
+                kind: EditKind::Voicing,
+                pos: 0,
+                typed: None,
+                intended: None,
+            }],
+        };
+        let long = covered_margin(&c, SHORT_READING_CHARS);
+        assert_eq!(covered_margin(&c, SHORT_READING_CHARS + 5), long);
+        assert_eq!(
+            covered_margin(&c, SHORT_READING_CHARS - 1) - long,
+            MARGIN_PER_SHORT_CHAR
+        );
+        assert_eq!(
+            covered_margin(&c, SHORT_READING_CHARS - 3) - long,
+            3.0 * MARGIN_PER_SHORT_CHAR
+        );
+    }
+
+    #[test]
+    fn legacy_penalty_keeps_the_old_rule() {
+        let (_, offset, edit, _) = measure();
+        // 従来: 編集コストを 5 倍にして score >= typed_cost で棄却（マージンなし）。
+        // 余裕（編集コスト 1 倍の score を基準）が 4 × 編集コスト × 500 を超えるときだけ出る
+        let extra = 4.0 * edit * LEXICON_COST_PER_EDIT_COST;
+        let accept = dict_with_word_cost(cost_for_slack(extra + 50.0));
+        let got = suggest(&accept, true);
+        let s = got
+            .iter()
+            .find(|s| s.reading == FIXED)
+            .unwrap_or_else(|| panic!("{got:?}"));
+        let word = cost_for_slack(extra + 50.0) as f32;
+        let expect = word + offset + edit * LEXICON_COST_PER_EDIT_COST * 5.0;
+        assert!((s.score - expect).abs() < 1.0, "{} vs {expect}", s.score);
+        let reject = dict_with_word_cost(cost_for_slack(extra - 50.0));
+        assert!(suggest(&reject, true).iter().all(|s| s.reading != FIXED));
+        // 新方式との差: 新方式なら出る余裕でも従来方式では出ない（または逆）ことがある
+        let m = voicing_margin(edit);
+        let between = dict_with_word_cost(cost_for_slack(m + 50.0));
+        assert_eq!(
+            suggest(&between, true).iter().any(|s| s.reading == FIXED),
+            m + 50.0 > extra
+        );
+    }
+}
