@@ -10,7 +10,9 @@ use nagi_fuzzy::{Adjacency, KeyLayout, ReverseRomaji};
 use nagi_romaji::RomajiTable;
 use nagi_server::fuzzy::{FuzzyEngine, FuzzySettings, Suggestion};
 use nagi_server::fuzzy_eval::{
-    AdoptionTally, Rng, Tally, add_noise, flick_noise, flick_rows, percentile, tap, to_reading,
+    AdoptionTally, ClassTally, DEFAULT_PHONETIC_WEIGHTS, PhoneticWeights, ReadingClass, Rng, Tally,
+    add_noise, classify_reading, flick_noise, flick_rows, percentile, phonetic_noise, tap,
+    to_reading, tsv_row,
 };
 use std::time::Duration;
 
@@ -235,4 +237,151 @@ fn percentile_handles_empty_and_sorted_input() {
     assert_eq!(percentile(&v, 0.0), 1.0);
     assert_eq!(percentile(&v, 0.5), 3.0);
     assert_eq!(percentile(&v, 1.0), 5.0);
+}
+
+#[test]
+fn classify_reading_distinguishes_exact_covered_and_uncovered() {
+    let dict = dict_with_extra(EXTRA);
+    let overlay = Overlay::default();
+    // 辞書語そのもの
+    assert_eq!(
+        classify_reading(&dict, &overlay, "しんぶん"),
+        ReadingClass::Exact
+    );
+    // 語の連なり（辞書語どうしの連結だが、全体は辞書語でない）
+    assert_eq!(
+        classify_reading(&dict, &overlay, "しんぶんかんじ"),
+        ReadingClass::Covered
+    );
+    // 辞書に無い文字列
+    assert_eq!(
+        classify_reading(&dict, &overlay, "ぬぬぬぬ"),
+        ReadingClass::Uncovered
+    );
+}
+
+#[test]
+fn class_tally_splits_by_class() {
+    let mut t = ClassTally::default();
+    t.add(ReadingClass::Exact, &[], "A");
+    t.add(ReadingClass::Covered, &[suggestion("A", None)], "A");
+    t.add(ReadingClass::Covered, &[], "A");
+    assert_eq!(t.get(ReadingClass::Exact).n, 1);
+    assert_eq!(t.get(ReadingClass::Covered).hit1, 1);
+    assert_eq!(t.get(ReadingClass::Uncovered).n, 0);
+    assert_eq!(t.total().n, 3);
+    assert_eq!(
+        tsv_row("s", "Covered", t.get(ReadingClass::Covered)),
+        "s\tCovered\t2\t1\t1\t1"
+    );
+}
+
+/// 1 つの操作だけを有効にした重み
+fn only(
+    dakuten_drop: f64,
+    dakuten_add: f64,
+    youon: f64,
+    long_drop: f64,
+    unsmall: f64,
+) -> PhoneticWeights {
+    PhoneticWeights {
+        dakuten_drop,
+        dakuten_add,
+        youon,
+        long_drop,
+        unsmall,
+    }
+}
+
+#[test]
+fn phonetic_noise_is_deterministic_and_respects_p() {
+    let w = DEFAULT_PHONETIC_WEIGHTS;
+    let run = |seed, p| phonetic_noise("がっこうのしゅくだい", p, &mut Rng::new(seed), &w);
+    assert_eq!(run(5, 0.5), run(5, 0.5));
+    // p = 0 は不変、p = 1 は変化する
+    assert_eq!(run(1, 0.0), "がっこうのしゅくだい");
+    assert_ne!(run(1, 1.0), "がっこうのしゅくだい");
+    // 作用できる位置が無い読みは p = 1 でも不変
+    assert_eq!(
+        phonetic_noise("あいえ", 1.0, &mut Rng::new(1), &w),
+        "あいえ"
+    );
+}
+
+#[test]
+fn phonetic_noise_operations_act_as_expected() {
+    let apply = |text: &str, w: PhoneticWeights| phonetic_noise(text, 1.0, &mut Rng::new(3), &w);
+    // 濁点の付け忘れ
+    assert_eq!(apply("がぎ", only(1.0, 0.0, 0.0, 0.0, 0.0)), "かき");
+    assert_eq!(apply("ぱ", only(1.0, 0.0, 0.0, 0.0, 0.0)), "は");
+    // 付け過ぎ
+    assert_eq!(apply("かき", only(0.0, 1.0, 0.0, 0.0, 0.0)), "がぎ");
+    let h = apply("は", only(0.0, 1.0, 0.0, 0.0, 0.0));
+    assert!(h == "ば" || h == "ぱ", "{h}");
+    // 拗音の簡略化
+    assert_eq!(apply("しゅ", only(0.0, 0.0, 1.0, 0.0, 0.0)), "す");
+    assert_eq!(apply("ちょ", only(0.0, 0.0, 1.0, 0.0, 0.0)), "と");
+    assert_eq!(apply("じゃ", only(0.0, 0.0, 1.0, 0.0, 0.0)), "ざ");
+    // 長音・促音・ー の脱落（お段の後の う だけ。あ段の後の う は残す）
+    assert_eq!(apply("おうあう", only(0.0, 0.0, 0.0, 1.0, 0.0)), "おあう");
+    assert_eq!(apply("がっこう", only(0.0, 0.0, 0.0, 1.0, 0.0)), "がこ");
+    assert_eq!(apply("らーめん", only(0.0, 0.0, 0.0, 1.0, 0.0)), "らめん");
+    // 小書きの通常化
+    assert_eq!(apply("ゃゅょっ", only(0.0, 0.0, 0.0, 0.0, 1.0)), "やゆよつ");
+}
+
+#[test]
+fn phonetic_noise_corrections_run_on_a_synthetic_dictionary() {
+    let dict = dict_with_extra(EXTRA);
+    let overlay = Overlay::default();
+    let engine = FuzzyEngine::new();
+    let mut config = Config::default();
+    config.input.fuzzy.enabled = true;
+    let settings = FuzzySettings::from_config(&config.input.fuzzy);
+    let mut tally = ClassTally::default();
+    let mut rng = Rng::new(11);
+    for _ in 0..30 {
+        for (reading, surface) in [("がっこう", "学校"), ("しんぶん", "新聞")] {
+            let noisy = phonetic_noise(reading, 0.3, &mut rng, &DEFAULT_PHONETIC_WEIGHTS);
+            if noisy == reading {
+                continue;
+            }
+            let s = engine.suggest(
+                &dict,
+                &overlay,
+                &noisy,
+                &TypingHint::default(),
+                &settings,
+                false,
+                Duration::from_millis(150),
+            );
+            tally.add(classify_reading(&dict, &overlay, &noisy), &s, surface);
+        }
+    }
+    assert!(tally.total().n > 0);
+}
+
+#[test]
+fn eval_binary_accepts_new_options_and_skips_without_data() {
+    let exe = env!("CARGO_BIN_EXE_nagi-fuzzy-eval");
+    let empty = std::env::temp_dir().join("nagi-fuzzy-eval-no-data");
+    let tsv = empty.join("out.tsv");
+    for profile in ["uniform", "phonetic", "both"] {
+        let out = std::process::Command::new(exe)
+            .args(["--data-dir"])
+            .arg(&empty)
+            .args(["--noise-profile", profile, "--tsv"])
+            .arg(&tsv)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{profile}: {out:?}");
+    }
+    // 不正な値は引数エラー
+    let bad = std::process::Command::new(exe)
+        .args(["--data-dir"])
+        .arg(&empty)
+        .args(["--noise-profile", "x"])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(2));
 }

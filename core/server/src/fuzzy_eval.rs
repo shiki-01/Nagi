@@ -7,10 +7,13 @@
 //! - [`add_noise`]: 隣接キー置換・脱落・挿入・転置（QWERTY の打鍵列）
 //! - [`tap`]: 狙ったキーの中心からのガウス乱数の位置（H-25 のタッチモデル）で打つ
 //! - [`flick_noise`]: 12 キーのフリック方向の誤り（隣り合う方向・中央との取り違え）と、その角度
+//! - [`phonetic_noise`]: 読み（ひらがな）の段階で、 濁点・拗音・長音・促音・小書きの誤りを入れる
+//! - [`classify_reading`]: 読みを辞書での扱い（完全一致 / 語の連なり / どちらでもない）で分類する
 
-use crate::fuzzy::Suggestion;
+use crate::fuzzy::{DictIndex, Suggestion};
+use nagi_dict::{Dictionary, Overlay};
 use nagi_engine::touch::{DakutenOrder, key_table};
-use nagi_fuzzy::{Adjacency, KeyLayout, Stroke};
+use nagi_fuzzy::{Adjacency, KeyLayout, Stroke, covered};
 use nagi_romaji::{Emit, RomajiConverter, RomajiTable};
 use std::sync::Arc;
 
@@ -316,4 +319,245 @@ impl AdoptionTally {
             }
         }
     }
+}
+
+/// 読みの辞書での扱い（`FuzzyEngine` の二段ゲートと同じ区分）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadingClass {
+    /// 辞書語として完全一致（システム辞書・ユーザー辞書・スニペットのいずれか）。補正の対象外
+    Exact,
+    /// 完全一致ではないが、辞書の語の連なりとして成立する
+    Covered,
+    /// どちらでもない
+    Uncovered,
+}
+
+impl ReadingClass {
+    /// 集計の並び順
+    pub const ALL: [ReadingClass; 3] = [
+        ReadingClass::Exact,
+        ReadingClass::Covered,
+        ReadingClass::Uncovered,
+    ];
+
+    /// 表示名
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadingClass::Exact => "Exact",
+            ReadingClass::Covered => "Covered",
+            ReadingClass::Uncovered => "Uncovered",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// 読みを分類する。Exact の判定は `FuzzyEngine` の `collect` 冒頭と同じ
+pub fn classify_reading(dict: &Dictionary, overlay: &Overlay, reading: &str) -> ReadingClass {
+    if !dict.lookup(reading).is_empty()
+        || !overlay.lookup(reading).is_empty()
+        || !overlay.snippets(reading).is_empty()
+    {
+        ReadingClass::Exact
+    } else if covered(&DictIndex(dict), reading) {
+        ReadingClass::Covered
+    } else {
+        ReadingClass::Uncovered
+    }
+}
+
+/// クラス別の [`Tally`]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassTally([Tally; 3]);
+
+impl ClassTally {
+    /// 1 件の結果を、その読みのクラスに足す
+    pub fn add(&mut self, class: ReadingClass, s: &[Suggestion], surface: &str) {
+        self.0[class.index()].add(s, surface);
+    }
+
+    /// クラスの集計
+    pub fn get(&self, class: ReadingClass) -> &Tally {
+        &self.0[class.index()]
+    }
+
+    /// 全クラスの合計
+    pub fn total(&self) -> Tally {
+        self.0.iter().fold(Tally::default(), |mut a, t| {
+            a.n += t.n;
+            a.hit1 += t.hit1;
+            a.hit_n += t.hit_n;
+            a.any += t.any;
+            a
+        })
+    }
+}
+
+/// TSV の 1 行（`section\tclass\tn\thit1\thitn\tany`）
+pub fn tsv_row(section: &str, class: &str, t: &Tally) -> String {
+    format!(
+        "{section}\t{class}\t{}\t{}\t{}\t{}",
+        t.n, t.hit1, t.hit_n, t.any
+    )
+}
+
+/// ノイズの種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoiseProfile {
+    /// 打鍵列への一様なノイズ（現行）
+    Uniform,
+    /// 読みへの音韻的なノイズ
+    Phonetic,
+}
+
+/// 音韻ノイズの操作の重み（相対値。合計は 1 でなくてよい）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhoneticWeights {
+    /// 濁点・半濁点の付け忘れ（が→か）
+    pub dakuten_drop: f64,
+    /// 濁点・半濁点の付け過ぎ（か→が）
+    pub dakuten_add: f64,
+    /// 拗音の簡略化（しゅ→す）
+    pub youon: f64,
+    /// 長音（お段の後の う）・促音（っ）・ー の脱落
+    pub long_drop: f64,
+    /// 小書きの通常化（ゃ→や、っ→つ）
+    pub unsmall: f64,
+}
+
+/// 既定の重み。仮の重み。実測ではない
+pub const DEFAULT_PHONETIC_WEIGHTS: PhoneticWeights = PhoneticWeights {
+    dakuten_drop: 3.0,
+    dakuten_add: 2.0,
+    youon: 2.0,
+    long_drop: 2.0,
+    unsmall: 1.0,
+};
+
+/// 清音 → 濁音・半濁音
+const VOICING: &[(char, &[char])] = &[
+    ('か', &['が']),
+    ('き', &['ぎ']),
+    ('く', &['ぐ']),
+    ('け', &['げ']),
+    ('こ', &['ご']),
+    ('さ', &['ざ']),
+    ('し', &['じ']),
+    ('す', &['ず']),
+    ('せ', &['ぜ']),
+    ('そ', &['ぞ']),
+    ('た', &['だ']),
+    ('ち', &['ぢ']),
+    ('つ', &['づ']),
+    ('て', &['で']),
+    ('と', &['ど']),
+    ('は', &['ば', 'ぱ']),
+    ('ひ', &['び', 'ぴ']),
+    ('ふ', &['ぶ', 'ぷ']),
+    ('へ', &['べ', 'ぺ']),
+    ('ほ', &['ぼ', 'ぽ']),
+];
+
+/// 拗音の簡略化（2 文字 → 1 文字）
+const YOUON: &[(&str, char)] = &[
+    ("しゃ", 'さ'),
+    ("しゅ", 'す'),
+    ("しょ", 'そ'),
+    ("ちゃ", 'た'),
+    ("ちゅ", 'つ'),
+    ("ちょ", 'と'),
+    ("じゃ", 'ざ'),
+    ("じゅ", 'ず'),
+    ("じょ", 'ぞ'),
+    ("きゃ", 'か'),
+    ("きゅ", 'く'),
+    ("きょ", 'こ'),
+];
+
+/// 小書き → 通常
+const UNSMALL: &[(char, char)] = &[('ゃ', 'や'), ('ゅ', 'ゆ'), ('ょ', 'よ'), ('っ', 'つ')];
+
+/// 「う」を伸ばす音の脱落対象（お段のかなと拗音の ょ）
+fn is_o_column(c: char) -> bool {
+    "おこそとのほもよろをごぞどぼぽょ".contains(c)
+}
+
+#[derive(Clone, Copy)]
+enum PhoneticOp {
+    DakutenDrop(char),
+    DakutenAdd(char),
+    Youon(char),
+    Drop,
+    Unsmall(char),
+}
+
+/// 読みに音韻的な誤りを注入する。各かな（位置）で確率 `p` で、その位置に適用できる操作から
+/// 重みつきで 1 つ選んで適用する（適用できる操作が無ければ何もしない）。拗音の簡略化は 2 文字を消費する
+pub fn phonetic_noise(reading: &str, p: f64, rng: &mut Rng, weights: &PhoneticWeights) -> String {
+    let t: Vec<char> = reading.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < t.len() {
+        let c = t[i];
+        if rng.unit() >= p {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let mut ops: Vec<(f64, PhoneticOp)> = Vec::new();
+        // 付け忘れ（濁音・半濁音 → 清音）
+        if let Some((plain, _)) = VOICING.iter().find(|(_, v)| v.contains(&c)) {
+            ops.push((weights.dakuten_drop, PhoneticOp::DakutenDrop(*plain)));
+        }
+        // 付け過ぎ（清音 → 濁音・半濁音）
+        if let Some((_, v)) = VOICING.iter().find(|(pl, _)| *pl == c) {
+            let to = v[rng.below(v.len())];
+            ops.push((weights.dakuten_add, PhoneticOp::DakutenAdd(to)));
+        }
+        // 拗音の簡略化
+        if let Some(&next) = t.get(i + 1) {
+            let pair: String = [c, next].iter().collect();
+            if let Some((_, to)) = YOUON.iter().find(|(from, _)| *from == pair) {
+                ops.push((weights.youon, PhoneticOp::Youon(*to)));
+            }
+        }
+        // 長音・促音の脱落
+        let long_u = c == 'う' && i > 0 && is_o_column(t[i - 1]);
+        if long_u || c == 'っ' || c == 'ー' {
+            ops.push((weights.long_drop, PhoneticOp::Drop));
+        }
+        // 小書きの通常化
+        if let Some((_, to)) = UNSMALL.iter().find(|(from, _)| *from == c) {
+            ops.push((weights.unsmall, PhoneticOp::Unsmall(*to)));
+        }
+        let total: f64 = ops.iter().map(|(w, _)| w.max(0.0)).sum();
+        if ops.is_empty() || total <= 0.0 {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let mut pick = rng.unit() * total;
+        let mut chosen = ops[ops.len() - 1].1;
+        for (w, op) in &ops {
+            pick -= w.max(0.0);
+            if pick < 0.0 {
+                chosen = *op;
+                break;
+            }
+        }
+        match chosen {
+            PhoneticOp::DakutenDrop(to) | PhoneticOp::DakutenAdd(to) | PhoneticOp::Unsmall(to) => {
+                out.push(to);
+                i += 1;
+            }
+            PhoneticOp::Youon(to) => {
+                out.push(to);
+                i += 2;
+            }
+            PhoneticOp::Drop => i += 1,
+        }
+    }
+    out
 }

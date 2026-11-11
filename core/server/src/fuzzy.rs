@@ -72,6 +72,9 @@ pub struct FuzzySettings {
     pub auto_apply: bool,
     /// 自動採用の閾値（再採点後のスコア差。自然対数の単位。`input.fuzzy.auto_apply_margin`）
     pub auto_apply_margin: f32,
+    /// 展開の時間上限を外す（ノード数の上限だけにする）。設定項目ではなく評価用の値で、
+    /// 時間による打ち切りで結果が実行ごとに揺れるのを防ぎ、前後比較を決定的にするために使う
+    pub no_time_limit: bool,
 }
 
 impl Default for FuzzySettings {
@@ -93,6 +96,7 @@ impl FuzzySettings {
             rescore: section.rescore,
             auto_apply: section.auto_apply,
             auto_apply_margin: section.auto_apply_margin as f32,
+            no_time_limit: false,
         }
     }
 }
@@ -142,7 +146,7 @@ pub fn auto_apply_pick<'a>(
 }
 
 /// `nagi-dict` の辞書を `nagi-fuzzy` の索引として見せる
-struct DictIndex<'a>(&'a Dictionary);
+pub(crate) struct DictIndex<'a>(pub(crate) &'a Dictionary);
 
 impl ReadingIndex for DictIndex<'_> {
     fn word_prefix_lens(&self, text: &str) -> Vec<usize> {
@@ -251,7 +255,11 @@ impl FuzzyEngine {
         let params = Params {
             max_cost: settings.max_cost,
             max_results: MAX_EXPANDED,
-            deadline: Some(budget.min(Duration::from_millis(EXPANSION_BUDGET_MS))),
+            deadline: if settings.no_time_limit {
+                None
+            } else {
+                Some(budget.min(Duration::from_millis(EXPANSION_BUDGET_MS)))
+            },
             kinds: settings.kinds,
             use_touch: settings.use_touch,
             touch_sigma: settings.touch_sigma,

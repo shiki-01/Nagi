@@ -10,8 +10,16 @@
 //!
 //! ```text
 //! cargo run --release -p nagi-server --bin nagi-fuzzy-eval -- --data-dir ../data \
-//!     [--seed 1] [--strength normal] [--max-candidates 5] [--limit N] [--verbose]
+//!     [--seed 1] [--strength normal] [--max-candidates 5] [--limit N] [--verbose] \
+//!     [--noise-profile uniform|phonetic|both] [--tsv <path>]
 //! ```
+//!
+//! ノイズの種類（`--noise-profile`、既定 both）: `uniform` は上の打鍵列への一様なノイズ（と M2・フリック）、
+//! `phonetic` は読み（ひらがな）の段階の音韻ノイズ（濁点の付け忘れ・付け過ぎ、拗音の簡略化、長音・促音の脱落、
+//! 小書きの通常化。p = 0.05 / 0.10。重みは仮で実測ではない）、`both` は両方。
+//! 各集計にはノイズ後の読みのクラス（Exact = 辞書語として完全一致 / Covered = 語の連なりとして成立 /
+//! Uncovered）別の内訳を `[class]` / `[phonetic]` で始まる追加行として出す（既存の行は変えない）。
+//! `--tsv <path>` で、集計行を `section\tclass\tn\thit1\thitn\tany` の TSV にも書く（前後比較用）。
 //!
 //! M2 のタッチ座標モデル（`--touch-sigma` で、ノイズ側の指のばらつきをキー間隔に対する比で指定。既定は
 //! 0.18 / 0.25 / 0.32 の 3 通り）: 各打鍵を「狙ったキーの中心からのガウス乱数の位置」に置き、
@@ -41,7 +49,9 @@ use nagi_fuzzy::{Adjacency, EditKinds, KeyLayout, ReverseRomaji, Stroke};
 use nagi_romaji::RomajiTable;
 use nagi_server::fuzzy::{FuzzyEngine, FuzzySettings};
 use nagi_server::fuzzy_eval::{
-    Rng, Tally, add_noise, flick_noise, flick_rows, is_kana_reading, percentile, tap, to_reading,
+    ClassTally, DEFAULT_PHONETIC_WEIGHTS, NoiseProfile, ReadingClass, Rng, Tally, add_noise,
+    classify_reading, flick_noise, flick_rows, is_kana_reading, percentile, phonetic_noise, tap,
+    to_reading, tsv_row,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -61,9 +71,14 @@ fn main() {
     let mut rescore_p = 0.05f64;
     let mut rescore_budget_ms = 5000u64;
     let mut model_path: Option<PathBuf> = None;
+    let mut profiles: Vec<NoiseProfile> = vec![NoiseProfile::Uniform, NoiseProfile::Phonetic];
+    let mut tsv_out: Option<PathBuf> = None;
+    let mut no_time_limit = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            // 展開の時間上限を外し、結果を実行ごとに同一にする（前後比較用。遅延の数値は参考にならない）
+            "--no-time-limit" => no_time_limit = true,
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
             "--seed" => seed = args.next().and_then(|v| v.parse().ok()).unwrap_or(1),
             "--strength" => {
@@ -109,6 +124,18 @@ fn main() {
             "--rescore-budget-ms" => {
                 rescore_budget_ms = args.next().and_then(|v| v.parse().ok()).unwrap_or(5000)
             }
+            "--noise-profile" => {
+                profiles = match args.next().as_deref() {
+                    Some("uniform") => vec![NoiseProfile::Uniform],
+                    Some("phonetic") => vec![NoiseProfile::Phonetic],
+                    Some("both") => vec![NoiseProfile::Uniform, NoiseProfile::Phonetic],
+                    other => {
+                        eprintln!("--noise-profile は uniform|phonetic|both: {other:?}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            "--tsv" => tsv_out = args.next().map(PathBuf::from),
             "--model" => model_path = args.next().map(PathBuf::from),
             other => {
                 eprintln!("不明な引数: {other}");
@@ -178,66 +205,47 @@ fn main() {
         kinds: EditKinds::ALL,
         use_touch: true,
         touch_sigma: model_sigma,
+        no_time_limit,
         // 再採点・自動採用は `--rescore` の節で別に扱う（ここは辞書のスコアだけの M1 / M2 の比較）
         ..FuzzySettings::default()
     };
     let budget = Duration::from_millis(150);
+    let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
     println!(
         "strength={} max_cost={} max_candidates={} seed={seed}",
         strength, settings.max_cost, max_candidates
     );
 
-    // (2) クリーンな入力での誤訂正
-    let mut clean_shown = 0usize;
-    let mut clean_total = 0usize;
-    let mut clean_multi_shown = 0usize;
-    let mut clean_multi_total = 0usize;
-    for (reading, _) in &segments {
-        let s = engine.suggest(
-            &dict,
-            &overlay,
-            reading,
-            &TypingHint::default(),
-            &settings,
-            false,
-            budget,
-        );
-        clean_total += 1;
-        let exact = !dict.lookup(reading).is_empty();
-        if !exact {
-            clean_multi_total += 1;
+    let uniform = profiles.contains(&NoiseProfile::Uniform);
+    let mut tsv_rows: Vec<String> = Vec::new();
+    let class_lines = |tag: &str, label: &str, ct: &ClassTally, tsv: &mut Vec<String>| {
+        for class in ReadingClass::ALL {
+            let t = ct.get(class);
+            println!(
+                "{tag} {label} {}: {} 件: 上位 {max_candidates} 件に {} ({:.1}%)、1 位 {} ({:.1}%)、何か出た {} ({:.1}%)",
+                class.label(),
+                t.n,
+                t.hit_n,
+                pct(t.hit_n, t.n),
+                t.hit1,
+                pct(t.hit1, t.n),
+                t.any,
+                pct(t.any, t.n)
+            );
+            tsv.push(tsv_row(label, class.label(), t));
         }
-        if !s.is_empty() {
-            clean_shown += 1;
-            if !exact {
-                clean_multi_shown += 1;
-            }
-            if verbose {
-                println!(
-                    "CLEAN {reading} -> {:?}",
-                    s.iter()
-                        .map(|x| (&x.reading, &x.surface))
-                        .collect::<Vec<_>>()
-                );
-            }
-        }
-    }
-    let pct = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
-    println!(
-        "クリーン文節: 補正候補が出た {clean_shown} / {clean_total} ({:.2}%)、辞書語そのものでない文節に限ると {clean_multi_shown} / {clean_multi_total} ({:.2}%)",
-        pct(clean_shown, clean_total),
-        pct(clean_multi_shown, clean_multi_total)
-    );
-    // 文全体（入力中の候補が読み全体に対して出す場合）
-    let mut sent_shown = 0usize;
-    let mut sent_total = 0usize;
-    for reading in &sentences {
-        if reading.chars().count() > 24 {
-            continue;
-        }
-        sent_total += 1;
-        if !engine
-            .suggest(
+        tsv.push(tsv_row(label, "ALL", &ct.total()));
+    };
+
+    if uniform {
+        // (2) クリーンな入力での誤訂正
+        let mut clean_class = ClassTally::default();
+        let mut clean_shown = 0usize;
+        let mut clean_total = 0usize;
+        let mut clean_multi_shown = 0usize;
+        let mut clean_multi_total = 0usize;
+        for (reading, _) in &segments {
+            let s = engine.suggest(
                 &dict,
                 &overlay,
                 reading,
@@ -245,224 +253,352 @@ fn main() {
                 &settings,
                 false,
                 budget,
-            )
-            .is_empty()
-        {
-            sent_shown += 1;
-        }
-    }
-    println!(
-        "クリーンな文（24 文字以下）: 補正候補が出た {sent_shown} / {sent_total} ({:.2}%)",
-        pct(sent_shown, sent_total)
-    );
-
-    // (1)(3) ノイズ入り
-    for p in [0.02, 0.05, 0.10] {
-        let mut rng = Rng::new(seed ^ (p * 1000.0) as u64);
-        let (mut noisy, mut hit1, mut hit_n, mut any, mut skipped) =
-            (0usize, 0usize, 0usize, 0usize, 0usize);
-        let mut latencies: Vec<f64> = Vec::new();
-        let mut expand_latencies: Vec<f64> = Vec::new();
-        for (reading, surface) in &segments {
-            let Some(typed) = reverse.to_romaji(reading) else {
-                continue;
-            };
-            let noisy_typed = add_noise(&typed, p, &adjacency, &mut rng);
-            let noisy_reading = to_reading(&noisy_typed, &table);
-            if noisy_reading == *reading {
-                continue; // ノイズが入らなかった（または結果が同じ）
-            }
-            // 通常の変換でそのまま正解になっていれば、補正の対象外
-            let direct = dict
-                .segment_candidates_with(&noisy_reading, 1, Some(&overlay))
-                .first()
-                .map(|c| c.surface.clone());
-            if direct.as_deref() == Some(surface.as_str()) {
-                skipped += 1;
-                continue;
-            }
-            noisy += 1;
-            let started = Instant::now();
-            let _ = engine.expand(
-                &dict,
-                &noisy_reading,
-                &TypingHint::default(),
-                &settings,
-                budget,
             );
-            expand_latencies.push(started.elapsed().as_secs_f64() * 1000.0);
-            let started = Instant::now();
-            let s = engine.suggest(
-                &dict,
-                &overlay,
-                &noisy_reading,
-                &TypingHint::default(),
-                &settings,
-                false,
-                budget,
-            );
-            latencies.push(started.elapsed().as_secs_f64() * 1000.0);
+            clean_total += 1;
+            clean_class.add(classify_reading(&dict, &overlay, reading), &s, "");
+            let exact = !dict.lookup(reading).is_empty();
+            if !exact {
+                clean_multi_total += 1;
+            }
             if !s.is_empty() {
-                any += 1;
-            }
-            if s.first().is_some_and(|x| &x.surface == surface) {
-                hit1 += 1;
-            }
-            if s.iter().any(|x| &x.surface == surface) {
-                hit_n += 1;
-            } else if verbose {
-                println!(
-                    "MISS p={p} {reading}({surface}) typed={noisy_typed} read={noisy_reading} -> {:?}",
-                    s.iter()
-                        .map(|x| (&x.reading, &x.surface))
-                        .collect::<Vec<_>>()
-                );
+                clean_shown += 1;
+                if !exact {
+                    clean_multi_shown += 1;
+                }
+                if verbose {
+                    println!(
+                        "CLEAN {reading} -> {:?}",
+                        s.iter()
+                            .map(|x| (&x.reading, &x.surface))
+                            .collect::<Vec<_>>()
+                    );
+                }
             }
         }
-        latencies.sort_by(f64::total_cmp);
-        expand_latencies.sort_by(f64::total_cmp);
         println!(
-            "p={p:.2}: ノイズ入り {noisy} 件（通常変換で正解済み {skipped} 件を除く）: 正解が上位 {max_candidates} 件に {hit_n} ({:.1}%)、1 位に {hit1} ({:.1}%)、何か出た {any} ({:.1}%) / 提案全体 p50={:.2}ms p95={:.2}ms max={:.2}ms / 展開のみ p50={:.2}ms p95={:.2}ms",
-            pct(hit_n, noisy),
-            pct(hit1, noisy),
-            pct(any, noisy),
-            percentile(&latencies, 0.5),
-            percentile(&latencies, 0.95),
-            latencies.last().copied().unwrap_or(0.0),
-            percentile(&expand_latencies, 0.5),
-            percentile(&expand_latencies, 0.95),
+            "クリーン文節: 補正候補が出た {clean_shown} / {clean_total} ({:.2}%)、辞書語そのものでない文節に限ると {clean_multi_shown} / {clean_multi_total} ({:.2}%)",
+            pct(clean_shown, clean_total),
+            pct(clean_multi_shown, clean_multi_total)
         );
-    }
+        class_lines("[class]", "clean", &clean_class, &mut tsv_rows);
+        // 文全体（入力中の候補が読み全体に対して出す場合）
+        let mut sent_shown = 0usize;
+        let mut sent_total = 0usize;
+        for reading in &sentences {
+            if reading.chars().count() > 24 {
+                continue;
+            }
+            sent_total += 1;
+            if !engine
+                .suggest(
+                    &dict,
+                    &overlay,
+                    reading,
+                    &TypingHint::default(),
+                    &settings,
+                    false,
+                    budget,
+                )
+                .is_empty()
+            {
+                sent_shown += 1;
+            }
+        }
+        println!(
+            "クリーンな文（24 文字以下）: 補正候補が出た {sent_shown} / {sent_total} ({:.2}%)",
+            pct(sent_shown, sent_total)
+        );
 
-    // M2: タッチ座標モデルでの比較
-    let layout = KeyLayout::qwerty();
-    println!("model_sigma={model_sigma}");
-    for &sigma in &touch_sigmas {
-        let mut rng = Rng::new(seed ^ 0x7007_u64 ^ (sigma * 1000.0) as u64);
-        let mut tally = [Tally::default(), Tally::default()];
-        for (reading, surface) in &segments {
-            let Some(typed) = reverse.to_romaji(reading) else {
-                continue;
-            };
-            let strokes = tap(&typed, &layout, sigma, &mut rng);
-            let pressed: String = strokes.iter().map(|s| s.ch).collect();
-            let noisy_reading = to_reading(&pressed, &table);
-            if noisy_reading == *reading {
-                continue;
-            }
-            let direct = dict
-                .segment_candidates_with(&noisy_reading, 1, Some(&overlay))
-                .first()
-                .map(|c| c.surface.clone());
-            if direct.as_deref() == Some(surface.as_str()) {
-                continue;
-            }
-            let plain: Vec<Stroke> = strokes.iter().map(|s| Stroke::key(s.ch)).collect();
-            for (i, hint_strokes) in [&plain, &strokes].into_iter().enumerate() {
-                let hint = TypingHint {
-                    strokes: Some(hint_strokes),
-                    ..TypingHint::default()
+        // (1)(3) ノイズ入り
+        for p in [0.02, 0.05, 0.10] {
+            let mut rng = Rng::new(seed ^ (p * 1000.0) as u64);
+            let (mut noisy, mut hit1, mut hit_n, mut any, mut skipped) =
+                (0usize, 0usize, 0usize, 0usize, 0usize);
+            let mut class_tally = ClassTally::default();
+            let mut latencies: Vec<f64> = Vec::new();
+            let mut expand_latencies: Vec<f64> = Vec::new();
+            for (reading, surface) in &segments {
+                let Some(typed) = reverse.to_romaji(reading) else {
+                    continue;
                 };
+                let noisy_typed = add_noise(&typed, p, &adjacency, &mut rng);
+                let noisy_reading = to_reading(&noisy_typed, &table);
+                if noisy_reading == *reading {
+                    continue; // ノイズが入らなかった（または結果が同じ）
+                }
+                // 通常の変換でそのまま正解になっていれば、補正の対象外
+                let direct = dict
+                    .segment_candidates_with(&noisy_reading, 1, Some(&overlay))
+                    .first()
+                    .map(|c| c.surface.clone());
+                if direct.as_deref() == Some(surface.as_str()) {
+                    skipped += 1;
+                    continue;
+                }
+                noisy += 1;
+                let started = Instant::now();
+                let _ = engine.expand(
+                    &dict,
+                    &noisy_reading,
+                    &TypingHint::default(),
+                    &settings,
+                    budget,
+                );
+                expand_latencies.push(started.elapsed().as_secs_f64() * 1000.0);
+                let started = Instant::now();
                 let s = engine.suggest(
                     &dict,
                     &overlay,
                     &noisy_reading,
-                    &hint,
+                    &TypingHint::default(),
                     &settings,
                     false,
                     budget,
                 );
-                tally[i].add(&s, surface);
-            }
-        }
-        // クリーン入力: 全打鍵が狙ったキーに入った（誤打鍵なし）ときの座標つきの誤訂正
-        let (mut clean, mut clean_shown) = (0usize, 0usize);
-        for (reading, _) in &segments {
-            let Some(typed) = reverse.to_romaji(reading) else {
-                continue;
-            };
-            let mut strokes = tap(&typed, &layout, sigma, &mut rng);
-            let ok = strokes.iter().map(|s| s.ch).eq(typed.chars());
-            if !ok {
-                // 誤打鍵が出た試行は除き、狙ったキーに入るまで打ち直す（打ち間違いのないクリーン入力の分布）
-                for _ in 0..20 {
-                    strokes = tap(&typed, &layout, sigma, &mut rng);
-                    if strokes.iter().map(|s| s.ch).eq(typed.chars()) {
-                        break;
-                    }
+                latencies.push(started.elapsed().as_secs_f64() * 1000.0);
+                class_tally.add(
+                    classify_reading(&dict, &overlay, &noisy_reading),
+                    &s,
+                    surface,
+                );
+                if !s.is_empty() {
+                    any += 1;
                 }
-                if !strokes.iter().map(|s| s.ch).eq(typed.chars()) {
-                    continue;
+                if s.first().is_some_and(|x| &x.surface == surface) {
+                    hit1 += 1;
+                }
+                if s.iter().any(|x| &x.surface == surface) {
+                    hit_n += 1;
+                } else if verbose {
+                    println!(
+                        "MISS p={p} {reading}({surface}) typed={noisy_typed} read={noisy_reading} -> {:?}",
+                        s.iter()
+                            .map(|x| (&x.reading, &x.surface))
+                            .collect::<Vec<_>>()
+                    );
                 }
             }
-            clean += 1;
-            let hint = TypingHint {
-                strokes: Some(&strokes),
-                ..TypingHint::default()
-            };
-            if !engine
-                .suggest(&dict, &overlay, reading, &hint, &settings, false, budget)
-                .is_empty()
-            {
-                clean_shown += 1;
-            }
-        }
-        println!("touch σ_noise={sigma:.2}:");
-        for (name, t) in ["M1 離散", "M2 座標"].iter().zip(&tally) {
+            latencies.sort_by(f64::total_cmp);
+            expand_latencies.sort_by(f64::total_cmp);
             println!(
-                "  {name}: ノイズ入り {} 件: 上位 {max_candidates} 件に {} ({:.1}%)、1 位 {} ({:.1}%)、何か出た {} ({:.1}%)",
-                t.n,
-                t.hit_n,
-                pct(t.hit_n, t.n),
-                t.hit1,
-                pct(t.hit1, t.n),
-                t.any,
-                pct(t.any, t.n)
+                "p={p:.2}: ノイズ入り {noisy} 件（通常変換で正解済み {skipped} 件を除く）: 正解が上位 {max_candidates} 件に {hit_n} ({:.1}%)、1 位に {hit1} ({:.1}%)、何か出た {any} ({:.1}%) / 提案全体 p50={:.2}ms p95={:.2}ms max={:.2}ms / 展開のみ p50={:.2}ms p95={:.2}ms",
+                pct(hit_n, noisy),
+                pct(hit1, noisy),
+                pct(any, noisy),
+                percentile(&latencies, 0.5),
+                percentile(&latencies, 0.95),
+                latencies.last().copied().unwrap_or(0.0),
+                percentile(&expand_latencies, 0.5),
+                percentile(&expand_latencies, 0.95),
+            );
+            class_lines(
+                "[class]",
+                &format!("uniform p={p:.2}"),
+                &class_tally,
+                &mut tsv_rows,
             );
         }
-        println!(
-            "  M2 クリーン入力（誤打鍵なし）の誤訂正: {clean_shown} / {clean} ({:.2}%)",
-            pct(clean_shown, clean)
-        );
-    }
-    // 12 キーのフリック方向の誤り
-    let rows = flick_rows();
-    for &p in &flick_ps {
-        let mut rng = Rng::new(seed ^ 0xF11C_u64 ^ (p * 1000.0) as u64);
-        let mut tally = [Tally::default(), Tally::default()];
-        for (reading, surface) in &segments {
-            let sample = flick_noise(reading, p, &rows, &mut rng);
-            if sample.noisy == *reading {
-                continue;
+
+        // M2: タッチ座標モデルでの比較
+        let layout = KeyLayout::qwerty();
+        println!("model_sigma={model_sigma}");
+        for &sigma in &touch_sigmas {
+            let mut rng = Rng::new(seed ^ 0x7007_u64 ^ (sigma * 1000.0) as u64);
+            let mut tally = [Tally::default(), Tally::default()];
+            let mut class_tally = [ClassTally::default(), ClassTally::default()];
+            for (reading, surface) in &segments {
+                let Some(typed) = reverse.to_romaji(reading) else {
+                    continue;
+                };
+                let strokes = tap(&typed, &layout, sigma, &mut rng);
+                let pressed: String = strokes.iter().map(|s| s.ch).collect();
+                let noisy_reading = to_reading(&pressed, &table);
+                if noisy_reading == *reading {
+                    continue;
+                }
+                let direct = dict
+                    .segment_candidates_with(&noisy_reading, 1, Some(&overlay))
+                    .first()
+                    .map(|c| c.surface.clone());
+                if direct.as_deref() == Some(surface.as_str()) {
+                    continue;
+                }
+                let plain: Vec<Stroke> = strokes.iter().map(|s| Stroke::key(s.ch)).collect();
+                for (i, hint_strokes) in [&plain, &strokes].into_iter().enumerate() {
+                    let hint = TypingHint {
+                        strokes: Some(hint_strokes),
+                        ..TypingHint::default()
+                    };
+                    let s = engine.suggest(
+                        &dict,
+                        &overlay,
+                        &noisy_reading,
+                        &hint,
+                        &settings,
+                        false,
+                        budget,
+                    );
+                    tally[i].add(&s, surface);
+                    class_tally[i].add(
+                        classify_reading(&dict, &overlay, &noisy_reading),
+                        &s,
+                        surface,
+                    );
+                }
             }
-            let direct = dict
-                .segment_candidates_with(&sample.noisy, 1, Some(&overlay))
-                .first()
-                .map(|c| c.surface.clone());
-            if direct.as_deref() == Some(surface.as_str()) {
-                continue;
-            }
-            for (i, with_angle) in [false, true].into_iter().enumerate() {
+            // クリーン入力: 全打鍵が狙ったキーに入った（誤打鍵なし）ときの座標つきの誤訂正
+            let (mut clean, mut clean_shown) = (0usize, 0usize);
+            for (reading, _) in &segments {
+                let Some(typed) = reverse.to_romaji(reading) else {
+                    continue;
+                };
+                let mut strokes = tap(&typed, &layout, sigma, &mut rng);
+                let ok = strokes.iter().map(|s| s.ch).eq(typed.chars());
+                if !ok {
+                    // 誤打鍵が出た試行は除き、狙ったキーに入るまで打ち直す（打ち間違いのないクリーン入力の分布）
+                    for _ in 0..20 {
+                        strokes = tap(&typed, &layout, sigma, &mut rng);
+                        if strokes.iter().map(|s| s.ch).eq(typed.chars()) {
+                            break;
+                        }
+                    }
+                    if !strokes.iter().map(|s| s.ch).eq(typed.chars()) {
+                        continue;
+                    }
+                }
+                clean += 1;
                 let hint = TypingHint {
-                    flicks: with_angle.then_some(&sample.flicks[..]),
+                    strokes: Some(&strokes),
                     ..TypingHint::default()
                 };
+                if !engine
+                    .suggest(&dict, &overlay, reading, &hint, &settings, false, budget)
+                    .is_empty()
+                {
+                    clean_shown += 1;
+                }
+            }
+            println!("touch σ_noise={sigma:.2}:");
+            for (name, t) in ["M1 離散", "M2 座標"].iter().zip(&tally) {
+                println!(
+                    "  {name}: ノイズ入り {} 件: 上位 {max_candidates} 件に {} ({:.1}%)、1 位 {} ({:.1}%)、何か出た {} ({:.1}%)",
+                    t.n,
+                    t.hit_n,
+                    pct(t.hit_n, t.n),
+                    t.hit1,
+                    pct(t.hit1, t.n),
+                    t.any,
+                    pct(t.any, t.n)
+                );
+            }
+            println!(
+                "  M2 クリーン入力（誤打鍵なし）の誤訂正: {clean_shown} / {clean} ({:.2}%)",
+                pct(clean_shown, clean)
+            );
+            for (name, ct) in ["M1", "M2"].iter().zip(&class_tally) {
+                class_lines(
+                    "  [class]",
+                    &format!("touch σ={sigma:.2} {name}"),
+                    ct,
+                    &mut tsv_rows,
+                );
+            }
+        }
+        // 12 キーのフリック方向の誤り
+        let rows = flick_rows();
+        for &p in &flick_ps {
+            let mut rng = Rng::new(seed ^ 0xF11C_u64 ^ (p * 1000.0) as u64);
+            let mut tally = [Tally::default(), Tally::default()];
+            for (reading, surface) in &segments {
+                let sample = flick_noise(reading, p, &rows, &mut rng);
+                if sample.noisy == *reading {
+                    continue;
+                }
+                let direct = dict
+                    .segment_candidates_with(&sample.noisy, 1, Some(&overlay))
+                    .first()
+                    .map(|c| c.surface.clone());
+                if direct.as_deref() == Some(surface.as_str()) {
+                    continue;
+                }
+                for (i, with_angle) in [false, true].into_iter().enumerate() {
+                    let hint = TypingHint {
+                        flicks: with_angle.then_some(&sample.flicks[..]),
+                        ..TypingHint::default()
+                    };
+                    let s = engine.suggest(
+                        &dict,
+                        &overlay,
+                        &sample.noisy,
+                        &hint,
+                        &settings,
+                        false,
+                        budget,
+                    );
+                    tally[i].add(&s, surface);
+                }
+            }
+            println!("flick p={p:.2}:");
+            for (name, t) in ["M1 角度なし", "M2 角度つき"].iter().zip(&tally) {
+                println!(
+                    "  {name}: ノイズ入り {} 件: 上位 {max_candidates} 件に {} ({:.1}%)、1 位 {} ({:.1}%)、何か出た {} ({:.1}%)",
+                    t.n,
+                    t.hit_n,
+                    pct(t.hit_n, t.n),
+                    t.hit1,
+                    pct(t.hit1, t.n),
+                    t.any,
+                    pct(t.any, t.n)
+                );
+            }
+        }
+    }
+
+    // 音韻ノイズ（読みの段階。打鍵列なし）
+    if profiles.contains(&NoiseProfile::Phonetic) {
+        for p in [0.05, 0.10] {
+            let mut rng = Rng::new(seed ^ 0x9407_1C00_u64 ^ (p * 1000.0) as u64);
+            let mut class_tally = ClassTally::default();
+            let mut skipped = 0usize;
+            for (reading, surface) in &segments {
+                let noisy_reading = phonetic_noise(reading, p, &mut rng, &DEFAULT_PHONETIC_WEIGHTS);
+                if noisy_reading == *reading {
+                    continue;
+                }
+                let direct = dict
+                    .segment_candidates_with(&noisy_reading, 1, Some(&overlay))
+                    .first()
+                    .map(|c| c.surface.clone());
+                if direct.as_deref() == Some(surface.as_str()) {
+                    skipped += 1;
+                    continue;
+                }
                 let s = engine.suggest(
                     &dict,
                     &overlay,
-                    &sample.noisy,
-                    &hint,
+                    &noisy_reading,
+                    &TypingHint::default(),
                     &settings,
                     false,
                     budget,
                 );
-                tally[i].add(&s, surface);
+                class_tally.add(
+                    classify_reading(&dict, &overlay, &noisy_reading),
+                    &s,
+                    surface,
+                );
+                if verbose && !s.iter().any(|x| &x.surface == surface) {
+                    println!(
+                        "[phonetic] MISS p={p} {reading}({surface}) read={noisy_reading} -> {:?}",
+                        s.iter()
+                            .map(|x| (&x.reading, &x.surface))
+                            .collect::<Vec<_>>()
+                    );
+                }
             }
-        }
-        println!("flick p={p:.2}:");
-        for (name, t) in ["M1 角度なし", "M2 角度つき"].iter().zip(&tally) {
+            let t = class_tally.total();
             println!(
-                "  {name}: ノイズ入り {} 件: 上位 {max_candidates} 件に {} ({:.1}%)、1 位 {} ({:.1}%)、何か出た {} ({:.1}%)",
+                "[phonetic] p={p:.2}: 音韻ノイズ入り {} 件（通常変換で正解済み {skipped} 件を除く）: 正解が上位 {max_candidates} 件に {} ({:.1}%)、1 位に {} ({:.1}%)、何か出た {} ({:.1}%)",
                 t.n,
                 t.hit_n,
                 pct(t.hit_n, t.n),
@@ -471,6 +607,20 @@ fn main() {
                 t.any,
                 pct(t.any, t.n)
             );
+            class_lines(
+                "[phonetic]",
+                &format!("phonetic p={p:.2}"),
+                &class_tally,
+                &mut tsv_rows,
+            );
+        }
+    }
+
+    if let Some(path) = &tsv_out {
+        let mut body = tsv_rows.join("\n");
+        body.push('\n');
+        if let Err(e) = std::fs::write(path, body) {
+            eprintln!("TSV を書けません: {}: {e}", path.display());
         }
     }
 
