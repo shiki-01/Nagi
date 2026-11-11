@@ -2,7 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @State private var selectedTab = 0
+    // 起動引数 -nagi-e2e（UI テスト）のときだけ、入力テストのタブ（tag 3）から始める
+    @State private var selectedTab = NagiE2EMode.isEnabled ? 3 : 0
     @State private var store = SharedStore.shared
     @State private var deviceInfo = ""
     @State private var dataStatus = ""
@@ -19,7 +20,8 @@ struct ContentView: View {
     // 初回案内（初回のみ自動表示。ホームから再表示できる）
     @AppStorage("nagi.onboarding.completed") private var onboardingCompleted = false
     // 初回は最初の描画からシートを出す（URL 取り込みの確認アラートが、あとから出るシートと重ならないように）
-    @State private var showingOnboarding = !UserDefaults.standard.bool(forKey: "nagi.onboarding.completed")
+    // （UI テストでは出さない）
+    @State private var showingOnboarding = !NagiE2EMode.isEnabled && !UserDefaults.standard.bool(forKey: "nagi.onboarding.completed")
     @ObservedObject private var layoutInbox = NagiLayoutURLInbox.shared
 
     var body: some View {
@@ -153,7 +155,7 @@ struct ContentView: View {
         // nagi://layout の取り込みの確認と結果。初回案内のシートが出ている間は出さない
         .modifier(NagiLayoutInboxAlerts(inbox: layoutInbox, suppressed: showingOnboarding))
         .onAppear {
-            if !onboardingCompleted { showingOnboarding = true }
+            if !onboardingCompleted && !NagiE2EMode.isEnabled { showingOnboarding = true }
         }
     }
 

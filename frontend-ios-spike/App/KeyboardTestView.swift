@@ -36,12 +36,15 @@ struct KeyboardTestView: View {
                 Section("1 行") {
                     TextField("ここに入力", text: $singleLine)
                         .focused($focusedField, equals: .singleLine)
+                        // UI テスト（UITests/）が入力欄を特定するための識別子
+                        .accessibilityIdentifier("e2e.input")
                     HStack {
                         Text("\(singleLine.count) 文字")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                         Spacer()
                         Button("クリア") { singleLine = "" }
+                            .accessibilityIdentifier("e2e.clear")
                     }
                 }
 

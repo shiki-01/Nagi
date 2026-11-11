@@ -321,6 +321,11 @@ private struct KeyCell: View {
 
     var body: some View {
         content
+            // UI テスト（XCUITest）がキーを特定するための識別子。表示・挙動は変えない（spacer は付けない）
+            .nagiKeyAccessibility(
+                enabled: key.kind != .spacer, identifier: "key.\(nagiKeyName(key))",
+                label: faceContent(key, model).text ?? nagiKeyName(key)
+            )
             .environment(\.nagiHitOutset, outset)
             .padding(EdgeInsets(top: -outset.top, leading: -outset.leading, bottom: -outset.bottom, trailing: -outset.trailing))
     }
@@ -397,6 +402,27 @@ extension KeyCell {
             ),
             origin: spaceDragOrigin
         )
+    }
+}
+
+/// UI テスト用のキー名（識別子 `key.<名前>` の名前）。表示ラベルを優先し、アイコンだけのキーは id
+private func nagiKeyName(_ key: LayoutKeyDef) -> String {
+    key.label ?? key.kana ?? key.text ?? key.center?.text ?? key.id
+}
+
+extension View {
+    /// キーを 1 つのアクセシビリティ要素（ボタン）にして、識別子と名前を付ける。`enabled` が false なら何もしない
+    @ViewBuilder
+    fileprivate func nagiKeyAccessibility(enabled: Bool, identifier: String, label: String) -> some View {
+        if enabled {
+            self
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label)
+                .accessibilityIdentifier(identifier)
+                .accessibilityAddTraits(.isButton)
+        } else {
+            self
+        }
     }
 }
 
@@ -1188,6 +1214,8 @@ private struct CandidateBar: View {
                                             nextWord: model.isNextWordCandidates) {
                                 model.selectCandidate(item.id)
                             }
+                            // UI テスト用の識別子（`candidate.<候補の並びの index>`。固定した候補を含む全体の中の位置）
+                            .accessibilityIdentifier("candidate.\(model.candidates.firstIndex(where: { $0.id == item.id }) ?? item.id)")
                         }
                     }
                 }
@@ -1208,6 +1236,7 @@ private struct CandidateBar: View {
                                       selected: pinned.id == model.selectedCandidate) {
                         model.selectCandidate(pinned.id)
                     }
+                    .accessibilityIdentifier("candidate.\(model.candidates.firstIndex(where: { $0.id == pinned.id }) ?? pinned.id)")
                 }
                 // 次語予測は展開パネルを使わない（候補数が少なく、選ぶとそのまま挿入される）。
                 // 押せる範囲は矢印だけでなく、候補バーの高さいっぱい
@@ -1281,6 +1310,8 @@ private struct ToolbarRow: View {
                 action: { _ in model.activateToolbarKey(key) }
             )
             .accessibilityLabel(ToolbarKeys.accessibilityLabel(for: key) ?? "")
+            // UI テスト用の識別子（`toolbar.<名前>`。設定由来のキーは id `tb-<名前>` の接頭辞を外す）
+            .accessibilityIdentifier("toolbar.\(key.id.hasPrefix("tb-") ? String(key.id.dropFirst(3)) : key.id)")
         }
     }
 
@@ -1327,6 +1358,7 @@ private struct ExpandToggle: View {
             )
             .accessibilityElement()
             .accessibilityLabel(expanded ? "候補を閉じる" : "候補を広げる")
+            .accessibilityIdentifier("candidate.expand")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { action() }
     }

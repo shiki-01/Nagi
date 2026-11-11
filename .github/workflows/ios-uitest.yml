@@ -1,0 +1,188 @@
+name: ios-uitest
+
+# iOS キーボード拡張の E2E テスト（XCUITest）。iOS Simulator 上で Nagi キーボードを有効化し、
+# tests/e2e/scenarios の platforms に ios を含むシナリオを再生する（ランナーは frontend-ios-spike/UITests）。
+# 手元に Xcode を入れない前提のため、実行はこのワークフロー（macOS ランナー）のみ。手動実行のみ。
+#
+# ios-test.yml（論理の単体テスト）と違い、ホストアプリとキーボード拡張を実際にビルド・起動するので
+# NagiCore.xcframework（Rust）が要る。変換を決定的にするため LLM なし（NAGI_NO_LLM）・システム辞書なし
+# （tests/e2e/README.md の前提）。署名は不要（シミュレータ向け。CODE_SIGNING_ALLOWED=NO）。
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-uitest-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  uitest:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Rust ツールチェーン（core/rust-toolchain.toml に従う）
+        working-directory: core
+        run: |
+          rustup show
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: XcodeGen を用意
+        run: brew install xcodegen
+
+      # 実機とシミュレータ（aarch64-apple-ios-sim）の両方を含む XCFramework。LLM なし
+      - name: XCFramework をビルド
+        working-directory: core
+        run: cargo xtask build-ios-xcframework
+
+      - name: Xcode プロジェクトを生成
+        working-directory: frontend-ios-spike
+        run: NAGI_LLM=NAGI_NO_LLM xcodegen generate
+
+      - name: 最新の iPhone シミュレータを選ぶ
+        run: |
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          python3 - "$RUNNER_TEMP/devices.json" >> "$GITHUB_ENV" <<'PY'
+          import json, re, sys
+          data = json.load(open(sys.argv[1]))["devices"]
+          best = None
+          for runtime, devices in data.items():
+              m = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not m:
+                  continue
+              version = (int(m.group(1)), int(m.group(2)))
+              for d in devices:
+                  if not d["name"].startswith("iPhone") or not d.get("isAvailable", True):
+                      continue
+                  # 新しい runtime を優先し、同じなら "Pro"（Max / Plus 以外）の端末を優先
+                  rank = (version, d["name"].endswith("Pro"), d["name"])
+                  if best is None or rank > best[0]:
+                      best = (rank, d["udid"], d["name"], runtime)
+          if best is None:
+              sys.exit("利用できる iPhone シミュレータがありません")
+          print(f"SIM_UDID={best[1]}")
+          print(f"SIM_NAME={best[2]} ({best[3]})", file=sys.stderr)
+          PY
+
+      # ソフトキーボードを出すため、Mac のハードウェアキーボードを接続しない設定にする
+      - name: シミュレータのハードウェアキーボードを切る
+        run: |
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+          defaults write com.apple.iphonesimulator DevicePreferences -dict-add "$SIM_UDID" \
+            '<dict><key>ConnectHardwareKeyboard</key><false/></dict>' || true
+
+      - name: ビルド（ホストアプリ・キーボード拡張・UI テスト）
+        working-directory: frontend-ios-spike
+        run: |
+          mkdir -p build
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project NagiSpike.xcodeproj \
+            -scheme NagiSpikeUITests \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/xcodebuild-build.log | tail -n 40
+
+      - name: ビルド失敗の error 行
+        if: failure()
+        working-directory: frontend-ios-spike
+        run: |
+          if [ -f build/xcodebuild-build.log ]; then
+            grep -n -B2 -A6 "error:" build/xcodebuild-build.log | head -n 120 || true
+          fi
+
+      # キーボード拡張を有効化する: アプリを入れて（拡張を OS に登録させる）から、シミュレータを止めて
+      # GlobalPreferences の AppleKeyboards に拡張を足す。形式は未検証（拡張の bundle id をそのまま足す）。
+      # 効かなかった場合は、UI テスト側が設定アプリの UI で追加するフォールバックを持つ
+      - name: キーボード拡張を有効化
+        working-directory: frontend-ios-spike
+        run: |
+          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          app=$(find build/DerivedData/Build/Products -maxdepth 2 -name NagiSpike.app -type d | head -n 1)
+          echo "app: $app"
+          xcrun simctl install "$SIM_UDID" "$app"
+          xcrun simctl shutdown "$SIM_UDID"
+          plist="$HOME/Library/Developer/CoreSimulator/Devices/$SIM_UDID/data/Library/Preferences/.GlobalPreferences.plist"
+          python3 - "$plist" <<'PY'
+          import os, plistlib, sys
+          path = sys.argv[1]
+          data = {}
+          if os.path.exists(path):
+              with open(path, "rb") as f:
+                  data = plistlib.load(f)
+          keyboards = list(data.get("AppleKeyboards", []))
+          for kb in ["com.shiki01.nagi.keyboard"]:
+              if kb not in keyboards:
+                  keyboards.append(kb)
+          data["AppleKeyboards"] = keyboards
+          data["AppleKeyboardsExpanded"] = 1
+          os.makedirs(os.path.dirname(path), exist_ok=True)
+          with open(path, "wb") as f:
+              plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+          print("AppleKeyboards:", keyboards)
+          PY
+          xcrun simctl boot "$SIM_UDID"
+          xcrun simctl bootstatus "$SIM_UDID" -b
+
+      - name: UI テスト（iOS Simulator）
+        working-directory: frontend-ios-spike
+        run: |
+          mkdir -p build/e2e-out
+          # 失敗したテストをジョブのログに出すため、終了コードを控えてから要約を表示する
+          set +e
+          # TEST_RUNNER_ 接頭辞の環境変数は UI テストのプロセスへ渡る（results.json / screenshots の出力先）
+          TEST_RUNNER_NAGI_E2E_OUT="$PWD/build/e2e-out" \
+          xcodebuild test-without-building \
+            -project NagiSpike.xcodeproj \
+            -scheme NagiSpikeUITests \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/NagiSpikeUITests.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            > build/xcodebuild-uitest.log 2>&1
+          code=$?
+          set -e
+          echo "---- PASS / FAIL ----"
+          grep -E "^(PASS|FAIL) " build/xcodebuild-uitest.log | sort -u | head -n 80 || true
+          echo "---- 失敗したテスト・エラー ----"
+          grep -E "error:|Test Case .* failed|XCTAssert|Failing tests|\*\* TEST (FAILED|SUCCEEDED)" build/xcodebuild-uitest.log | sort -u | head -n 80 || true
+          echo "---- 末尾 40 行 ----"
+          tail -n 40 build/xcodebuild-uitest.log
+          exit $code
+
+      # 出力先に書けなかった場合に備え、結果バンドルの添付（スクリーンショット・results.json）を取り出す
+      - name: 結果バンドルの添付を取り出す
+        if: always()
+        working-directory: frontend-ios-spike
+        run: |
+          if [ -d build/NagiSpikeUITests.xcresult ]; then
+            xcrun xcresulttool export attachments \
+              --path build/NagiSpikeUITests.xcresult \
+              --output-path build/xcresult-attachments || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-uitest-results
+          path: |
+            frontend-ios-spike/build/xcodebuild-build.log
+            frontend-ios-spike/build/xcodebuild-uitest.log
+            frontend-ios-spike/build/NagiSpikeUITests.xcresult
+            frontend-ios-spike/build/xcresult-attachments
+            frontend-ios-spike/build/e2e-out
+          if-no-files-found: ignore

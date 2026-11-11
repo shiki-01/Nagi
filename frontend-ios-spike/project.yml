@@ -242,3 +242,34 @@ targets:
       testTargets:
         - NagiSpikeTests
       gatherCoverageData: false
+
+  # UI テスト（XCUITest。.github/workflows/ios-uitest.yml）。ホストアプリ（NagiSpike）をシミュレータで起動し、
+  # キーボード拡張（Nagi）を有効化して、tests/e2e/scenarios の iOS 向けシナリオを再生する。
+  # ホストアプリと拡張のビルドには NagiCore.xcframework（Rust）が要る。署名は不要（シミュレータ）
+  NagiSpikeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.1"
+
+    sources:
+      - path: UITests
+      # 全プラットフォーム共通のシナリオ（JSON）。バンドル内の scenarios/ フォルダとして同梱する。
+      # ランナーは platforms に ios を含むスイートだけを再生する
+      - path: ../tests/e2e/scenarios
+        type: folder
+        optional: true
+        buildPhase: resources
+
+    dependencies:
+      - target: NagiSpike
+
+    settings:
+      SWIFT_VERSION: "5"
+      GENERATE_INFOPLIST_FILE: YES
+      PRODUCT_BUNDLE_IDENTIFIER: com.shiki01.nagi.uitests
+      TEST_TARGET_NAME: NagiSpike
+
+    scheme:
+      testTargets:
+        - NagiSpikeUITests
+      gatherCoverageData: false
