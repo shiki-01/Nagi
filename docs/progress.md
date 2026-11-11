@@ -308,3 +308,8 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 - 実装済み: F0 評価基盤（`nagi-fuzzy-eval` に 12 キーのフリック方向の誤り・`--rescore`（再採点・スコア式の比較・自動採用の閾値スイープ）。部品は `nagi_server::fuzzy_eval`、単体テストは `server/tests/fuzzy_eval.rs`）、F1 文脈つきの再採点（`ReadingScorer` + `FuzzyEngine::suggest_with`。設定 `input.fuzzy.rescore`、既定 false）、F2 高確信時の自動採用（`start_converting_fuzzy_auto`。設定 `input.fuzzy.auto_apply` / `auto_apply_margin`、既定 false）。プロトコルの変更なし
 - 計測結果（サンドボックスの CPU・small）: 再採点は 1 位の正解率を下げた（約 37% → 約 31%）、レイテンシは p50 約 100ms で同期予算 150ms に p95 が収まらない、自動採用は閾値を上げても正解率が約 6 割で頭打ち。既定オフのまま
 - 未完了: スコア式の見直し（zenz に読みを生成させる方式の調査。azooKey `ZenzaiTypoCandidateGenerator` の入力書式は未確認）、実機での計測、設定画面（レジストリ）への項目追加、`cargo xtask check-types`（この環境に typeshare が無く未実行。プロトコルは未変更）
+
+## 曖昧入力: 連続マージン・誤り辞書・評価の拡張（2026-11-11、決定は decisions.md H-88）
+
+- 実装済み: 成立する読み（Covered）への一律 5 倍ペナルティを、操作種別・編集コスト・読みの長さによるマージンに置き換え（Covered の上位 5 件の正解率 +4〜+15pt、クリーン文節の誤表示 0.13%）、誤り辞書（同梱 76 件 + `<user-dir>/misspellings.tsv`、設定 `input.fuzzy.misspellings`）、`nagi-fuzzy-eval` のクラス別内訳・音韻ノイズ・`--tsv`・`--dump-rows`・`--no-time-limit`・`--legacy-penalty`
+- 未完了: 実機での誤表示の確認（特に iOS の固定表示。H-73）、実際の誤りの分布での再較正（音韻ノイズの重みは仮）、かな n-gram LM・単語頻度較正・遡及再評価（H-88 の「未着手」）、`cargo xtask check-types`（typeshare が無く未実行）
