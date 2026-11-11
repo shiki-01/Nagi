@@ -214,6 +214,7 @@ fn main() {
     let settings = FuzzySettings {
         enabled: true,
         max_cost: strength.max_cost(),
+        margin_scale: strength.margin_scale(),
         max_candidates,
         kinds: EditKinds::ALL,
         use_touch: true,
@@ -713,7 +714,7 @@ fn main() {
 }
 
 /// `--dump-rows` の TSV のヘッダ行
-const DUMP_HEADER: &str = "set\tclass\treading_len\ttyped_total\ttyped_words\ttyped_unknown\ttyped_max_word_cost\ttyped_min_word_cost\ttyped_word_costs\tcand_reading\tcand_surface\tcand_cost\tchannel_cost\tkinds\tis_truth\tlm_typed\tlm_cand";
+const DUMP_HEADER: &str = "set\tclass\treading_len\ttyped_total\ttyped_words\ttyped_unknown\ttyped_max_word_cost\ttyped_min_word_cost\ttyped_word_costs\tcand_reading\tcand_surface\tcand_cost\tchannel_cost\tkinds\tis_truth\tlm_typed\tlm_cand\ttyped_marginal\tcand_marginal";
 
 /// `--dump-rows` で診断を呼ぶのに要るもの
 struct DumpCtx<'a> {
@@ -781,11 +782,19 @@ impl DumpCtx<'_> {
             })
         };
         let lm_typed = lm(reading);
+        // 全分割の周辺コスト（`dict` を直接呼ぶ）
+        let marginal = |text: &str| {
+            self.dict
+                .reading_marginal_cost(text, Some(self.overlay))
+                .map_or(String::new(), |c| format!("{c:.2}"))
+        };
+        let typed_marginal = marginal(reading);
         for r in &d.rows {
             let lm_cand = lm(&r.reading);
+            let cand_marginal = marginal(&r.reading);
             let is_truth = truth.is_some_and(|(tr, ts)| r.surface == ts || r.reading == tr) as u8;
             out.push(format!(
-                "{set}\t{class}\t{}\t{total}\t{words}\t{unknown}\t{max}\t{min}\t{cost_list}\t{}\t{}\t{}\t{}\t{}\t{is_truth}\t{lm_typed}\t{lm_cand}",
+                "{set}\t{class}\t{}\t{total}\t{words}\t{unknown}\t{max}\t{min}\t{cost_list}\t{}\t{}\t{}\t{}\t{}\t{is_truth}\t{lm_typed}\t{lm_cand}\t{typed_marginal}\t{cand_marginal}",
                 reading.chars().count(),
                 r.reading,
                 r.surface,

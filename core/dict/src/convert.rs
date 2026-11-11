@@ -122,6 +122,81 @@ impl Dictionary {
         })
     }
 
+    /// 読みの周辺コスト（全分割の経路コストを `-500 * ln Σ exp(-コスト/500)` で合算したもの）。
+    /// Viterbi と同じラティス・語コスト・連接コストを使い、最小の代わりに log-sum-exp を取る。
+    /// 同じ読みでも分割が複数成立するほど、Viterbi の総コストより小さくなる（空の読みは `None`）。診断用
+    pub fn reading_marginal_cost(&self, reading: &str, overlay: Option<&Overlay>) -> Option<f32> {
+        /// コストを確率に直すときの尺度（辞書のコストは 500 で割ると自然対数）
+        const SCALE: f64 = 500.0;
+        fn lse(a: f64, b: f64) -> f64 {
+            let m = a.min(b);
+            if m.is_infinite() {
+                return m;
+            }
+            m - SCALE * ((-(a - m) / SCALE).exp() + (-(b - m) / SCALE).exp()).ln()
+        }
+
+        let chars: Vec<char> = reading.chars().collect();
+        let n = chars.len();
+        if n == 0 {
+            return None;
+        }
+        let bytes = reading.as_bytes();
+        let mut byte_pos = Vec::with_capacity(n + 1);
+        let mut char_at_byte = vec![usize::MAX; bytes.len() + 1];
+        for (ci, (bi, _)) in reading.char_indices().enumerate() {
+            byte_pos.push(bi);
+            char_at_byte[bi] = ci;
+        }
+        byte_pos.push(bytes.len());
+        char_at_byte[bytes.len()] = n;
+
+        // alpha[p]: 位置 p で終わる経路の周辺コスト（右 ID ごと）
+        let mut alpha: Vec<HashMap<u16, f64>> = vec![HashMap::new(); n + 1];
+        alpha[0].insert(0, 0.0);
+        for p in 0..n {
+            let preds: Vec<(u16, f64)> = alpha[p].iter().map(|(&rid, &c)| (rid, c)).collect();
+            // 左 ID ごとに「前ノードすべてからの周辺コスト + 連接コスト」を使い回す
+            let mut memo: HashMap<u16, f64> = HashMap::new();
+            let mut enter = |lid: u16| -> f64 {
+                *memo.entry(lid).or_insert_with(|| {
+                    preds
+                        .iter()
+                        .map(|&(rid, c)| c + f64::from(self.connection(rid, lid)))
+                        .fold(f64::INFINITY, lse)
+                })
+            };
+            let mut adds: Vec<(usize, u16, f64)> = Vec::new();
+            for (group, len) in self.common_prefix_groups(&bytes[byte_pos[p]..]) {
+                let end = char_at_byte[byte_pos[p] + len];
+                for idx in self.group_range(group) {
+                    let c = enter(self.lid_of(idx)) + f64::from(self.cost_of(idx));
+                    adds.push((end, self.rid_of(idx), c));
+                }
+            }
+            if let Some(ov) = overlay {
+                for len in 1..=ov.max_reading_chars().min(n - p) {
+                    let key: String = chars[p..p + len].iter().collect();
+                    for e in ov.lookup(&key) {
+                        let c = enter(e.lid) + f64::from(e.cost);
+                        adds.push((p + len, e.rid, c));
+                    }
+                }
+            }
+            let (id, cost) = self.unknown_ids(chars[p]);
+            adds.push((p + 1, id, enter(id) + f64::from(cost)));
+            for (end, rid, c) in adds {
+                let slot = alpha[end].entry(rid).or_insert(f64::INFINITY);
+                *slot = lse(*slot, c);
+            }
+        }
+        let total = alpha[n]
+            .iter()
+            .map(|(&rid, &c)| c + f64::from(self.connection(rid, 0)))
+            .fold(f64::INFINITY, lse);
+        Some(total as f32)
+    }
+
     /// 読み（ひらがな）を Viterbi で最良経路に変換し、文節に区切って返す
     pub fn convert(&self, reading: &str) -> Vec<ConvertedSegment> {
         self.convert_with(reading, None)

@@ -108,3 +108,24 @@ fn best_path_info_matches_first_segment_candidate() {
     assert_eq!(info.words.len(), 3);
     assert!(dict.best_path_info("", None).is_none());
 }
+
+#[test]
+fn reading_marginal_cost_is_bounded_by_viterbi() {
+    let dict = dict();
+    // 成立する経路が 1 本だけなら（素通しの経路は桁違いに高い）Viterbi の総コストに一致する
+    let viterbi = dict.best_path_info("きょう", None).unwrap().total_cost as f32;
+    let marginal = dict.reading_marginal_cost("きょう", None).unwrap();
+    assert!((marginal - viterbi).abs() < 0.01, "{marginal} {viterbi}");
+    // 同じ読みに表記の違う語が 2 つあれば、合算した分だけ小さくなる
+    let viterbi = dict.best_path_info("はし", None).unwrap().total_cost as f32;
+    let marginal = dict.reading_marginal_cost("はし", None).unwrap();
+    assert!(marginal < viterbi - 1.0, "{marginal} {viterbi}");
+    // どの読みでも marginal <= viterbi（誤差の範囲）。辞書に無い文字も同じ扱い
+    for reading in ["はし", "きょうは", "きょうははし", "きょうはx", "x"] {
+        let v = dict.best_path_info(reading, None).unwrap().total_cost as f32;
+        let m = dict.reading_marginal_cost(reading, None).unwrap();
+        assert!(m <= v + 0.01, "{reading}: {m} {v}");
+    }
+    // 空文字列は None
+    assert!(dict.reading_marginal_cost("", None).is_none());
+}
