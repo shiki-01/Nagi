@@ -15,6 +15,8 @@ pub struct Observation {
     pub marked: String,
     /// 確定済みの文字列
     pub committed: String,
+    /// テキスト欄の全文（診断用。`committed` と `marked` の分離の確認）
+    pub raw: String,
 }
 
 impl Observation {
@@ -89,7 +91,7 @@ fn mismatch(expect: &Expect, obs: &Observation) -> Option<String> {
     {
         diffs.push(format!("text: 期待 {t:?} / 実測 {:?}", obs.text()));
     }
-    (!diffs.is_empty()).then(|| diffs.join(" ; "))
+    (!diffs.is_empty()).then(|| format!("{} ; (テキスト欄の全文 {:?})", diffs.join(" ; "), obs.raw))
 }
 
 fn run_expect(host: &mut dyn Host, expect: &Expect, notes: &mut Vec<String>) -> Result<(), String> {
@@ -240,6 +242,7 @@ mod tests {
             Ok(Observation {
                 marked: self.marked.clone(),
                 committed: self.committed.clone(),
+                raw: format!("{}{}", self.committed, self.marked),
             })
         }
         fn idle(&mut self, ms: u64) {

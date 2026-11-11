@@ -75,22 +75,37 @@ impl WinHost {
         Observation {
             committed: committed_text(&full, &marked),
             marked,
+            raw: full,
         }
     }
 
-    /// 前のシナリオの未確定を取り消す（Escape を数回）
-    fn cancel_composition(&mut self) -> Result<(), String> {
-        for _ in 0..4 {
-            if self.read_observation().marked.is_empty() {
-                return Ok(());
+    /// 未確定文字列を確実に消し、テキスト欄を空にする。
+    /// Escape → Escape → Backspace（文字数 + 2 回）→ Return（確定して捨てる）の順に、消えるまで強くしていく
+    fn force_clear(&mut self) -> Result<(), String> {
+        for step in 0..4 {
+            let obs = self.read_observation();
+            if obs.marked.is_empty() {
+                break;
             }
-            self.press("Escape")?;
+            match step {
+                0 | 1 => self.press("Escape")?,
+                2 => {
+                    for _ in 0..obs.marked.chars().count() + 2 {
+                        self.press("Backspace")?;
+                    }
+                }
+                _ => self.press("Return")?,
+            }
             pump(150);
         }
-        if self.read_observation().marked.is_empty() {
+        let obs = self.read_observation();
+        println!("[clear] marked={:?} edit_text={:?}", obs.marked, obs.raw);
+        host::set_edit_text(self.edit, "");
+        host::focus(self.edit);
+        if obs.marked.is_empty() {
             Ok(())
         } else {
-            Err("前のシナリオの未確定文字列を取り消せません".to_owned())
+            Err("未確定文字列を消せません".to_owned())
         }
     }
 
@@ -139,15 +154,14 @@ impl WinHost {
                 host::edit_text(self.edit),
                 self.probe.line_count()
             );
-            if obs.marked == "あ" {
-                self.press("Escape")?;
-                pump(200);
+            // 反応した印: 未確定に「あ」が出た（複数回の評価で「ああ」になっていても可）
+            if obs.marked.contains('あ') {
                 input::set_vk_mode(false);
+                self.force_clear()?;
                 return self.begin_scenario();
             }
             // 素通しで EDIT に入った分や、途中の状態を片付けて再試行
-            let _ = self.press("Escape");
-            host::set_edit_text(self.edit, "");
+            let _ = self.force_clear();
             if start.elapsed() >= timeout {
                 return Err(format!(
                     "IME が応答しません（{}ms 待った、{round} 回試行）\n{}",
@@ -163,9 +177,7 @@ impl WinHost {
 
 impl Host for WinHost {
     fn begin_scenario(&mut self) -> Result<(), String> {
-        self.cancel_composition()?;
-        host::set_edit_text(self.edit, "");
-        host::focus(self.edit);
+        self.force_clear()?;
         if self.ime.ensure_hiragana()? {
             pump(200);
         }

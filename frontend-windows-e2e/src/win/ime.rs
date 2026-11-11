@@ -158,9 +158,24 @@ pub fn register_and_wait(dll: &Path, timeout: Duration) -> Result<(), String> {
     let start = Instant::now();
     let mut last_retry = Instant::now();
     loop {
-        if nagi_listed(&profiles) {
+        // 列挙に出なくても GetProfile で直接取れるなら有効化できる（EnumProfiles は当てにならない）
+        let gettable = {
+            let mut p = TF_INPUTPROCESSORPROFILE::default();
+            unsafe {
+                profiles.GetProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR,
+                    LANGID_JAPANESE,
+                    &CLSID_NAGI_TEXT_SERVICE,
+                    &GUID_NAGI_PROFILE,
+                    HKL::default(),
+                    &mut p,
+                )
+            }
+            .is_ok()
+        };
+        if gettable || nagi_listed(&profiles) {
             println!(
-                "Nagi のプロファイルが列挙に現れました（{}ms）",
+                "Nagi のプロファイルが列挙または GetProfile で見えました（{}ms）",
                 start.elapsed().as_millis()
             );
             return Ok(());
