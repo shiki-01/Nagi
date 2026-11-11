@@ -13,7 +13,7 @@ on:
   # 検証用: main に入るまでの間、このブランチへの push で起動する（main へ入れる前に削除すること）
   push:
     branches: [claude/ui-automation-testing-4mgml9]
-    paths: [".github/workflows/ios-uitest.yml"]
+    paths: [".github/workflows/ios-uitest.yml", "frontend-ios-spike/UITests/**"]
 
 concurrency:
   group: ios-uitest-${{ github.ref }}
@@ -50,6 +50,12 @@ jobs:
       - name: XCFramework をビルド
         working-directory: core
         run: cargo xtask build-ios-xcframework
+
+      # キーボード拡張は Resources/data（辞書置き場）をバンドルに含める。E2E は語彙なしの最小辞書を使う
+      # （ユーザー辞書を重ねるのに辞書ファイルが要るため。tests/e2e/README.md）
+      - name: 最小辞書を Resources/data へ置く
+        working-directory: core
+        run: cargo xtask e2e-fixture-data --out ../frontend-ios-spike/Resources/data
 
       - name: Xcode プロジェクトを生成
         working-directory: frontend-ios-spike

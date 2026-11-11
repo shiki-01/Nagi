@@ -20,7 +20,7 @@ on:
   # 検証用: main に入るまでの間、このブランチへの push で起動する（main へ入れる前に削除すること）
   push:
     branches: [claude/ui-automation-testing-4mgml9]
-    paths: [".github/workflows/windows-e2e.yml"]
+    paths: [".github/workflows/windows-e2e.yml", "frontend-windows-e2e/**", "frontend-windows-tsf/**"]
 
 jobs:
   e2e:
