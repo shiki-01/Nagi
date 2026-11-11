@@ -237,6 +237,22 @@ impl Learner {
         }
     }
 
+    /// `reading` の学習済みの表記ごとの確定回数の合計（文脈を問わない。順不同）。
+    /// 確定後の遡及再評価が、読みがすでに利用者にとって意味を持つか（直前の確定の分を除いて）を判断するのに使う
+    pub fn counts_for_reading(&self, reading: &str) -> Vec<(String, u32)> {
+        let mut counts: HashMap<&str, u32> = HashMap::new();
+        for ((r, s, _), row) in &self.rows {
+            if r == reading {
+                let c = counts.entry(s.as_str()).or_insert(0);
+                *c = c.saturating_add(row.count);
+            }
+        }
+        counts
+            .into_iter()
+            .map(|(s, c)| (s.to_string(), c))
+            .collect()
+    }
+
     /// reading 完全一致の候補を取得。(reading, surface) ごとに集約し、スコア計算。
     pub fn lookup_exact(&self, reading: &str, context_hash: u64, now: u64) -> Vec<Scored> {
         let mut candidates: HashMap<(String, String), (u32, u64, f64)> = HashMap::new();

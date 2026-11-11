@@ -49,6 +49,13 @@ pub trait CommitObserver: Send + Sync {
         let _ = (ctx, typed, corrected);
     }
 
+    /// 確定した内容を短時間だけメモリ上に持つ機能（確定後の遡及再評価）を使ってよい状況か。
+    /// 学習を止める状況（secure input・停止アプリなど）では `false` にする。既定は `true`
+    fn allows_retro_review(&self, ctx: &CommitContext<'_>) -> bool {
+        let _ = ctx;
+        true
+    }
+
     /// 提示された「もしかして」候補（`typed` → `corrected`）が選ばれて確定された。既定は何もしない
     fn on_fuzzy_adopted(&self, ctx: &CommitContext<'_>, typed: &str, corrected: &str) {
         let _ = (ctx, typed, corrected);

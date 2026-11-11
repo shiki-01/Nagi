@@ -107,6 +107,9 @@ pub struct FuzzySettings {
     /// 採否の規則を従来の式（covered なら編集コストを一律 5 倍、マージンなし）に戻す。
     /// 設定項目ではなく評価用の値で、新旧の比較のために残す
     pub legacy_penalty: bool,
+    /// 確定後の遡及再評価（直前に確定した文節を、続きの読みとの結合で見直す。
+    /// `input.fuzzy.retro_review`）
+    pub retro_review: bool,
 }
 
 impl Default for FuzzySettings {
@@ -133,6 +136,7 @@ impl FuzzySettings {
             auto_apply_margin: section.auto_apply_margin as f32,
             no_time_limit: false,
             legacy_penalty: false,
+            retro_review: section.retro_review,
         }
     }
 }
@@ -724,4 +728,123 @@ fn best_path(dict: &Dictionary, overlay: &Overlay, reading: &str) -> Option<(Str
         .into_iter()
         .next()
         .map(|c| (c.surface, c.cost as f32))
+}
+
+/// 遡及再評価（[`FuzzyEngine::retro_review`]）で、通常の補正のマージンに足す追加の余裕（辞書コスト尺度）。
+///
+/// 確定済みの文節は利用者が一度見て選んだものなので、入力中の読みよりも「打った通り」である
+/// 可能性が高い。そのため同じ証拠の強さでは提案せず、結合した読みの辞書コストが十分に良く
+/// なるときだけ出す。暫定値で、`nagi-fuzzy-eval --retro` のクリーン入力の誤提案率が小さく
+/// なる範囲から決めた。`--no-time-limit`・seed 1 / 7 の 271 組で、500 はクリーンの誤提案 2 件
+/// （0.74%）、1000 は 1 件（0.37%。正解を含められた件数は 500 と同じ）、1500 は 0 件（seed 7 で
+/// 正解を含められた件が 1 件減る）。標本が小さく過学習の恐れがあるので、実利用のデータでの再較正が前提
+pub const RETRO_EXTRA_MARGIN: f32 = 1000.0;
+
+/// 遡及再評価の修正候補の最大数
+pub const RETRO_MAX_CANDIDATES: usize = 3;
+
+impl FuzzyEngine {
+    /// 確定後の遡及再評価: 直前に確定した文節 `prev_reading`（表記 `prev_surface`）が、打ち間違いだった
+    /// 可能性を、続きの読み `next_reading` との結合で見直し、修正候補を良い順に最大
+    /// [`RETRO_MAX_CANDIDATES`] 件返す（表記は補正後の読みだけを変換したもの）。
+    ///
+    /// 補正後の読み `c` の採用条件は、結合した読みの最良経路のコストについて
+    /// `cost(c + next) + 編集コスト * 500 + margin < cost(prev + next)`。`margin` は covered の
+    /// 読みと同じ [`covered_margin`] に強さの倍率（と個人化の倍率）を掛け、[`RETRO_EXTRA_MARGIN`] を足したもの。
+    /// 入力中の読みと違い、`prev_reading` が辞書語として完全一致していても対象にする
+    /// （「すうせい」は辞書語だが、後ろに「する」が続くと不自然、という場合を拾うため）。
+    /// 学習・ユーザー辞書で既知（`known`）なら何も出さない。誤り辞書に一致すればその正しい読みを先頭に含める。
+    /// 無効（`enabled` / `retro_review` がオフ）・読みが空・候補なしなら空
+    #[allow(clippy::too_many_arguments)] // 辞書・overlay・確定した文節・続きの読み・設定・既知・予算は別々の出所
+    pub fn retro_review(
+        &self,
+        dict: &Dictionary,
+        overlay: &Overlay,
+        prev_reading: &str,
+        prev_surface: &str,
+        next_reading: &str,
+        settings: &FuzzySettings,
+        known: bool,
+        budget: Duration,
+    ) -> Vec<Suggestion> {
+        if !settings.enabled
+            || !settings.retro_review
+            || known
+            || prev_reading.is_empty()
+            || next_reading.is_empty()
+        {
+            return Vec::new();
+        }
+        let mut out: Vec<Suggestion> = Vec::new();
+        let push = |out: &mut Vec<Suggestion>, s: Suggestion| {
+            if s.surface != prev_surface && !out.iter().any(|o| o.surface == s.surface) {
+                out.push(s);
+            }
+        };
+        // 誤り辞書: 辞書語の判定・コストの比較を通さず、決定的に先頭へ並べる
+        if settings.misspellings {
+            let misspellings = self.misspellings();
+            for right in misspellings.lookup(prev_reading) {
+                if let Some((surface, cost)) = best_path(dict, overlay, right) {
+                    push(
+                        &mut out,
+                        Suggestion {
+                            reading: right.clone(),
+                            surface,
+                            score: cost,
+                            channel_cost: 0.0,
+                            lm_margin: None,
+                        },
+                    );
+                }
+            }
+        }
+        let joined = format!("{prev_reading}{next_reading}");
+        let original = best_path(dict, overlay, &joined).map_or(f32::MAX, |(_, c)| c);
+        let joined_chars = joined.chars().count();
+        let stats = self.stats();
+        let mut scored: Vec<Suggestion> = Vec::new();
+        for c in self.expand(dict, prev_reading, &TypingHint::default(), settings, budget) {
+            let Some((surface, _)) = best_path(dict, overlay, &c.reading) else {
+                continue;
+            };
+            let Some((_, joined_cost)) =
+                best_path(dict, overlay, &format!("{}{next_reading}", c.reading))
+            else {
+                continue;
+            };
+            let personal = match kind_key(&c.ops) {
+                Some(kind) if settings.personalize => stats.margin_scale(kind),
+                _ => 1.0,
+            };
+            let margin = covered_margin(&c, joined_chars) * settings.margin_scale * personal
+                + RETRO_EXTRA_MARGIN;
+            let score = joined_cost + c.cost * LEXICON_COST_PER_EDIT_COST;
+            if score + margin >= original || surface == prev_surface {
+                continue;
+            }
+            if settings.personalize
+                && let Some(kind) = kind_key(&c.ops)
+            {
+                stats.note_kind(prev_reading, &c.reading, kind);
+            }
+            scored.push(Suggestion {
+                reading: c.reading,
+                surface,
+                score,
+                channel_cost: c.cost,
+                lm_margin: None,
+            });
+        }
+        scored.sort_by(|a, b| {
+            a.score
+                .total_cmp(&b.score)
+                .then_with(|| a.reading.cmp(&b.reading))
+        });
+        for s in scored {
+            push(&mut out, s);
+        }
+        out.truncate(RETRO_MAX_CANDIDATES);
+        out
+    }
 }

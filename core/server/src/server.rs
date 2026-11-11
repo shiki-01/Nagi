@@ -11,10 +11,10 @@ use nagi_protocol::jsonrpc::{
     ErrorObject, Notification, Request, Response, error_code, parse_message,
 };
 use nagi_protocol::methods::{
-    ConfigError, EmptyResult, FuzzyStatsItem, GetFuzzyStatsResult, GlideInputParams,
-    ImportSkipReason, ImportUserDictParams, ImportUserDictResult, InitializeParams,
-    InitializeResult, InsertReadingTouchParams, ListSuppressedResult, NotifyParams,
-    PerformActionParams, ProcessKeyParams, ReconvertParams, ReloadConfigResult,
+    AcceptRetroReviewParams, ConfigError, EmptyResult, FuzzyStatsItem, GetFuzzyStatsResult,
+    GlideInputParams, ImportSkipReason, ImportUserDictParams, ImportUserDictResult,
+    InitializeParams, InitializeResult, InsertReadingTouchParams, ListSuppressedResult,
+    NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams, ReloadConfigResult,
     RestoreSessionParams, SelectCandidateParams, ServerCapabilities, SessionParams,
     SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams, SuppressCandidateParams,
     SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams, UserDictFormat, method,
@@ -58,6 +58,7 @@ pub struct Server {
     engine: Arc<Mutex<Engine>>,
     composing_gen: Arc<DebounceGen>,
     live_gen: Arc<DebounceGen>,
+    retro_gen: Arc<DebounceGen>,
     runtime: Arc<Runtime>,
     reload: Reloadable,
     initial_mode: InputMode,
@@ -90,6 +91,7 @@ impl Server {
             engine: Arc::new(Mutex::new(Engine::new(backend, config))),
             composing_gen: Arc::default(),
             live_gen: Arc::default(),
+            retro_gen: Arc::default(),
             runtime: Runtime::detached(false),
             reload: Reloadable::detached(),
             initialized: false,
@@ -110,6 +112,7 @@ impl Server {
             engine: Arc::new(Mutex::new(engine)),
             composing_gen: Arc::default(),
             live_gen: Arc::default(),
+            retro_gen: Arc::default(),
             runtime: built.runtime,
             reload: built.reload,
             initialized: false,
@@ -273,6 +276,16 @@ impl Server {
                         .and_then(|n| serde_json::to_string(&n).ok())
                 }),
         );
+        lines.extend(
+            self.runtime
+                .drain_retro_reviews()
+                .into_iter()
+                .filter_map(|p| {
+                    Notification::new(method::RETRO_REVIEW, p)
+                        .ok()
+                        .and_then(|n| serde_json::to_string(&n).ok())
+                }),
+        );
         lines
     }
 
@@ -310,6 +323,37 @@ impl Server {
                     revision: r.revision,
                     candidates,
                 });
+            }
+        });
+    }
+
+    /// 確定後の遡及再評価の対象なら（直前の確定のすぐ後に、2 文字以上の読みの入力が始まった）、
+    /// デバウンス後にバックグラウンドで修正候補を求め、`retro_review` 通知で届ける。
+    /// 対象でなければスレッドを立てない。同じ確定に対する問い合わせはエンジンが 1 回に絞る
+    fn maybe_schedule_retro_review(&self, session_id: &str) {
+        let Some(reading) = self.engine_lock().retro_review_reading(session_id) else {
+            return;
+        };
+        let engine = self.engine.clone();
+        let runtime = self.runtime.clone();
+        let session_id = session_id.to_string();
+        let gens = self.retro_gen.clone();
+        let my_gen = gens.bump();
+        std::thread::spawn(move || {
+            std::thread::sleep(COMPOSING_CANDIDATES_DELAY);
+            if !gens.is_latest(my_gen) {
+                return;
+            }
+            let mut guard = engine
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !gens.is_latest(my_gen) {
+                return;
+            }
+            let result = guard.retro_review(&session_id, &reading);
+            drop(guard);
+            if let Some(params) = result {
+                runtime.push_retro_review(params);
             }
         });
     }
@@ -628,6 +672,7 @@ impl Server {
                         style_conversion: false,
                         suppression: Some(true),
                         fuzzy_stats: Some(true),
+                        retro_review: Some(true),
                     },
                 })
             }
@@ -645,6 +690,7 @@ impl Server {
                     .process_key(&p.session_id, &p.key_event());
                 self.maybe_schedule_live_conversion(&p.session_id);
                 self.maybe_schedule_composing_candidates(&p.session_id);
+                self.maybe_schedule_retro_review(&p.session_id);
                 to_value(result)
             }
             method::INSERT_READING => {
@@ -659,6 +705,7 @@ impl Server {
                 );
                 self.maybe_schedule_live_conversion(&p.session_id);
                 self.maybe_schedule_composing_candidates(&p.session_id);
+                self.maybe_schedule_retro_review(&p.session_id);
                 to_value(result)
             }
             method::GLIDE_INPUT => {
@@ -667,6 +714,7 @@ impl Server {
                 let result = self.engine_lock().glide_input(&p);
                 self.maybe_schedule_live_conversion(&p.session_id);
                 self.maybe_schedule_composing_candidates(&p.session_id);
+                self.maybe_schedule_retro_review(&p.session_id);
                 to_value(result)
             }
             method::SET_LAYOUT_GEOMETRY => {
@@ -681,6 +729,7 @@ impl Server {
                 let result = self.engine_lock().perform_action(&p.session_id, &p.action);
                 self.maybe_schedule_live_conversion(&p.session_id);
                 self.maybe_schedule_composing_candidates(&p.session_id);
+                self.maybe_schedule_retro_review(&p.session_id);
                 to_value(result)
             }
             method::FOCUS_IN => {
@@ -724,6 +773,7 @@ impl Server {
                     });
                 }
                 self.maybe_schedule_composing_candidates(&p.session_id);
+                self.maybe_schedule_retro_review(&p.session_id);
                 to_value(EmptyResult {})
             }
             method::SET_ENVIRONMENT => {
@@ -805,6 +855,14 @@ impl Server {
                     .collect();
                 to_value(GetFuzzyStatsResult { items })
             }
+            method::ACCEPT_RETRO_REVIEW => {
+                self.require_initialized()?;
+                let p: AcceptRetroReviewParams = params(req)?;
+                to_value(
+                    self.engine_lock()
+                        .accept_retro_review(&p.session_id, p.index),
+                )
+            }
             method::GET_SETTINGS => {
                 self.require_initialized()?;
                 to_value(crate::settings::snapshot(
@@ -840,6 +898,7 @@ impl Server {
                 let result = self.engine_lock().select_candidate(&p.session_id, p.index);
                 // 入力中の候補を選んだあとは、残った読みの候補を作り直す
                 self.maybe_schedule_composing_candidates(&p.session_id);
+                self.maybe_schedule_retro_review(&p.session_id);
                 to_value(result)
             }
             method::RECONVERT => {

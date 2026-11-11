@@ -14,8 +14,8 @@ use nagi_profile::{
     MemoryPressure, Profile, SystemInfo, Thermal, initial_profile, initial_profile_with_budget,
 };
 use nagi_protocol::methods::{
-    InputMethod, MemoryPressureState, NotifyLevel, SetEnvironmentParams, StatusResult,
-    ThermalState, UpdateCandidatesParams, UpdatePreeditParams,
+    InputMethod, MemoryPressureState, NotifyLevel, RetroReviewParams, SetEnvironmentParams,
+    StatusResult, ThermalState, UpdateCandidatesParams, UpdatePreeditParams,
 };
 use nagi_protocol::view::CandidateSource;
 use std::path::PathBuf;
@@ -271,6 +271,8 @@ pub struct Runtime {
     /// ライブ変換等の非同期な preedit 更新（`update_preedit` 通知になる）
     preedit_updates: Mutex<Vec<UpdatePreeditParams>>,
     candidate_updates: Mutex<Vec<UpdateCandidatesParams>>,
+    /// 確定後の遡及再評価の修正候補（`retro_review` 通知になる）
+    retro_updates: Mutex<Vec<RetroReviewParams>>,
     /// イベントが積まれたときに呼ぶフック（`Server::run` が非同期通知の配信に使う）。
     /// `Box<dyn Fn() + Send + Sync>` なので中身は任意（チャンネルへの送信等）
     event_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -355,6 +357,7 @@ impl Runtime {
             events: Mutex::new(Vec::new()),
             preedit_updates: Mutex::new(Vec::new()),
             candidate_updates: Mutex::new(Vec::new()),
+            retro_updates: Mutex::new(Vec::new()),
             event_hook: Mutex::new(None),
             config_path: Mutex::new(None),
             config_error: AtomicBool::new(false),
@@ -486,6 +489,22 @@ impl Runtime {
             q.push(params);
         }
         self.fire_event_hook();
+    }
+
+    /// 遡及再評価の修正候補を積む（バックグラウンドで求めたものをフロントへ届ける）
+    pub fn push_retro_review(&self, params: RetroReviewParams) {
+        if let Ok(mut q) = self.retro_updates.lock() {
+            q.push(params);
+        }
+        self.fire_event_hook();
+    }
+
+    /// 積まれた遡及再評価の修正候補を取り出す
+    pub fn drain_retro_reviews(&self) -> Vec<RetroReviewParams> {
+        self.retro_updates
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
     }
 
     /// 積まれた候補の更新を取り出す
@@ -977,6 +996,18 @@ impl Runtime {
         if let Ok(mut l) = self.learner.lock() {
             l.record(reading, surface, context_hash, "conv", Self::unix_now());
         }
+    }
+
+    /// `reading` の学習済みの表記ごとの確定回数の合計。学習が無効なら空
+    pub fn learn_counts(&self, reading: &str) -> Vec<(String, u32)> {
+        let enabled = self.tunables.read().is_ok_and(|t| t.learning_enabled);
+        if !enabled {
+            return Vec::new();
+        }
+        self.learner
+            .lock()
+            .map(|l| l.counts_for_reading(reading))
+            .unwrap_or_default()
     }
 
     /// 学習済みの候補（スコア降順の (表記, スコア)）。学習が無効なら空

@@ -4,6 +4,32 @@
 
 import Foundation
 
+/// `accept_retro_review` メソッドのパラメータ
+public struct AcceptRetroReviewParams: Codable {
+	/// セッション ID
+	public let session_id: String
+	/// 採用する候補のインデックス（直近の `retro_review` 通知の `candidates` の位置）
+	public let index: UInt32
+
+	public init(session_id: String, index: UInt32) {
+		self.session_id = session_id
+		self.index = index
+	}
+}
+
+/// `accept_retro_review` メソッドの応答
+public struct AcceptRetroReviewResult: Codable {
+	/// 直前の確定文字列のうち、置き換える長さ（UTF-16 コード単位。カーソルの手前から数える）
+	public let replace_len_utf16: UInt32
+	/// 置き換える文字列。空なら有効な候補が無いので何もしない（すでに無効になった・範囲外）
+	public let text: String
+
+	public init(replace_len_utf16: UInt32, text: String) {
+		self.replace_len_utf16 = replace_len_utf16
+		self.text = text
+	}
+}
+
 /// 候補の出所（出元のモデル・辞書等）
 public enum CandidateSource: String, Codable {
 	/// 学習キャッシュ
@@ -405,13 +431,18 @@ public struct ServerCapabilities: Codable {
 	/// 曖昧入力の採用状況（`get_fuzzy_stats`）に対応しているか。古いサーバーは省略する
 	/// （省略は非対応と同じ）
 	public let fuzzy_stats: Bool?
+	/// 確定後の遡及再評価（`retro_review` 通知・`accept_retro_review`）に対応しているか。
+	/// 古いサーバーは省略する（省略は非対応と同じ）。実際に通知が来るかは設定
+	/// `input.fuzzy.retro_review` による
+	public let retro_review: Bool?
 
-	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool, suppression: Bool?, fuzzy_stats: Bool?) {
+	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool, suppression: Bool?, fuzzy_stats: Bool?, retro_review: Bool?) {
 		self.reconvert = reconvert
 		self.live_conversion = live_conversion
 		self.style_conversion = style_conversion
 		self.suppression = suppression
 		self.fuzzy_stats = fuzzy_stats
+		self.retro_review = retro_review
 	}
 }
 
@@ -1209,6 +1240,43 @@ public struct RestoreSessionParams: Codable {
 		self.cursor = cursor
 		self.focus = focus
 		self.converting = converting
+	}
+}
+
+/// 確定後の遡及再評価の修正候補 1 件
+public struct RetroReviewCandidate: Codable {
+	/// 補正後の読み（ひらがな）
+	public let reading: String
+	/// 補正後の表記（直前に確定した文字列と置き換える文字列）
+	public let surface: String
+
+	public init(reading: String, surface: String) {
+		self.reading = reading
+		self.surface = surface
+	}
+}
+
+/// `retro_review` 通知のパラメータ（C→F）: 直前に確定した文節が打ち間違いだった可能性の修正候補。
+/// 確定済みの文字列の置換はフロントが行う（`accept_retro_review` が置換する文字列を返す）。
+/// 確定の取り消し・カーソル移動・次の確定・フォーカス喪失などで候補は無効になる
+public struct RetroReviewParams: Codable {
+	/// セッション ID
+	public let session_id: String
+	/// リビジョン番号（古い通知は捨てる）
+	public let revision: UInt32
+	/// 直前に確定した文字列（置換される側）
+	public let original_surface: String
+	/// 置換される文字列の長さ（UTF-16 コード単位）
+	public let replace_len_utf16: UInt32
+	/// 修正候補（良い順）
+	public let candidates: [RetroReviewCandidate]
+
+	public init(session_id: String, revision: UInt32, original_surface: String, replace_len_utf16: UInt32, candidates: [RetroReviewCandidate]) {
+		self.session_id = session_id
+		self.revision = revision
+		self.original_surface = original_surface
+		self.replace_len_utf16 = replace_len_utf16
+		self.candidates = candidates
 	}
 }
 

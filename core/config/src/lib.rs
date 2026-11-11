@@ -409,6 +409,10 @@ pub struct FuzzySection {
     /// 自動採用の閾値（再採点後の `lmScore - channelCost` の、補正候補と入力そのままの差。
     /// 自然対数の単位で整数。大きいほど慎重）。1〜30。既定: 8。
     pub auto_apply_margin: u32,
+    /// 文節の確定直後に次の読みが入力され始めたとき、後ろの読みとの結合から直前の確定が
+    /// 打ち間違いだった可能性を再評価し、修正候補を控えめに提案するか。既定: false。
+    /// `enabled` が false のときは効かない。
+    pub retro_review: bool,
 }
 
 /// `input.fuzzy.kinds` の既定値（全種類）。
@@ -427,6 +431,7 @@ impl Default for FuzzySection {
             rescore: false,
             auto_apply: false,
             auto_apply_margin: 8,
+            retro_review: false,
         }
     }
 }
@@ -1333,6 +1338,7 @@ const FUZZY_KEYS: &[&str] = &[
     "rescore",
     "auto_apply",
     "auto_apply_margin",
+    "retro_review",
 ];
 
 /// `[input.auto_english]` の既知キー。

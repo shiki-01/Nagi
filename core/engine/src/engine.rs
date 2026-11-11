@@ -18,9 +18,9 @@ use crate::observer::{CommitContext, CommitObserver, CommittedSegment};
 use crate::touch;
 use nagi_protocol::key::{KeyEvent, KeyKind};
 use nagi_protocol::methods::{
-    FlickDetail, GlideInputParams, KanaKey, KeyGesture, ProcessKeyResult, ReadingInput,
-    RestoreSessionParams, SetContextParams, SetLayoutGeometryParams, TouchAction, TouchDirection,
-    TouchPoint,
+    AcceptRetroReviewResult, FlickDetail, GlideInputParams, KanaKey, KeyGesture, ProcessKeyResult,
+    ReadingInput, RestoreSessionParams, RetroReviewCandidate, RetroReviewParams, SetContextParams,
+    SetLayoutGeometryParams, TouchAction, TouchDirection, TouchPoint,
 };
 use nagi_protocol::utf16;
 use nagi_protocol::view::{CandidateView, CandidatesView, InputMode, PreeditView};
@@ -138,6 +138,10 @@ pub struct EngineConfig {
     /// 曖昧入力（`input.fuzzy.enabled`）。ローマ字の取りこぼしが混ざる入力にも入力中の候補と
     /// Space 変換の候補を出し、補正の候補（出所 `Fuzzy`）を混ぜられるようにする
     pub fuzzy_input: bool,
+    /// 確定後の遡及再評価（`input.fuzzy.retro_review`。`input.fuzzy.enabled` も有効なときだけ）。
+    /// 直前に確定した文節を最大 2 件だけメモリ上に持ち、続きの読みが始まったら
+    /// 修正候補をバックエンドに問い合わせる
+    pub retro_review: bool,
     /// グライド入力（`input.glide`）。有効なときだけ `glide_input` がなぞり軌跡を認識する
     pub glide_input: bool,
     /// アプリごとの既定モード・素通し（`[apps]`）
@@ -167,6 +171,7 @@ impl Default for EngineConfig {
             dakuten_order: touch::DakutenOrder::default(),
             romaji_carryover: true,
             fuzzy_input: false,
+            retro_review: false,
             glide_input: false,
             apps: AppsConfig::default(),
             auto_english: AutoEnglishMode::default(),
@@ -300,7 +305,53 @@ struct Session {
     /// この入力エピソード（確定または入力の破棄まで）で提示済みの曖昧入力の補正候補
     /// （打った読み, 補正後の読み）。観測の二重計上を避けるためで、Direct に戻ると空にする
     fuzzy_shown: HashSet<(String, String)>,
+    /// 直近に確定した日本語の文節（最大 2 件、古い順。確定後の遡及再評価用。メモリ上だけで、
+    /// ディスクにもログにも出さない）。次の確定・取り消し・カーソル移動・フォーカス喪失・
+    /// モード切替・状態のリセット・secure input で破棄する
+    recent_commits: Vec<RecentCommit>,
+    /// このキー処理の中で、確定が `recent_commits` に記録された（`finish` が読んで消費する。
+    /// 記録を経ない確定が起きたら、古い記録を捨てるために使う）
+    retro_fresh: bool,
+    /// 直近に通知した遡及再評価の修正候補（`accept_retro_review` で採用できる）
+    retro_offer: Option<RetroOffer>,
 }
+
+/// 確定後の遡及再評価の対象にする、直近に確定した文節
+#[derive(Debug, Clone)]
+struct RecentCommit {
+    /// 読み（ひらがな）
+    reading: String,
+    /// 確定した表記
+    surface: String,
+    /// 確定時点の左文脈
+    left_context: String,
+    /// 確定した表記の UTF-16 コード単位の長さ
+    len_utf16: u32,
+    /// すでに修正候補を問い合わせた（同じ確定に対しては 1 回だけ）
+    reviewed: bool,
+}
+
+/// 通知した遡及再評価の修正候補（採用されたら学習に回す）
+#[derive(Debug, Clone)]
+struct RetroOffer {
+    /// 確定した文節の読み
+    prev_reading: String,
+    /// 確定した表記
+    prev_surface: String,
+    /// 確定時点の左文脈
+    left_context: String,
+    /// 確定した表記の UTF-16 コード単位の長さ
+    len_utf16: u32,
+    /// 修正候補（補正後の読み, 表記）
+    candidates: Vec<(String, String)>,
+}
+
+/// 保持する直近の確定の最大件数
+const RECENT_COMMITS_MAX: usize = 2;
+/// 遡及再評価を始める、続きの読みの最小文字数
+const RETRO_MIN_NEXT_CHARS: usize = 2;
+/// 遡及再評価の修正候補の最大数
+const RETRO_LIMIT: usize = 3;
 
 /// 入力中（変換前）の候補 1 つ
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -491,6 +542,11 @@ pub struct Engine {
     /// フロントが「読みの接頭辞だけを置き換える候補」への対応を宣言したか（`initialize` の
     /// `capabilities.partial_suggestions`。設定の再読み込みでは変わらない）
     partial_suggestions: bool,
+}
+
+/// ひらがな（小書き・濁点つきを含む）と長音符か
+fn is_hiragana_char(c: char) -> bool {
+    matches!(c, '\u{3041}'..='\u{3096}' | 'ー')
 }
 
 fn tail_chars(s: &str, n: usize) -> String {
@@ -690,6 +746,9 @@ impl Engine {
             passthrough_run: false,
             mode_touched: false,
             fuzzy_shown: HashSet::new(),
+            recent_commits: Vec::new(),
+            retro_fresh: false,
+            retro_offer: None,
         }
     }
 
@@ -711,6 +770,10 @@ impl Engine {
         sess.touch_toggle = None;
         let mut commit = String::new();
         let consumed = self.handle_key(&mut sess, key, &mut commit);
+        // アプリに渡るキー（カーソル移動・削除・改行など）は、直前の確定との隣接を崩す
+        if !consumed && key.kind != KeyKind::FlagsChanged {
+            Self::discard_recent_commits(&mut sess);
+        }
         self.remember_mode(&mut sess);
         let result = self.finish(&mut sess, consumed, commit);
         self.sessions.insert(session_id.to_string(), sess);
@@ -948,6 +1011,9 @@ impl Engine {
             }
             None => false,
         };
+        if !consumed {
+            Self::discard_recent_commits(&mut sess);
+        }
         self.remember_mode(&mut sess);
         let result = self.finish(&mut sess, consumed, commit);
         self.sessions.insert(session_id.to_string(), sess);
@@ -1160,6 +1226,7 @@ impl Engine {
         // フォーカスを離れたら文脈は続かない（次語予測を出さない）
         sess.last_word = None;
         sess.next_words.clear();
+        Self::discard_recent_commits(&mut sess);
         let result = self.finish(&mut sess, true, commit);
         self.sessions.insert(session_id.to_string(), sess);
         result
@@ -1173,6 +1240,7 @@ impl Engine {
         sess.composer.clear();
         sess.last_word = None;
         sess.next_words.clear();
+        Self::discard_recent_commits(&mut sess);
         let result = self.finish(&mut sess, true, String::new());
         self.sessions.insert(session_id.to_string(), sess);
         result
@@ -2200,18 +2268,21 @@ impl Engine {
             sess.app_id = Some(app.clone());
             sess.last_word = None;
             sess.next_words.clear();
+            Self::discard_recent_commits(&mut sess);
         }
         if let Some(secure) = ctx.secure_input {
             if secure != sess.secure_input {
                 // secure input の出入りをまたいで、確定した語を持ち越さない
                 sess.last_word = None;
                 sess.next_words.clear();
+                Self::discard_recent_commits(&mut sess);
             }
             sess.secure_input = secure;
             if secure {
                 sess.left_context.clear();
                 sess.last_word = None;
                 sess.next_words.clear();
+                Self::discard_recent_commits(&mut sess);
             }
         }
         if !sess.secure_input
@@ -2228,6 +2299,15 @@ impl Engine {
             {
                 sess.last_word = None;
                 sess.next_words.clear();
+            }
+            // カーソルが直前の確定の直後に無ければ（移動した・別の場所で編集した）、遡及再評価の対象から外す。
+            // 入力中の読みがカーソルの手前に含まれて渡るフロントもあるので、それを除いても照合する
+            if let Some(last) = sess.recent_commits.last() {
+                let preedit = sess.composer.text();
+                let stripped = before.strip_suffix(preedit.as_str()).unwrap_or(&before);
+                if !before.ends_with(&last.surface) && !stripped.ends_with(&last.surface) {
+                    Self::discard_recent_commits(&mut sess);
+                }
             }
         }
         let mut result = None;
@@ -2835,6 +2915,7 @@ impl Engine {
                         if !rest.is_empty() || !v.tail.is_empty() {
                             // 未変換のかなが続くので、最後の語は変換済みの語ではない
                             sess.last_word = None;
+                            Self::discard_recent_commits(sess);
                         }
                         commit.push_str(rest);
                     }
@@ -2985,11 +3066,244 @@ impl Engine {
         let Some(last) = sess.last_commit.take() else {
             return false;
         };
+        Self::discard_recent_commits(sess);
         let len = last.pieces.iter().map(|p| p.text.chars().count()).sum();
         sess.composer.load_pieces(&last.pieces, len);
         sess.state = State::Composing;
         sess.pending_delete_before = Some(last.committed_len_utf16);
         true
+    }
+
+    // ---- 確定後の遡及再評価（`input.fuzzy.retro_review`） ----
+
+    /// 直近の確定の記録と、通知済みの修正候補を捨てる
+    fn discard_recent_commits(sess: &mut Session) {
+        sess.recent_commits.clear();
+        sess.retro_offer = None;
+    }
+
+    /// 遡及再評価を使ってよい状況か（設定が有効で、secure input でなく、学習を止める状況でもない）
+    fn retro_allowed(&self, sess: &Session) -> bool {
+        if !self.config.retro_review || sess.secure_input {
+            return false;
+        }
+        match &self.observer {
+            Some(observer) => observer.allows_retro_review(&CommitContext {
+                session_id: &sess.id,
+                app_id: sess.app_id.as_deref(),
+                secure_input: sess.secure_input,
+            }),
+            None => true,
+        }
+    }
+
+    /// 確定した文節のうち、末尾の連続した「日本語の変換結果」を直近の確定として記録する
+    /// （前回の記録は置き換える）。ひらがな・カタカナのままの確定・記号・曖昧入力の補正候補・
+    /// Literal・Fixed・Styled は対象外で、対象外の文節があればそこまでの記録は捨てる
+    /// （続きの入力と隣り合っていないため）
+    fn record_recent_commits(&self, sess: &mut Session, committed: &[Segment]) {
+        sess.retro_fresh = true;
+        Self::discard_recent_commits(sess);
+        if !self.retro_allowed(sess) {
+            return;
+        }
+        let mut left = sess.left_context.clone();
+        let mut run: Vec<RecentCommit> = Vec::new();
+        for seg in committed {
+            let left_context = tail_chars(&left, LEFT_CONTEXT_CHARS);
+            left.push_str(&seg.surface);
+            if Self::retro_eligible(seg) {
+                run.push(RecentCommit {
+                    reading: seg.reading.clone(),
+                    surface: seg.surface.clone(),
+                    left_context,
+                    len_utf16: utf16::utf16_len(&seg.surface),
+                    reviewed: false,
+                });
+            } else {
+                run.clear();
+            }
+        }
+        let skip = run.len().saturating_sub(RECENT_COMMITS_MAX);
+        sess.recent_commits = run.split_off(skip);
+    }
+
+    /// 遡及再評価の対象になる文節か: 日本語の変換結果（読みがひらがな、表記が読みのままでもカタカナでもない）で、
+    /// 選んだ候補が辞書・学習・LLM 由来のもの
+    fn retro_eligible(seg: &Segment) -> bool {
+        if seg.kind != SegmentKind::Japanese
+            || seg.reading.is_empty()
+            || !seg.reading.chars().all(is_hiragana_char)
+            || seg.surface == seg.reading
+            || seg.surface == to_katakana(&seg.reading)
+        {
+            return false;
+        }
+        let chosen = seg
+            .candidates
+            .as_ref()
+            .and_then(|set| set.items.iter().find(|c| c.surface == seg.surface));
+        chosen.is_none_or(|c| {
+            !c.sources.is_empty()
+                && c.sources.iter().any(|s| {
+                    !matches!(
+                        s,
+                        CandidateSource::Kana
+                            | CandidateSource::Rewriter
+                            | CandidateSource::Fuzzy
+                            | CandidateSource::Glide
+                    )
+                })
+        })
+    }
+
+    /// 遡及再評価の続きの読み: 直前の確定のすぐ後に入力中の読み（ひらがなのみ、保留のローマ字なし）が
+    /// あり、2 文字以上で、その確定をまだ見直していないときだけ `Some`
+    fn retro_next_reading(&self, sess: &Session) -> Option<String> {
+        if !self.retro_allowed(sess) || !matches!(sess.state, State::Composing) {
+            return None;
+        }
+        let last = sess.recent_commits.last()?;
+        if last.reviewed || sess.composer.has_pending() {
+            return None;
+        }
+        let pieces = sess.composer.pieces();
+        if pieces.is_empty() || pieces.iter().any(|p| p.kind != PieceKind::Japanese) {
+            return None;
+        }
+        let reading: String = pieces.iter().map(|p| p.text.as_str()).collect();
+        (reading.chars().count() >= RETRO_MIN_NEXT_CHARS && reading.chars().all(is_hiragana_char))
+            .then_some(reading)
+    }
+
+    /// 遡及再評価を問い合わせる対象の、続きの読み（サーバーが予約の要否を決めるのに使う）。
+    /// 対象でなければ `None`
+    pub fn retro_review_reading(&self, session_id: &str) -> Option<String> {
+        let sess = self.sessions.get(session_id)?;
+        self.retro_next_reading(sess)
+    }
+
+    /// 確定後の遡及再評価: 直前の確定に対する修正候補をバックエンドに問い合わせる。
+    /// `reading` は [`Self::retro_review_reading`] の値で、入力が変わっていれば何もしない。
+    /// 問い合わせは同じ確定に対して 1 回だけ（結果が空でも再計算しない）。候補があれば通知の内容を返す
+    pub fn retro_review(&mut self, session_id: &str, reading: &str) -> Option<RetroReviewParams> {
+        let mut sess = self.take_session(session_id);
+        let params = self.retro_review_inner(&mut sess, reading);
+        self.sessions.insert(session_id.to_string(), sess);
+        params
+    }
+
+    fn retro_review_inner(&self, sess: &mut Session, reading: &str) -> Option<RetroReviewParams> {
+        if self.retro_next_reading(sess).as_deref() != Some(reading) {
+            return None;
+        }
+        let last = sess.recent_commits.last_mut()?;
+        last.reviewed = true;
+        let last = last.clone();
+        let found = self.backend.retro_candidates(
+            &last.reading,
+            &last.surface,
+            reading,
+            &last.left_context,
+            RETRO_LIMIT,
+        );
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for c in found {
+            let Some(r) = c.reading else { continue };
+            if c.surface != last.surface && !candidates.iter().any(|(_, s)| *s == c.surface) {
+                candidates.push((r, c.surface));
+            }
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        // 提示された補正として採用状況に数える（同じ読みの組は `fuzzy_shown` で二重計上しない）
+        if let Some(observer) = &self.observer {
+            let ctx = CommitContext {
+                session_id: &sess.id,
+                app_id: sess.app_id.as_deref(),
+                secure_input: sess.secure_input,
+            };
+            for (r, _) in &candidates {
+                observer.on_fuzzy_shown(&ctx, &last.reading, r);
+            }
+        }
+        let params = RetroReviewParams {
+            session_id: sess.id.clone(),
+            revision: sess.revision as u32,
+            original_surface: last.surface.clone(),
+            replace_len_utf16: last.len_utf16,
+            candidates: candidates
+                .iter()
+                .map(|(reading, surface)| RetroReviewCandidate {
+                    reading: reading.clone(),
+                    surface: surface.clone(),
+                })
+                .collect(),
+        };
+        sess.retro_offer = Some(RetroOffer {
+            prev_reading: last.reading,
+            prev_surface: last.surface,
+            left_context: last.left_context,
+            len_utf16: last.len_utf16,
+            candidates,
+        });
+        Some(params)
+    }
+
+    /// `accept_retro_review` メソッド: 直近に通知した修正候補の `index` 番目を採用する。
+    /// 採用した補正後の `(読み, 表記)` を通常の確定と同じ扱いで学習に回し、置換する文字列を返す
+    /// （フロントが直前の確定文字列をこの文字列で置き換える）。有効な候補が無い・範囲外なら
+    /// `text` が空の結果を返し、何も変えない
+    pub fn accept_retro_review(&mut self, session_id: &str, index: u32) -> AcceptRetroReviewResult {
+        let mut sess = self.take_session(session_id);
+        let result = self.accept_retro_inner(&mut sess, index as usize);
+        self.sessions.insert(session_id.to_string(), sess);
+        result
+    }
+
+    fn accept_retro_inner(&self, sess: &mut Session, index: usize) -> AcceptRetroReviewResult {
+        let none = AcceptRetroReviewResult {
+            replace_len_utf16: 0,
+            text: String::new(),
+        };
+        if sess.secure_input || !self.config.retro_review {
+            return none;
+        }
+        let Some(offer) = sess.retro_offer.take() else {
+            return none;
+        };
+        let Some((reading, surface)) = offer.candidates.get(index).cloned() else {
+            sess.retro_offer = Some(offer);
+            return none;
+        };
+        if let Some(observer) = &self.observer {
+            let ctx = CommitContext {
+                session_id: &sess.id,
+                app_id: sess.app_id.as_deref(),
+                secure_input: sess.secure_input,
+            };
+            observer.on_commit(
+                &ctx,
+                &[CommittedSegment {
+                    reading: reading.clone(),
+                    surface: surface.clone(),
+                    kind: SegmentKind::Japanese,
+                    left_context: offer.left_context.clone(),
+                    prev_word: String::new(),
+                }],
+            );
+            observer.on_fuzzy_adopted(&ctx, &offer.prev_reading, &reading);
+        }
+        // 直前の語は置き換えた表記になる（続きの確定のバイグラムの文脈）
+        if sess.last_word.as_deref() == Some(offer.prev_surface.as_str()) {
+            sess.last_word = Some(surface.clone());
+        }
+        sess.recent_commits.clear();
+        AcceptRetroReviewResult {
+            replace_len_utf16: offer.len_utf16,
+            text: surface,
+        }
     }
 
     /// 提示された曖昧入力の補正候補が選ばれて確定されたことを observer へ通知する
@@ -3024,6 +3338,7 @@ impl Engine {
             };
         }
         sess.last_word = (!prev.is_empty() && !secure).then_some(prev);
+        self.record_recent_commits(sess, committed);
         let Some(observer) = &self.observer else {
             return;
         };
@@ -4234,6 +4549,11 @@ impl Engine {
 
     /// 前回返した状態との差分を `ProcessKeyResult` にまとめる
     fn finish(&self, sess: &mut Session, consumed: bool, commit: String) -> ProcessKeyResult {
+        // 記録を経ない確定（ひらがなのまま等）・モード切替は、直前の確定との隣接を崩す
+        let recorded = std::mem::take(&mut sess.retro_fresh);
+        if (!commit.is_empty() && !recorded) || sess.mode != sess.sent.mode {
+            Self::discard_recent_commits(sess);
+        }
         self.refresh_next_words(sess, consumed, !commit.is_empty());
         if matches!(sess.state, State::Direct) {
             sess.passthrough_run = false;

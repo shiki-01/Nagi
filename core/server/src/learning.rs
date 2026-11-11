@@ -49,6 +49,10 @@ impl CommitObserver for LearningObserver {
         }
     }
 
+    fn allows_retro_review(&self, ctx: &CommitContext<'_>) -> bool {
+        self.runtime.learning_allowed(ctx.secure_input, ctx.app_id)
+    }
+
     fn on_fuzzy_shown(&self, ctx: &CommitContext<'_>, typed: &str, corrected: &str) {
         self.runtime
             .fuzzy_record_shown(ctx.secure_input, ctx.app_id, typed, corrected);

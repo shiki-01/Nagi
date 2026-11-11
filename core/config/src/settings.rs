@@ -474,6 +474,13 @@ pub fn definitions() -> Vec<SettingDef> {
             SettingKind::Bool,
         ),
         def(
+            "input.fuzzy.retro_review",
+            "入力",
+            "確定した直後の打ち間違いを見直す",
+            "文節を確定したあと、続きの読みを打ち始めた時点で、直前に確定した文節が打ち間違いだった可能性を見直し、修正候補を控えめに出します。曖昧入力が有効なときだけ働きます。確定した内容はメモリ上にだけ短時間保持し、保存しません。",
+            SettingKind::Bool,
+        ),
+        def(
             "learning.enabled",
             "学習",
             "学習する",
@@ -718,6 +725,7 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "input.fuzzy.use_touch_coords" => Some(Bool(config.input.fuzzy.use_touch_coords)),
         "input.fuzzy.misspellings" => Some(Bool(config.input.fuzzy.misspellings)),
         "input.fuzzy.personalize" => Some(Bool(config.input.fuzzy.personalize)),
+        "input.fuzzy.retro_review" => Some(Bool(config.input.fuzzy.retro_review)),
         "rewriter.emoji" => Some(Bool(config.rewriter.emoji)),
         "rewriter.kaomoji" => Some(Bool(config.rewriter.kaomoji)),
         "convert.calculator" => Some(Bool(config.convert.calculator)),
@@ -1210,6 +1218,7 @@ mod tests {
             ("input.fuzzy.kinds", SettingLevel::Detail),
             ("input.fuzzy.misspellings", SettingLevel::Detail),
             ("input.fuzzy.personalize", SettingLevel::Detail),
+            ("input.fuzzy.retro_review", SettingLevel::Detail),
         ] {
             assert_eq!(get(key).level, level, "{key}");
             assert_eq!(get(key).platforms, SettingPlatforms::Both, "{key}");

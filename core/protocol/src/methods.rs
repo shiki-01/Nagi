@@ -38,6 +38,10 @@ pub mod method {
     pub const LIST_SUPPRESSED: &str = "list_suppressed";
     /// `get_fuzzy_stats` メソッド（曖昧入力の「もしかして」候補の採用状況。振り返りの表示用）
     pub const GET_FUZZY_STATS: &str = "get_fuzzy_stats";
+    /// `retro_review` 通知（C→F。確定した直後の文節の修正候補。`input.fuzzy.retro_review`）
+    pub const RETRO_REVIEW: &str = "retro_review";
+    /// `accept_retro_review` メソッド（`retro_review` の修正候補の採用。置換する文字列を返す）
+    pub const ACCEPT_RETRO_REVIEW: &str = "accept_retro_review";
     /// `get_key_table` メソッド（タッチ入力: 12 キーの文字表と濁点・小書きの循環）
     pub const GET_KEY_TABLE: &str = "get_key_table";
     /// `unload_model` メソッド（変換モデルだけをメモリから解放し、辞書のみで動く状態にする）
@@ -138,6 +142,11 @@ pub struct ServerCapabilities {
     /// （省略は非対応と同じ）
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub fuzzy_stats: Option<bool>,
+    /// 確定後の遡及再評価（`retro_review` 通知・`accept_retro_review`）に対応しているか。
+    /// 古いサーバーは省略する（省略は非対応と同じ）。実際に通知が来るかは設定
+    /// `input.fuzzy.retro_review` による
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub retro_review: Option<bool>,
 }
 
 /// `initialize` メソッドの応答
@@ -896,6 +905,54 @@ pub struct FuzzyStatsItem {
 pub struct GetFuzzyStatsResult {
     /// 種類ごとの採用状況（記録のある種類だけ。種類の名前順）
     pub items: Vec<FuzzyStatsItem>,
+}
+
+/// 確定後の遡及再評価の修正候補 1 件
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetroReviewCandidate {
+    /// 補正後の読み（ひらがな）
+    pub reading: String,
+    /// 補正後の表記（直前に確定した文字列と置き換える文字列）
+    pub surface: String,
+}
+
+/// `retro_review` 通知のパラメータ（C→F）: 直前に確定した文節が打ち間違いだった可能性の修正候補。
+/// 確定済みの文字列の置換はフロントが行う（`accept_retro_review` が置換する文字列を返す）。
+/// 確定の取り消し・カーソル移動・次の確定・フォーカス喪失などで候補は無効になる
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetroReviewParams {
+    /// セッション ID
+    pub session_id: String,
+    /// リビジョン番号（古い通知は捨てる）
+    pub revision: u32,
+    /// 直前に確定した文字列（置換される側）
+    pub original_surface: String,
+    /// 置換される文字列の長さ（UTF-16 コード単位）
+    pub replace_len_utf16: u32,
+    /// 修正候補（良い順）
+    pub candidates: Vec<RetroReviewCandidate>,
+}
+
+/// `accept_retro_review` メソッドのパラメータ
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptRetroReviewParams {
+    /// セッション ID
+    pub session_id: String,
+    /// 採用する候補のインデックス（直近の `retro_review` 通知の `candidates` の位置）
+    pub index: u32,
+}
+
+/// `accept_retro_review` メソッドの応答
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptRetroReviewResult {
+    /// 直前の確定文字列のうち、置き換える長さ（UTF-16 コード単位。カーソルの手前から数える）
+    pub replace_len_utf16: u32,
+    /// 置き換える文字列。空なら有効な候補が無いので何もしない（すでに無効になった・範囲外）
+    pub text: String,
 }
 
 /// `import_user_dict` メソッドの応答

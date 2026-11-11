@@ -170,6 +170,29 @@ pub trait ConversionBackend: Send + Sync {
         None
     }
 
+    /// 確定後の遡及再評価（`input.fuzzy.retro_review`）: 直前に確定した文節（読み `prev_reading`、
+    /// 表記 `prev_surface`）が打ち間違いだった可能性を、続きの読み `next_reading` との結合で見直し、
+    /// 修正候補（出所 [`CandidateSource::Fuzzy`]、`reading` は補正後の読み、`surface` は補正後の表記。
+    /// 良い順、最大 `limit` 件）を返す。`left_context` は確定時点の左文脈。無効・既知の語・
+    /// 根拠が弱いときは空（既定実装は非対応）
+    fn retro_candidates(
+        &self,
+        prev_reading: &str,
+        prev_surface: &str,
+        next_reading: &str,
+        left_context: &str,
+        limit: usize,
+    ) -> Vec<BackendCandidate> {
+        let _ = (
+            prev_reading,
+            prev_surface,
+            next_reading,
+            left_context,
+            limit,
+        );
+        Vec::new()
+    }
+
     /// グライド入力: QWERTY 上のなぞり軌跡 `points`（`geometry` のキー矩形と同じ座標系）から、
     /// 読み（ひらがな）の候補を良い順に最大 `limit` 件。表記への変換は呼び出し側（engine）が
     /// `convert_sentence` などで行う。認識できない・非対応なら空（既定実装は非対応）

@@ -1422,6 +1422,58 @@ impl ConversionBackend for Pipeline {
             .collect()
     }
 
+    fn retro_candidates(
+        &self,
+        prev_reading: &str,
+        prev_surface: &str,
+        next_reading: &str,
+        _left_context: &str,
+        limit: usize,
+    ) -> Vec<BackendCandidate> {
+        let eff = self.runtime.effective();
+        let Some(dict) = &self.dict else {
+            return Vec::new();
+        };
+        if !eff.fuzzy.enabled || !eff.fuzzy.retro_review {
+            return Vec::new();
+        }
+        let overlay = self.runtime.overlay();
+        // 直前の確定自身が学習に 1 回記録されているので、それを除いて既知かを見る
+        // （別の表記で学習済み、または同じ表記を過去にも確定している、またはユーザー辞書・スニペット）
+        let known = !overlay.lookup(prev_reading).is_empty()
+            || !overlay.snippets(prev_reading).is_empty()
+            || self
+                .runtime
+                .learn_counts(prev_reading)
+                .iter()
+                .any(|(surface, count)| {
+                    if surface == prev_surface {
+                        *count >= 2
+                    } else {
+                        *count >= 1
+                    }
+                });
+        self.fuzzy_engine()
+            .retro_review(
+                dict,
+                &overlay,
+                prev_reading,
+                prev_surface,
+                next_reading,
+                &eff.fuzzy,
+                known,
+                eff.sync_budget,
+            )
+            .into_iter()
+            .take(limit)
+            .map(|s| BackendCandidate {
+                surface: s.surface,
+                sources: vec![CandidateSource::Fuzzy],
+                reading: Some(s.reading),
+            })
+            .collect()
+    }
+
     fn fuzzy_auto_apply(
         &self,
         reading: &str,
