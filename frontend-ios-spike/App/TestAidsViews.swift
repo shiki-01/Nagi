@@ -384,7 +384,8 @@ struct NagiFileInspectorView: View {
             s.iosSettingsInfo = "保存先なし"
         }
 
-        for name in ["learning.tsv", "learning-next.tsv"] {
+        // 曖昧入力の統計（fuzzy_stats.json。件数のみ）・誤り辞書・抑制語の有無とサイズも確認できるようにする
+        for name in ["learning.tsv", "learning-next.tsv", "fuzzy_stats.json", "misspellings.tsv", "suppressed.tsv"] {
             s.others.append("\(name): \(describe(userDir.appendingPathComponent(name)))")
         }
         let dict = userDir.appendingPathComponent("user_dict", isDirectory: true)

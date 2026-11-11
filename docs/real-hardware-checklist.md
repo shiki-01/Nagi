@@ -229,3 +229,51 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] 更新の通知: 旧版の imserver が `/updates/windows/latest.json` を取得し、新版があれば右下のトーストが出る（文言「PowerShell でインストールコマンドを…」）。`update_check.json` による 24 時間の間引き
 - [ ] VC++ 再頒布可能パッケージが無い環境（クリーンな Windows）で、DLL（静的 CRT）は読み込まれ、imserver は警告のうえ起動しない / する（imserver は動的 CRT）
 - [ ] ARM64 Windows（エミュレーション）で x64 の DLL がホストに読み込まれるか（現状は未対応の扱い。`install.ps1` は ARM64 を拒否する）
+
+## 9. 曖昧入力 H-88・H-89（macOS / Windows。コア `0.1.10` 以降）— 未検証
+
+曖昧入力はデスクトップでは既定 OFF。評価の数値は `docs/decisions.md` H-88・H-89。iOS の項目は `docs/ios-device-checklist.md` §5.8。
+
+### 9.0 準備
+
+- 実ユーザーのデータを汚さないよう、`--user-dir` か `NAGI_CONFIG_DIR` を使う（§0）。macOS は `~/Library/Application Support/com.shiki.nagi/`、Windows は `%APPDATA%\Nagi\` が既定の置き場。
+- `config.toml` に次を書く（変更は再読込される。反映されない場合は入力ソースを切り替えて戻す）:
+  ```toml
+  [input.fuzzy]
+  enabled = true
+  strength = "normal"   # 9.5 で gentle / aggressive も試す
+  ```
+- フロントを使わず `imserver` を直接動かす場合は `docs/progress.md` の起動コマンドを参照し、JSON-RPC の呼び出し順は `core/server/tests/suppress.rs`・`tests/fuzzy_stats.rs`・`tests/retro_review.rs` を参照。
+
+### 9.1 もしかして候補
+
+- [ ] 濁点・小書きの付け忘れ（`ありかとう`・`おねかいします`）で、Space 変換の候補に出所「もしかして」（macOS は候補ウィンドウのラベル、Windows は候補ウィンドウの表示）が出る。選ぶと補正後の読みで確定する。
+- [ ] 辞書にある普通の語・文を打っても「もしかして」が出ない（20 文で 0〜2 件）。
+- [ ] ローマ字入力の打ち間違い（`kamji`→感じ）が出る。
+
+### 9.2 誤り辞書
+
+- [ ] 同梱リスト: `ありがとごさいます`・`やぱり`・`びょいん` で、先頭の「もしかして」に正しい変換が出る（`config.toml` で `misspellings = false` にすると出ない）。
+- [ ] 利用者の追記: `<user-dir>/misspellings.tsv` に `てすとよみ<TAB>てすとただしい` の形式（UTF-8、タブ区切り。3〜24 文字のひらがな）を書き、再読込後に出る。不正な行（タブ無し・ひらがな以外）を書くと行番号つきの警告通知（`misspellings_warning`）が出て、他の行は有効のまま。
+
+### 9.3 抑制語（フロントの UI は未実装。imserver の JSON-RPC で確認）
+
+- [ ] `suppress_candidate{reading, surface}` を送ると、その読みの Space 変換候補・文全体の候補からその表記が消える。読みそのまま（ひらがな）の候補は消えない。`list_suppressed` に載り、`<user-dir>/suppressed.tsv` に保存される。`unsuppress_candidate` で戻る。
+- [ ] `suppressed.tsv` を手で編集して再読込しても反映される。学習の全削除では**消えない**。
+
+### 9.4 個人化と統計
+
+- [ ] 「もしかして」を何度か採用/無視したあと、`get_fuzzy_stats` が種類ごとの `shown`/`adopted`/`margin_scale` を返す。`<user-dir>/fuzzy_stats.json` に**読みや表記が含まれない**。`personalize = false` で増えない。学習の全削除（`clear_learning`）でファイルが消える。
+- [ ] secure input（パスワード欄）では件数が増えない。
+
+### 9.5 強さ
+
+- [ ] `gentle` / `normal` / `aggressive` で 9.1 を繰り返し、出る数と誤表示が gentle < normal < aggressive の順になる（誤表示は aggressive でも 20 文で数件まで）。
+
+### 9.6 確定後の見直し（`retro_review`。フロントの表示は未実装）
+
+- [ ] `retro_review = true` にして `すうせい`（辞書にない語の連なり）を変換・確定し、続けて `する` と打つと、`retro_review` 通知（`candidates` に「しゅうせい」など）が届く。`accept_retro_review{index}` が置換テキストを返す。確定を `UndoCommit`・カーソル移動・フォーカス喪失で挟むと通知が出ない。**期待:** クリーンな文では通知がほぼ出ない。出ない場合は結果を記録（評価では正解を含められた率は 10〜25%）。
+
+### 9.7 全体
+
+- [ ] 上記の間、入力の体感の遅さ・クラッシュ・`imserver` の再起動が無い。Windows は §8 の項目も併せて確認する。
