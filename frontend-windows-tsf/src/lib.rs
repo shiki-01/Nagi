@@ -7,6 +7,7 @@
 //!
 //! - [`render`]: 応答 → 編集計画（OS 非依存。Linux でもテストする）
 //! - [`engine`]: エンジン接続のまとめ（OS 非依存。UI スレッドを塞がない起動・短いタイムアウト）
+//! - [`e2e_probe`]: E2E テスト専用の観測プローブ（環境変数 `NAGI_E2E_PROBE` が設定されたときだけ動く）
 //! - [`tsf_log`]: 診断ログ `%LOCALAPPDATA%\Nagi\logs\tsf.log` への追記（入力内容は書かない。H-54）
 //! - Windows のみ: COM/TSF の実装（`dll` / `register` / `text_service` / `edit` / `keys`）。
 //!   `unsafe` はこれらのモジュールに隔離し、`#![allow(unsafe_code)]` で明示している
@@ -33,6 +34,7 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod e2e_probe;
 pub mod engine;
 pub mod render;
 pub mod tsf_log;

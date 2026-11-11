@@ -125,6 +125,7 @@ pub fn run_end_keeping_text(
                 let _ = display_attr::clear(&ctx, ec, &range);
             }
             unsafe { c.EndComposition(ec) }?;
+            crate::e2e_probe::record(Some(""), "");
         }
         Ok(())
     })
@@ -290,8 +291,23 @@ fn apply_plan(
             attrs,
         } => set_preedit(context, ec, env, text, *cursor, attrs, start_at)?,
     }
+    record_probe(plan);
     measure_caret(context, ec, env);
     Ok(())
+}
+
+/// E2E 用プローブへ反映後の状態を出す（`NAGI_E2E_PROBE` 未設定なら何もしない。`e2e_probe` 参照）
+fn record_probe(plan: &EditPlan) {
+    let committed = plan.commit.as_deref().unwrap_or("");
+    let marked = match &plan.preedit {
+        PreeditUpdate::Set { text, .. } => Some(text.as_str()),
+        PreeditUpdate::Clear => Some(""),
+        // 確定は composition を終えるので、preedit が続かなければ未確定は空になる
+        PreeditUpdate::Keep => (!committed.is_empty()).then_some(""),
+    };
+    if marked.is_some() || !committed.is_empty() {
+        crate::e2e_probe::record(marked, committed);
+    }
 }
 
 /// 確定文字列を入れる。composition があればその範囲を置き換えて終了し、無ければ選択位置に挿入する

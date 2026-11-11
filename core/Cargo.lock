@@ -1088,6 +1088,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagi-windows-e2e"
+version = "0.1.10"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "nagi-windows-tsf"
 version = "0.1.10"
 dependencies = [

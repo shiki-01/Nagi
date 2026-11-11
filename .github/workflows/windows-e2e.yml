@@ -1,0 +1,90 @@
+name: Windows UI E2E
+
+# 実際の OS 入力経路（SendInput でキー送出 → TSF → Nagi の IME → テストホストの EDIT）で Windows フロントを検証する。
+# ドライバー: frontend-windows-e2e（nagi-e2e-win）、シナリオ仕様: tests/e2e/README.md、設計: docs/windows-e2e.md。
+#
+# 不確実性（実際に動かすまで分からない。最初の実行は失敗する前提で、artifact の screenshots と tsf.log を見ること）:
+# - 対話デスクトップ: GitHub ホストランナーの windows-latest は、サービスではなくログイン済みの対話セッションで
+#   ステップが動くとされるが、SendInput が前面ウィンドウに届くか・SetForegroundWindow が通るか・GDI の画面キャプチャが
+#   黒くならないかは未確認。ドライバーは前面化できなければ明示のエラーで終了コード 2 を返す。
+# - 入力方式の有効化: ja-JP の言語パックが無い英語環境でも ITfInputProcessorProfileMgr::ActivateProfile
+#   （TF_IPPMF_FORPROCESS）でプロセス内だけ有効にできる想定だが未確認。失敗時は describe の診断（dll_loaded 等）を出す。
+# - regsvr32 は管理者権限が必要（ランナーの既定ユーザーは管理者）。
+# - 変換は決定的にする: LLM なし（imserver を llama feature なしでビルド）、システム辞書なし
+#   （語彙なしの最小辞書 e2e-fixture-data のみ）、ユーザー辞書は tests/e2e/fixtures/user-dir のコピー。
+# - NAGI_E2E_PROBE（TSF 側の観測プローブ）はドライバーが自プロセスの環境にだけ設定する。
+# - 手動実行のみ。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: ui e2e (windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      TARGET: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (rust-toolchain.toml)
+        working-directory: core
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: windows-e2e
+
+      # DLL はホストに読み込まれるので CRT を静的リンクする（windows-release.yml と同じ）
+      - name: TSF の DLL をビルド
+        working-directory: core
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo build --release --target "$TARGET" -p nagi-windows-tsf
+
+      - name: imserver と E2E ドライバーをビルド（LLM なし）
+        working-directory: core
+        run: |
+          cargo build --release --target "$TARGET" -p nagi-server --bin imserver
+          cargo build --release --target "$TARGET" -p nagi-windows-e2e
+
+      - name: 配置（DLL と imserver.exe を同じディレクトリへ）
+        run: |
+          mkdir -p "$RUNNER_TEMP/NagiE2E"
+          cp "core/target/$TARGET/release/nagi_windows_tsf.dll" "$RUNNER_TEMP/NagiE2E/"
+          cp "core/target/$TARGET/release/imserver.exe" "$RUNNER_TEMP/NagiE2E/"
+
+      - name: fixture data（語彙なしの最小辞書）
+        working-directory: core
+        run: cargo xtask e2e-fixture-data --out "$GITHUB_WORKSPACE/e2e-out/fixture-data"
+
+      - name: run E2E
+        run: |
+          mkdir -p e2e-out
+          "core/target/$TARGET/release/nagi-e2e-win.exe" \
+            --dll "$(cygpath -w "$RUNNER_TEMP/NagiE2E/nagi_windows_tsf.dll")" \
+            --scenarios tests/e2e/scenarios \
+            --fixtures tests/e2e/fixtures/user-dir \
+            --data-dir "$GITHUB_WORKSPACE/e2e-out/fixture-data" \
+            --out e2e-out
+
+      # 失敗の原因調査用（入力内容は含まれない診断ログ）
+      - name: 診断ログを集める
+        if: always()
+        run: |
+          mkdir -p e2e-out/logs
+          cp -r "$LOCALAPPDATA/Nagi/logs/." e2e-out/logs/ 2>/dev/null || echo "logs なし"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-e2e
+          path: |
+            e2e-out/results.json
+            e2e-out/screenshots
+            e2e-out/logs

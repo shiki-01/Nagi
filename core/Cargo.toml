@@ -21,6 +21,7 @@ members = [
     "xtask",
     "../frontend-windows",
     "../frontend-windows-tsf",
+    "../frontend-windows-e2e",
 ]
 
 [workspace.package]
