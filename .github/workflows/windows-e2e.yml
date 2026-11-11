@@ -67,6 +67,22 @@ jobs:
         working-directory: core
         run: cargo xtask e2e-fixture-data --out "$GITHUB_WORKSPACE/e2e-out/fixture-data"
 
+      # 仮説: ランナーは英語環境で、ja-JP がユーザーの言語リストに無いと日本語(0x0411)の TIP を
+      # ActivateProfile が拒否する。ja-JP を言語リストに追加する（失敗しても続行。結果は診断として出す）
+      - name: 言語リストに ja-JP を追加（best-effort）
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Write-Host '--- 変更前 ---'
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+          $list = Get-WinUserLanguageList
+          if (-not ($list | Where-Object { $_.LanguageTag -eq 'ja' -or $_.LanguageTag -eq 'ja-JP' })) {
+            $list.Add((New-WinUserLanguageList -Language 'ja-JP')[0])
+          }
+          Set-WinUserLanguageList -LanguageList $list -Force
+          Write-Host '--- 変更後 ---'
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+
       - name: run E2E
         run: |
           mkdir -p e2e-out

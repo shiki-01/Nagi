@@ -15,9 +15,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
-    GUID_TFCAT_TIP_KEYBOARD, ITfCompartmentMgr, ITfInputProcessorProfileMgr, ITfThreadMgr,
-    TF_INPUTPROCESSORPROFILE, TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE, TF_IPPMF_ENABLEPROFILE,
-    TF_IPPMF_FORPROCESS, TF_PROFILETYPE_INPUTPROCESSOR,
+    GUID_TFCAT_TIP_KEYBOARD, ITfCompartmentMgr, ITfInputProcessorProfileMgr,
+    ITfInputProcessorProfiles, ITfThreadMgr, TF_INPUTPROCESSORPROFILE,
+    TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE, TF_IPPMF_ENABLEPROFILE, TF_IPPMF_FORPROCESS,
+    TF_PROFILETYPE_INPUTPROCESSOR,
 };
 use windows::core::{GUID, Interface, w};
 
@@ -37,29 +38,90 @@ fn regsvr32() -> std::path::PathBuf {
     Path::new(&root).join("System32").join("regsvr32.exe")
 }
 
-fn run_regsvr32(args: &[&std::ffi::OsStr]) -> Result<(), String> {
-    let status = Command::new(regsvr32())
-        .args(args)
-        .status()
-        .map_err(|e| format!("regsvr32 を起動できません: {e}"))?;
-    if status.success() {
-        Ok(())
+/// 外部コマンドを実行して「コマンド / 終了コード / 出力」を文字列にする（診断用）
+fn run_capture(program: &std::ffi::OsStr, args: &[&std::ffi::OsStr]) -> (bool, String) {
+    match Command::new(program).args(args).output() {
+        Ok(out) => {
+            let mut text = format!(
+                "$ {} {}\n  exit={:?}\n",
+                program.to_string_lossy(),
+                args.iter()
+                    .map(|a| a.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                out.status.code()
+            );
+            for stream in [&out.stdout, &out.stderr] {
+                let t = String::from_utf8_lossy(stream);
+                if !t.trim().is_empty() {
+                    text.push_str(&t);
+                    text.push('\n');
+                }
+            }
+            (out.status.success(), text)
+        }
+        Err(e) => (
+            false,
+            format!("{} を起動できません: {e}\n", program.to_string_lossy()),
+        ),
+    }
+}
+
+fn run_regsvr32(args: &[&std::ffi::OsStr]) -> Result<String, String> {
+    let (ok, text) = run_capture(regsvr32().as_os_str(), args);
+    println!("{text}");
+    if ok {
+        Ok(text)
     } else {
         Err(format!(
-            "regsvr32 が失敗しました（終了コード {:?}）。管理者権限で実行しているか確認してください",
-            status.code()
+            "regsvr32 が失敗しました。管理者権限で実行しているか確認してください\n{text}"
         ))
     }
 }
 
-/// `regsvr32 /s <dll>`（管理者権限が必要）
+/// TIP の登録に関わるレジストリの内容（診断用）
+pub fn registry_dump() -> String {
+    let clsid = format!("{{{CLSID_NAGI_TEXT_SERVICE:?}}}");
+    let mut out = String::new();
+    let queries: [(String, bool); 5] = [
+        (format!("HKCR\\CLSID\\{clsid}"), true),
+        (
+            format!("HKLM\\SOFTWARE\\Microsoft\\CTF\\TIP\\{clsid}"),
+            true,
+        ),
+        (
+            "HKCU\\Control Panel\\International\\User Profile".to_owned(),
+            true,
+        ),
+        (
+            "HKCU\\Software\\Microsoft\\CTF\\SortOrder\\Language".to_owned(),
+            true,
+        ),
+        ("HKCU\\Keyboard Layout\\Preload".to_owned(), true),
+    ];
+    let reg = Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+        .join("System32")
+        .join("reg.exe");
+    for (key, recurse) in queries {
+        let mut args: Vec<&std::ffi::OsStr> = vec!["query".as_ref(), key.as_ref()];
+        if recurse {
+            args.push("/s".as_ref());
+        }
+        out.push_str(&run_capture(reg.as_os_str(), &args).1);
+    }
+    out
+}
+
+/// `regsvr32 /s <dll>`（管理者権限が必要）。出力と終了コードを標準出力に残す
 pub fn register(dll: &Path) -> Result<(), String> {
-    run_regsvr32(&["/s".as_ref(), dll.as_os_str()])
+    run_regsvr32(&["/s".as_ref(), dll.as_os_str()])?;
+    println!("--- 登録後のレジストリ ---\n{}", registry_dump());
+    Ok(())
 }
 
 /// `regsvr32 /u /s <dll>`
 pub fn unregister(dll: &Path) -> Result<(), String> {
-    run_regsvr32(&["/u".as_ref(), "/s".as_ref(), dll.as_os_str()])
+    run_regsvr32(&["/u".as_ref(), "/s".as_ref(), dll.as_os_str()]).map(|_| ())
 }
 
 /// このスレッドで有効化した IME
@@ -69,40 +131,136 @@ pub struct ImeSession {
     client_id: u32,
 }
 
+/// `profiles` に登録されている全言語のプロファイル（診断用）。Nagi には印を付ける
+fn dump_profiles(profiles: &ITfInputProcessorProfileMgr) -> String {
+    let mut out = String::new();
+    let enumerator = match unsafe { profiles.EnumProfiles(0) } {
+        Ok(e) => e,
+        Err(e) => return format!("EnumProfiles に失敗: {e}\n"),
+    };
+    let mut count = 0;
+    loop {
+        let mut p = [TF_INPUTPROCESSORPROFILE::default()];
+        let mut fetched = 0u32;
+        if unsafe { enumerator.Next(&mut p, &mut fetched) }.is_err() || fetched == 0 {
+            break;
+        }
+        count += 1;
+        let p = p[0];
+        let mine = p.clsid == CLSID_NAGI_TEXT_SERVICE;
+        // TF_IPP_FLAG_ENABLED = 1, TF_IPP_FLAG_ACTIVE = 0x80000000
+        out.push_str(&format!(
+            "{} type={} langid=0x{:04X} clsid={:?} profile={:?} enabled={} active={}\n",
+            if mine { "* NAGI" } else { "  other" },
+            p.dwProfileType,
+            p.langid,
+            p.clsid,
+            p.guidProfile,
+            p.dwFlags & 1 != 0,
+            p.dwFlags & 0x8000_0000 != 0
+        ));
+    }
+    format!("登録済みプロファイル {count} 件:\n{out}")
+}
+
 impl ImeSession {
     /// COM を初期化し、Nagi をこのプロセスの入力方式として有効化する。
-    /// `TF_IPPMF_FORPROCESS` なので OS 全体の既定の入力方式は変えない
+    /// `TF_IPPMF_FORPROCESS` なので OS 全体の既定の入力方式は変えない。
+    /// 失敗したら複数の方法（有効化 → フラグ違い → 旧 API）を順に試し、全ての結果と診断を返す
     pub fn activate() -> Result<Self, String> {
-        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let mut log = String::new();
+        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        log.push_str(&format!("CoInitializeEx(STA) = {hr:?}\n"));
         let thread_mgr: ITfThreadMgr =
             unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) }
-                .map_err(|e| format!("ITfThreadMgr: {e}"))?;
-        let client_id = unsafe { thread_mgr.Activate() }.map_err(|e| format!("Activate: {e}"))?;
+                .map_err(|e| format!("ITfThreadMgr: {e}\n{log}"))?;
+        let client_id =
+            unsafe { thread_mgr.Activate() }.map_err(|e| format!("Activate: {e}\n{log}"))?;
         let compartments: ITfCompartmentMgr = thread_mgr
             .cast()
-            .map_err(|e| format!("ITfCompartmentMgr: {e}"))?;
+            .map_err(|e| format!("ITfCompartmentMgr: {e}\n{log}"))?;
         let profiles: ITfInputProcessorProfileMgr = unsafe {
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
         }
-        .map_err(|e| format!("ITfInputProcessorProfileMgr: {e}"))?;
-        unsafe {
-            profiles.ActivateProfile(
-                TF_PROFILETYPE_INPUTPROCESSOR,
-                LANGID_JAPANESE,
-                &CLSID_NAGI_TEXT_SERVICE,
-                &GUID_NAGI_PROFILE,
-                HKL::default(),
-                TF_IPPMF_FORPROCESS
-                    | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE
-                    | TF_IPPMF_ENABLEPROFILE,
-            )
-        }
-        .map_err(|e| format!("ActivateProfile に失敗: {e}"))?;
+        .map_err(|e| format!("ITfInputProcessorProfileMgr: {e}\n{log}"))?;
+        let legacy: Option<ITfInputProcessorProfiles> = profiles.cast().ok();
         let session = Self {
             profiles,
             compartments,
             client_id,
         };
+
+        log.push_str(&format!("[前] {}\n", session.describe()));
+        log.push_str(&dump_profiles(&session.profiles));
+        if let Some(l) = &legacy {
+            log.push_str(&format!(
+                "現在の入力言語 GetCurrentLanguage = {:?}\n",
+                unsafe { l.GetCurrentLanguage() }.map(|x| format!("0x{x:04X}"))
+            ));
+            // プロファイルを有効にしておく（ユーザーの言語リストに無い言語だと拒否されうる）
+            let r = unsafe {
+                l.EnableLanguageProfile(
+                    &CLSID_NAGI_TEXT_SERVICE,
+                    LANGID_JAPANESE,
+                    &GUID_NAGI_PROFILE,
+                    true,
+                )
+            };
+            log.push_str(&format!("EnableLanguageProfile(true) = {r:?}\n"));
+        }
+
+        let process = TF_IPPMF_FORPROCESS;
+        let attempts: [(&str, u32); 5] = [
+            (
+                "FORPROCESS|DONTCARE|ENABLE",
+                process | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE | TF_IPPMF_ENABLEPROFILE,
+            ),
+            ("FORPROCESS|ENABLE", process | TF_IPPMF_ENABLEPROFILE),
+            ("FORPROCESS", process),
+            ("ENABLE", TF_IPPMF_ENABLEPROFILE),
+            ("FORSESSION|ENABLE", 0x2000_0000 | TF_IPPMF_ENABLEPROFILE),
+        ];
+        let mut activated = false;
+        for (name, flags) in attempts {
+            let r = unsafe {
+                session.profiles.ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR,
+                    LANGID_JAPANESE,
+                    &CLSID_NAGI_TEXT_SERVICE,
+                    &GUID_NAGI_PROFILE,
+                    HKL::default(),
+                    flags,
+                )
+            };
+            log.push_str(&format!("ActivateProfile({name}) = {r:?}\n"));
+            if r.is_ok() {
+                activated = true;
+                break;
+            }
+        }
+        if !activated && let Some(l) = &legacy {
+            let r1 = unsafe { l.ChangeCurrentLanguage(LANGID_JAPANESE) };
+            let r2 = unsafe {
+                l.ActivateLanguageProfile(
+                    &CLSID_NAGI_TEXT_SERVICE,
+                    LANGID_JAPANESE,
+                    &GUID_NAGI_PROFILE,
+                )
+            };
+            log.push_str(&format!(
+                "旧 API: ChangeCurrentLanguage = {r1:?}, ActivateLanguageProfile = {r2:?}\n"
+            ));
+            activated = r2.is_ok();
+        }
+        println!("--- IME 有効化の試行 ---\n{log}");
+        if !activated {
+            return Err(format!(
+                "ActivateProfile が全て失敗しました\n{log}[後] {}\n{}--- レジストリ ---\n{}",
+                session.describe(),
+                dump_profiles(&session.profiles),
+                registry_dump()
+            ));
+        }
         // TIP の読み込み（Activate）は非同期に進むことがあるので少し待つ
         let start = Instant::now();
         while !session.is_active() && start.elapsed() < Duration::from_secs(10) {
@@ -110,8 +268,9 @@ impl ImeSession {
         }
         if !session.is_active() {
             return Err(format!(
-                "Nagi の入力方式が有効になりません: {}",
-                session.describe()
+                "Nagi の入力方式が有効になりません\n{log}[後] {}\n{}",
+                session.describe(),
+                dump_profiles(&session.profiles)
             ));
         }
         Ok(session)

@@ -269,7 +269,20 @@ fn run_inner(args: &Args) -> Result<i32, String> {
         eprintln!("nagi-e2e-win: 登録の解除に失敗: {e}");
     }
     let _ = std::fs::remove_dir_all(&work);
-    let results = result?;
+    let results = match result {
+        Ok(r) => r,
+        Err(e) => {
+            // セットアップの失敗も results.json に残す（診断は標準エラーにも出る）
+            let entry = ResultEntry {
+                suite: "setup".to_owned(),
+                name: "ime-activation".to_owned(),
+                ok: false,
+                message: e.clone(),
+            };
+            let _ = write_results(&args.out, &[entry]);
+            return Err(e);
+        }
+    };
     write_results(&args.out, &results)?;
     let failed = results.iter().filter(|r| !r.ok).count();
     println!(
