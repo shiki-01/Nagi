@@ -350,7 +350,25 @@ impl FuzzyStrength {
             FuzzyStrength::Aggressive => 6.5,
         }
     }
+
+    /// 打った通りの読みが辞書の語として成り立つ（covered）ときの採否のマージンに掛ける倍率。
+    /// 1.0 より大きいほど補正を出しにくく（誤表示が減る）、小さいほど出しやすい（取りこぼしが減る）。
+    pub fn margin_scale(self) -> f32 {
+        match self {
+            FuzzyStrength::Gentle => FUZZY_MARGIN_SCALE_GENTLE,
+            FuzzyStrength::Normal => 1.0,
+            FuzzyStrength::Aggressive => FUZZY_MARGIN_SCALE_AGGRESSIVE,
+        }
+    }
 }
+
+/// 「控えめ」のマージン倍率。評価で暫定決定した値（クリーン入力の誤表示が 0〜0.2% に収まる倍率を、
+/// 評価用の乱数 seed 複数で実測して選んだ。実利用のデータでの再評価を前提とする）
+pub const FUZZY_MARGIN_SCALE_GENTLE: f32 = 1.5;
+
+/// 「強め」のマージン倍率。評価で暫定決定した値（クリーン入力の誤表示が 1.5% 以下に収まる範囲で
+/// 取りこぼしを減らす倍率を実測して選んだ。実利用のデータでの再評価を前提とする）
+pub const FUZZY_MARGIN_SCALE_AGGRESSIVE: f32 = 0.8;
 
 impl fmt::Display for FuzzyStrength {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -2328,6 +2346,9 @@ min_chars = 3
         assert_eq!(FuzzyStrength::Gentle.max_cost(), 3.0);
         assert_eq!(FuzzyStrength::Normal.max_cost(), 4.5);
         assert_eq!(FuzzyStrength::Aggressive.max_cost(), 6.5);
+        assert_eq!(FuzzyStrength::Gentle.margin_scale(), 1.5);
+        assert_eq!(FuzzyStrength::Normal.margin_scale(), 1.0);
+        assert_eq!(FuzzyStrength::Aggressive.margin_scale(), 0.8);
         assert_eq!(FuzzyStrength::Aggressive.to_string(), "aggressive");
 
         let source = "[input.fuzzy]\nenabled = true\nstrength = \"aggressive\"\nmax_candidates = 5\nkinds = \"voicing\"\n";

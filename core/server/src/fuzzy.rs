@@ -79,6 +79,8 @@ pub struct FuzzySettings {
     pub enabled: bool,
     /// 累積コストの上限（`input.fuzzy.strength`）
     pub max_cost: f32,
+    /// covered の読みの採否のマージンに掛ける倍率（`input.fuzzy.strength`。標準は 1.0）
+    pub margin_scale: f32,
     /// 候補に混ぜる最大数（`input.fuzzy.max_candidates`）
     pub max_candidates: usize,
     /// 有効な補正の種類（`input.fuzzy.kinds`）
@@ -115,6 +117,7 @@ impl FuzzySettings {
         FuzzySettings {
             enabled: section.enabled,
             max_cost: section.strength.max_cost(),
+            margin_scale: section.strength.margin_scale(),
             max_candidates: section.max_candidates,
             kinds: EditKinds::parse(&section.kinds),
             use_touch: section.use_touch_coords,
@@ -590,7 +593,7 @@ impl FuzzyEngine {
             } else {
                 let score = cost + c.cost * LEXICON_COST_PER_EDIT_COST;
                 let margin = if is_covered {
-                    covered_margin(&c, reading_chars)
+                    covered_margin(&c, reading_chars) * settings.margin_scale
                 } else {
                     0.0
                 };

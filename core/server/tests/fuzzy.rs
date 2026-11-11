@@ -803,6 +803,52 @@ mod covered_margin {
     }
 
     #[test]
+    fn strength_scales_the_margin() {
+        let (_, _, edit, _) = measure();
+        let m = voicing_margin(edit);
+        // 標準の境界の少し内側（余裕 = 標準のマージン + 50）: 控えめ（1.5 倍）では出ず、標準・強めでは出る
+        let dict = dict_with_word_cost(cost_for_slack(m + 50.0));
+        let with = |strength: FuzzyStrength| {
+            let s = FuzzySettings {
+                margin_scale: strength.margin_scale(),
+                ..settings(false)
+            };
+            FuzzyEngine::new()
+                .suggest(
+                    &dict,
+                    &Overlay::default(),
+                    READING,
+                    &TypingHint::default(),
+                    &s,
+                    false,
+                    Duration::from_millis(150),
+                )
+                .iter()
+                .any(|s| s.reading == FIXED)
+        };
+        assert!(!with(FuzzyStrength::Gentle));
+        assert!(with(FuzzyStrength::Normal));
+        assert!(with(FuzzyStrength::Aggressive));
+        // 標準の境界の少し外側（余裕 = 標準のマージン - 50）でも、強め（0.8 倍）なら出る
+        let dict2 = dict_with_word_cost(cost_for_slack(m - 50.0));
+        let s = FuzzySettings {
+            margin_scale: FuzzyStrength::Aggressive.margin_scale(),
+            ..settings(false)
+        };
+        let got = FuzzyEngine::new().suggest(
+            &dict2,
+            &Overlay::default(),
+            READING,
+            &TypingHint::default(),
+            &s,
+            false,
+            Duration::from_millis(150),
+        );
+        assert!(got.iter().any(|s| s.reading == FIXED));
+        assert_eq!(FuzzySettings::default().margin_scale, 1.0);
+    }
+
+    #[test]
     fn substitute_needs_more_slack_than_voicing() {
         let c = |kind| Correction {
             reading: String::new(),
