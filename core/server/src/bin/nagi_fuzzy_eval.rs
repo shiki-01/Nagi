@@ -83,6 +83,7 @@ fn main() {
     let mut legacy_penalty = false;
     let mut dump_path: Option<PathBuf> = None;
     let mut kana_lm_path: Option<PathBuf> = None;
+    let mut retro = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -147,6 +148,8 @@ fn main() {
                 }
             }
             "--dump-rows" => dump_path = args.next().map(PathBuf::from),
+            // 確定後の遡及再評価の評価（この節だけを実行して終わる）
+            "--retro" => retro = true,
             "--kana-lm" => kana_lm_path = args.next().map(PathBuf::from),
             "--tsv" => tsv_out = args.next().map(PathBuf::from),
             "--model" => model_path = args.next().map(PathBuf::from),
@@ -230,6 +233,25 @@ fn main() {
         "strength={} max_cost={} max_candidates={} seed={seed}",
         strength, settings.max_cost, max_candidates
     );
+
+    if retro {
+        run_retro(&RetroArgs {
+            dict: &dict,
+            overlay: &overlay,
+            engine: &engine,
+            settings: FuzzySettings {
+                retro_review: true,
+                ..settings
+            },
+            sentences: &sentences,
+            table: &table,
+            reverse: &reverse,
+            adjacency: &adjacency,
+            seed,
+            budget,
+        });
+        return;
+    }
 
     let uniform = profiles.contains(&NoiseProfile::Uniform);
     let kana_lm = if dump_path.is_some() {
@@ -902,7 +924,11 @@ fn run_rescore(a: &RescoreArgs<'_>) {
     let mut settings8 = *a.settings;
     settings8.rescore = false;
     settings8.max_candidates = nagi_server::fuzzy::RESCORE_MAX;
-    let mut variants: Vec<VariantTally> = VARIANTS.iter().map(|v| VariantTally::new(v)).collect();
+    let formulas = formulas();
+    let mut variants: Vec<VariantTally> = formulas
+        .iter()
+        .map(|&f| VariantTally::new(formula_name(f)))
+        .collect();
     let pct = |x: usize, y: usize| 100.0 * x as f64 / y.max(1) as f64;
     let margins = [2.0f32, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0];
     let mut noisy_adopt = vec![AdoptionTally::default(); margins.len()];
@@ -1042,18 +1068,59 @@ fn run_rescore(a: &RescoreArgs<'_>) {
 /// `lm_b` = 入力のままの読みでの P(補正後の表記 | 打った読み)、`channel` = 編集コスト、
 /// `dict` = 辞書のスコア（Mozc 尺度。500 で割ると自然対数）
 #[cfg(feature = "llama")]
-const VARIANTS: &[&str] = &[
-    "A  lm_a - channel      (現行)",
-    "B  lm_b - channel",
-    "B0 lm_b",
-    "C  lm_a - dict/500",
-    "D  lm_b - dict/500",
-];
+#[derive(Clone, Copy)]
+enum Formula {
+    /// `lm_a - channel`（現行）
+    A,
+    /// `lm_b - channel`
+    B,
+    /// `lm_b`
+    B0,
+    /// `lm_a - dict/500`
+    C,
+    /// `lm_b - dict/500`
+    D,
+    /// `w * lm_a - dict/500`
+    E(f32),
+    /// `w * (lm_a / 読みの文字数 * 基準の文字数) - dict/500`（長さ正規化）
+    F(f32),
+    /// `E(w)` に事前マージン: 先頭の差が `m` 未満なら入力そのままを先頭に残す
+    G(f32, f32),
+}
+
+/// 長さ正規化（F）で 1 文字あたりの対数確率に掛けて戻す基準の文字数
+#[cfg(feature = "llama")]
+const F_REF_CHARS: f32 = 10.0;
+
+#[cfg(feature = "llama")]
+fn formulas() -> Vec<Formula> {
+    let mut v = vec![Formula::A, Formula::B, Formula::B0, Formula::C, Formula::D];
+    v.extend([0.25, 0.5, 0.75, 1.0, 1.5].map(Formula::E));
+    v.extend([0.5, 1.0, 1.5].map(Formula::F));
+    for w in [0.5, 1.0] {
+        v.extend([0.0, 1.0, 2.0, 4.0].map(|m| Formula::G(w, m)));
+    }
+    v
+}
+
+#[cfg(feature = "llama")]
+fn formula_name(f: Formula) -> String {
+    match f {
+        Formula::A => "A  lm_a - channel (現行)".into(),
+        Formula::B => "B  lm_b - channel".into(),
+        Formula::B0 => "B0 lm_b".into(),
+        Formula::C => "C  lm_a - dict/500".into(),
+        Formula::D => "D  lm_b - dict/500".into(),
+        Formula::E(w) => format!("E  {w}*lm_a - dict/500"),
+        Formula::F(w) => format!("F  {w}*lm_a/len*{F_REF_CHARS} - dict/500"),
+        Formula::G(w, m) => format!("G  E({w}) 事前マージン m={m}"),
+    }
+}
 
 /// 式ごとの集計
 #[cfg(feature = "llama")]
 struct VariantTally {
-    name: &'static str,
+    name: String,
     noisy: Tally,
     /// (閾値, ノイズ入りで採用, うち正解, クリーンで誤採用)
     sweep: Vec<(f32, usize, usize, usize)>,
@@ -1063,11 +1130,11 @@ struct VariantTally {
 
 #[cfg(feature = "llama")]
 impl VariantTally {
-    fn new(name: &'static str) -> Self {
+    fn new(name: String) -> Self {
         VariantTally {
             name,
             noisy: Tally::default(),
-            sweep: [2.0f32, 4.0, 8.0, 12.0, 16.0]
+            sweep: [0.0f32, 2.0, 4.0, 8.0, 12.0, 16.0]
                 .iter()
                 .map(|&m| (m, 0, 0, 0))
                 .collect(),
@@ -1127,8 +1194,9 @@ impl VariantTally {
     }
 }
 
-/// 辞書のスコア上位 8 件の候補を、各スコア式で並べ替えた結果（式の順は [`VARIANTS`]）。
-/// 各要素は (表記, 先頭の差 = 候補の式の値 − 入力そのままの式の値) の降順
+/// 辞書のスコア上位 8 件の候補を、各スコア式で並べ替えた結果（式の順は [`formulas`]）。
+/// 各要素は (表記, 先頭の差 = 候補の式の値 − 入力そのままの式の値) の降順。G は先頭の差が閾値未満のとき
+/// 入力そのまま（差 `f32::MIN`）を先頭に置く
 #[cfg(feature = "llama")]
 fn variant_rankings(
     a: &RescoreArgs<'_>,
@@ -1147,7 +1215,7 @@ fn variant_rankings(
         a.budget,
     );
     if list.is_empty() {
-        return Some(vec![Vec::new(); VARIANTS.len()]);
+        return Some(vec![Vec::new(); formulas().len()]);
     }
     let typed = a
         .dict
@@ -1174,26 +1242,183 @@ fn variant_rankings(
         }
     };
     let dict_nats = |x: f32| x / 500.0;
-    let rank = |f: &dyn Fn(usize, &nagi_server::fuzzy::Suggestion) -> f32, base: f32| {
-        let mut v: Vec<(String, f32)> = list
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.surface.clone(), f(i + 1, s) - base))
-            .collect();
-        v.sort_by(|x, y| y.1.total_cmp(&x.1));
-        v
+    let len = |r: &str| r.chars().count().max(1) as f32;
+    // 式ごとの (候補の値, 入力そのままの値)
+    let value = |f: Formula, i: usize, s: &nagi_server::fuzzy::Suggestion| -> f32 {
+        match f {
+            Formula::A => floor(la[i]) - s.channel_cost,
+            Formula::B => floor(lb[i]) - s.channel_cost,
+            Formula::B0 => floor(lb[i]),
+            Formula::C => floor(la[i]) - dict_nats(s.score),
+            Formula::D => floor(lb[i]) - dict_nats(s.score),
+            Formula::E(w) | Formula::G(w, _) => w * floor(la[i]) - dict_nats(s.score),
+            Formula::F(w) => w * floor(la[i]) / len(&s.reading) * F_REF_CHARS - dict_nats(s.score),
+        }
     };
-    Some(vec![
-        rank(&|i, s| floor(la[i]) - s.channel_cost, floor(la[0])),
-        rank(&|i, s| floor(lb[i]) - s.channel_cost, floor(lb[0])),
-        rank(&|i, _| floor(lb[i]), floor(lb[0])),
-        rank(
-            &|i, s| floor(la[i]) - dict_nats(s.score),
-            floor(la[0]) - dict_nats(typed_cost),
-        ),
-        rank(
-            &|i, s| floor(lb[i]) - dict_nats(s.score),
-            floor(lb[0]) - dict_nats(typed_cost),
-        ),
-    ])
+    let base_of = |f: Formula| -> f32 {
+        match f {
+            Formula::A => floor(la[0]),
+            Formula::B | Formula::B0 => floor(lb[0]),
+            Formula::C => floor(la[0]) - dict_nats(typed_cost),
+            Formula::D => floor(lb[0]) - dict_nats(typed_cost),
+            Formula::E(w) | Formula::G(w, _) => w * floor(la[0]) - dict_nats(typed_cost),
+            Formula::F(w) => w * floor(la[0]) / len(reading) * F_REF_CHARS - dict_nats(typed_cost),
+        }
+    };
+    Some(
+        formulas()
+            .into_iter()
+            .map(|f| {
+                let base = base_of(f);
+                let mut v: Vec<(String, f32)> = list
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (s.surface.clone(), value(f, i + 1, s) - base))
+                    .collect();
+                v.sort_by(|x, y| y.1.total_cmp(&x.1));
+                if let Formula::G(_, m) = f
+                    && v.first().is_none_or(|(_, d)| *d < m)
+                {
+                    v.insert(0, (typed_surface.clone(), f32::MIN));
+                }
+                v
+            })
+            .collect(),
+    )
+}
+
+/// `--retro` の入力
+struct RetroArgs<'a> {
+    dict: &'a Dictionary,
+    overlay: &'a Overlay,
+    engine: &'a FuzzyEngine,
+    settings: FuzzySettings,
+    sentences: &'a [String],
+    table: &'a std::sync::Arc<RomajiTable>,
+    reverse: &'a ReverseRomaji,
+    adjacency: &'a Adjacency,
+    seed: u64,
+    budget: Duration,
+}
+
+/// 確定後の遡及再評価（`FuzzyEngine::retro_review`）の評価。評価データの連続する文節のペア
+/// （前の文節 = 確定済み、次の文節 = 後続）について測る:
+///
+/// - (a) クリーンなペアで修正候補が出てしまう率（誤提案。0 に近いほど良い）
+/// - (b) 前の文節に一様ノイズ p = 0.05 を入れ（読みが変わったものだけ）、その最良変換を「確定した表記」として、
+///   正解（ノイズ前の読みの最良変換）を候補に含められた率と、何か出た率
+fn run_retro(a: &RetroArgs<'_>) {
+    use std::collections::HashSet;
+    let best = |reading: &str| -> Option<String> {
+        a.dict
+            .segment_candidates_with(reading, 1, Some(a.overlay))
+            .into_iter()
+            .next()
+            .map(|c| c.surface)
+    };
+    // 連続する文節のペア（前: 3〜24 文字のかな、後: 2 文字以上のかな）
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for sentence in a.sentences {
+        let segs = a.dict.convert(sentence);
+        for w in segs.windows(2) {
+            let (prev, next) = (&w[0].reading, &w[1].reading);
+            let n = prev.chars().count();
+            if (3..=24).contains(&n)
+                && is_kana_reading(prev)
+                && next.chars().count() >= 2
+                && is_kana_reading(next)
+                && seen.insert((prev.clone(), next.clone()))
+            {
+                pairs.push((prev.clone(), next.clone()));
+            }
+        }
+    }
+    println!(
+        "[retro] 文節ペア {} 組（RETRO_EXTRA_MARGIN={}）",
+        pairs.len(),
+        nagi_server::fuzzy::RETRO_EXTRA_MARGIN
+    );
+    let pct = |x: usize, n: usize| 100.0 * x as f64 / n.max(1) as f64;
+
+    // (a) クリーン
+    let mut shown = 0usize;
+    let mut total = 0usize;
+    let mut millis: Vec<f64> = Vec::new();
+    for (prev, next) in &pairs {
+        let Some(surface) = best(prev) else { continue };
+        let t = Instant::now();
+        let out = a.engine.retro_review(
+            a.dict,
+            a.overlay,
+            prev,
+            &surface,
+            next,
+            &a.settings,
+            false,
+            a.budget,
+        );
+        millis.push(t.elapsed().as_secs_f64() * 1000.0);
+        total += 1;
+        if !out.is_empty() {
+            shown += 1;
+        }
+    }
+    println!(
+        "[retro] クリーン: 遡及候補が出た（誤提案）{shown} / {total} ({:.2}%)",
+        pct(shown, total)
+    );
+
+    // (b) 前の文節に一様ノイズ
+    for p in [0.05f64] {
+        let mut rng = Rng::new(a.seed ^ 0x7E7_0000 ^ (p * 1000.0) as u64);
+        let (mut n, mut hit, mut any) = (0usize, 0usize, 0usize);
+        for (prev, next) in &pairs {
+            let Some(truth) = best(prev) else { continue };
+            let Some(typed) = a.reverse.to_romaji(prev) else {
+                continue;
+            };
+            let noisy = to_reading(&add_noise(&typed, p, a.adjacency, &mut rng), a.table);
+            if noisy == *prev || !is_kana_reading(&noisy) {
+                continue;
+            }
+            // 利用者が確定した表記は、ノイズ後の読みの最良変換
+            let Some(committed) = best(&noisy) else {
+                continue;
+            };
+            if committed == truth {
+                continue;
+            }
+            let t = Instant::now();
+            let out = a.engine.retro_review(
+                a.dict,
+                a.overlay,
+                &noisy,
+                &committed,
+                next,
+                &a.settings,
+                false,
+                a.budget,
+            );
+            millis.push(t.elapsed().as_secs_f64() * 1000.0);
+            n += 1;
+            if !out.is_empty() {
+                any += 1;
+            }
+            if out.iter().any(|s| s.surface == truth) {
+                hit += 1;
+            }
+        }
+        println!(
+            "[retro] 一様ノイズ p={p:.2}（読みが変わり確定表記が正解と違うもの）{n} 組: 正解を候補に含めた {hit} ({:.1}%)、何か出た {any} ({:.1}%)",
+            pct(hit, n),
+            pct(any, n)
+        );
+    }
+    millis.sort_by(f64::total_cmp);
+    println!(
+        "[retro] 所要時間: p50 {:.2}ms、p95 {:.2}ms（--no-time-limit で展開の時間上限を外した値は参考）",
+        percentile(&millis, 0.5),
+        percentile(&millis, 0.95)
+    );
 }
