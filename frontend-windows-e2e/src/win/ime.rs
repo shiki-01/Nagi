@@ -310,6 +310,15 @@ impl ImeSession {
         i32::try_from(&value).ok()
     }
 
+    /// 開閉・変換モードの現在値（診断用。`None` は未設定）
+    pub fn describe_modes(&self) -> String {
+        format!(
+            "open={:?} conversion={:?}",
+            self.read_compartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE),
+            self.read_compartment(&GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)
+        )
+    }
+
     /// 入力モードを「開・ひらがな」にする。変えたら `true`。
     /// TIP が自分でコンパートメントを書いた後（Activate 直後）はそのままのことが多い
     pub fn ensure_hiragana(&self) -> Result<bool, String> {

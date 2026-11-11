@@ -46,6 +46,7 @@ pub fn pump(ms: u64) {
 
 /// テストホスト（EDIT を持つウィンドウ）を操作する [`Host`] 実装
 struct WinHost {
+    window: host::HostWindow,
     edit: HWND,
     probe: ProbeReader,
     ime: ime::ImeSession,
@@ -93,16 +94,55 @@ impl WinHost {
         }
     }
 
+    /// 診断のまとめ（フォーカス・モード・送出方式・プローブの末尾・tsf.log の末尾）
+    fn snapshot(&self) -> String {
+        format!(
+            "{}\nime: {}\nmodes: {}\ninput_mode={}\nedit_text={:?}\nprobe_lines={} committed_chars={}\n--- probe 末尾 ---\n{}\n{}",
+            host::describe_focus(&self.window),
+            self.ime.describe(),
+            self.ime.describe_modes(),
+            input::mode_name(),
+            host::edit_text(self.edit),
+            self.probe.line_count(),
+            self.probe.committed_total().chars().count(),
+            self.probe.tail(),
+            tsf_log_tail()
+        )
+    }
+
     /// IME が実際にキーを処理できる（imserver に接続済み）まで待つ。
-    /// エンジンが未接続の間は素通しになるため、「a → あ」が出るまで試す
+    /// エンジンが未接続の間は素通しになるため、「a → あ」が出るまで試す。
+    /// 反応が無いときは、原因の切り分けを兼ねて対処を順に変える:
+    /// 1 回目 純スキャンコード → 2 回目以降 仮想キー併用に切り替え、毎回モードの設定・前面化・フォーカスの付け直しをする
     fn wait_ready(&mut self, timeout: Duration) -> Result<(), String> {
         let start = Instant::now();
+        let mut round = 0u32;
         loop {
+            input::set_vk_mode(round % 2 == 1);
+            // IME を有効にした後にモードを書く（Activate 時点では TIP が未設定のことがある）
+            let changed = self.ime.ensure_hiragana().unwrap_or(false);
+            if round > 0 {
+                let _ = host::bring_to_front(&self.window);
+            }
+            host::refocus(&self.window);
+            println!(
+                "[ready round={round} {}] modes_changed={changed} {}",
+                input::mode_name(),
+                host::describe_focus(&self.window)
+            );
             self.type_text("a")?;
-            pump(300);
-            if self.read_observation().marked == "あ" {
+            pump(400);
+            let obs = self.read_observation();
+            println!(
+                "[ready round={round}] marked={:?} edit_text={:?} probe_lines={}",
+                obs.marked,
+                host::edit_text(self.edit),
+                self.probe.line_count()
+            );
+            if obs.marked == "あ" {
                 self.press("Escape")?;
                 pump(200);
+                input::set_vk_mode(false);
                 return self.begin_scenario();
             }
             // 素通しで EDIT に入った分や、途中の状態を片付けて再試行
@@ -110,13 +150,12 @@ impl WinHost {
             host::set_edit_text(self.edit, "");
             if start.elapsed() >= timeout {
                 return Err(format!(
-                    "IME が応答しません（{}ms 待った）。プローブの行数={}, 確定報告の文字数={}, {}",
+                    "IME が応答しません（{}ms 待った、{round} 回試行）\n{}",
                     timeout.as_millis(),
-                    self.probe.line_count(),
-                    self.probe.committed_total().chars().count(),
-                    self.ime.describe()
+                    self.snapshot()
                 ));
             }
+            round += 1;
             pump(500);
         }
     }
@@ -183,23 +222,29 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// `%LOCALAPPDATA%\Nagi\logs\tsf.log` の末尾（診断用。入力内容は書かれない）
-fn print_tsf_log_tail() {
+fn tsf_log_tail() -> String {
     let Some(base) = std::env::var_os("LOCALAPPDATA") else {
-        return;
+        return "(LOCALAPPDATA 未設定)".to_owned();
     };
     let path = PathBuf::from(base)
         .join("Nagi")
         .join("logs")
         .join("tsf.log");
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        let lines: Vec<_> = text.lines().collect();
-        eprintln!("--- {} (末尾) ---", path.display());
-        for l in &lines[lines.len().saturating_sub(40)..] {
-            eprintln!("{l}");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let lines: Vec<_> = text.lines().collect();
+            format!(
+                "--- {} (末尾) ---\n{}",
+                path.display(),
+                lines[lines.len().saturating_sub(40)..].join("\n")
+            )
         }
-    } else {
-        eprintln!("(tsf.log がありません: {})", path.display());
+        Err(_) => format!("(tsf.log がありません: {})", path.display()),
     }
+}
+
+fn print_tsf_log_tail() {
+    eprintln!("{}", tsf_log_tail());
 }
 
 fn write_results(out: &Path, results: &[ResultEntry]) -> Result<(), String> {
@@ -305,6 +350,7 @@ fn run_registered(
     host::bring_to_front(&window)?;
     let ime = ime::ImeSession::activate()?;
     let mut host = WinHost {
+        window,
         edit: window.edit,
         probe: ProbeReader::new(probe_path),
         ime,

@@ -69,6 +69,20 @@ pub fn record(marked: Option<&str>, committed_delta: &str) {
     tsf_log::append_line(path, &format_line(marked, committed_delta), MAX_BYTES);
 }
 
+/// イベント行（キーイベントの到達・フォーカスの確認用）。`{"event":"…","detail":"…"}`。
+/// `detail` はキーの仮想キーコードや真偽値だけで、入力文字は含めない。無効なら何もしない
+pub fn record_event(event: &str, detail: &str) {
+    let Some(path) = path() else {
+        return;
+    };
+    let line = format!(
+        "{{\"event\":{},\"detail\":{}}}\n",
+        json_string(event),
+        json_string(detail)
+    );
+    tsf_log::append_line(path, &line, MAX_BYTES);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

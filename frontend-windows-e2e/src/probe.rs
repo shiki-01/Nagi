@@ -21,6 +21,7 @@ pub struct ProbeReader {
     marked: String,
     committed: String,
     lines: u64,
+    tail: std::collections::VecDeque<String>,
 }
 
 impl ProbeReader {
@@ -32,6 +33,7 @@ impl ProbeReader {
             marked: String::new(),
             committed: String::new(),
             lines: 0,
+            tail: std::collections::VecDeque::new(),
         };
         reader.reset();
         reader
@@ -60,6 +62,11 @@ impl ProbeReader {
             return;
         };
         for raw in buf[..end].split(|&b| b == b'\n') {
+            if self.tail.len() >= 40 {
+                self.tail.pop_front();
+            }
+            self.tail
+                .push_back(String::from_utf8_lossy(raw).into_owned());
             if let Ok(line) = serde_json::from_slice::<Line>(raw) {
                 self.lines += 1;
                 if let Some(m) = line.marked {
@@ -79,6 +86,11 @@ impl ProbeReader {
     /// IME が報告した確定文字列の累計（診断用。検証にはテキスト欄の内容を使う）
     pub fn committed_total(&self) -> &str {
         &self.committed
+    }
+
+    /// 直近に取り込んだ行（診断用。最大 40 行）
+    pub fn tail(&self) -> String {
+        self.tail.iter().cloned().collect::<Vec<_>>().join("\n")
     }
 
     /// これまでに取り込んだ行数（プローブが動いているかの診断用）

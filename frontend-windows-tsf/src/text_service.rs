@@ -663,11 +663,25 @@ impl Core {
             self.report_context(ctx);
         }
         match self.engine.process_key(&self.session_id, &key) {
-            Ok(result) => self.outcome_from(&result),
-            Err(_) => KeyOutcome {
-                eaten: self.is_composing(),
-                ..passthrough
-            },
+            Ok(result) => {
+                crate::e2e_probe::record_event(
+                    "engine_result",
+                    &format!(
+                        "consumed={} has_preedit={} has_commit={}",
+                        result.consumed,
+                        result.preedit.is_some(),
+                        result.commit.is_some()
+                    ),
+                );
+                self.outcome_from(&result)
+            }
+            Err(e) => {
+                crate::e2e_probe::record_event("engine_error", &format!("{e:?}"));
+                KeyOutcome {
+                    eaten: self.is_composing(),
+                    ..passthrough
+                }
+            }
         }
     }
 
@@ -744,6 +758,10 @@ impl Core {
         if test_only {
             let outcome = self.evaluate(context, wparam, lparam, false);
             let eaten = outcome.eaten;
+            crate::e2e_probe::record_event(
+                "test_key_down",
+                &format!("vk={} eaten={eaten}", wparam.0 & 0xFFFF),
+            );
             self.handoff.borrow_mut().store(id, outcome);
             return eaten;
         }
@@ -756,6 +774,10 @@ impl Core {
             // 編集に失敗したらエンジン側の状態と食い違う。次の入力で揃うようリセットする
             let _ = self.engine.reset(&self.session_id);
         }
+        crate::e2e_probe::record_event(
+            "key_down",
+            &format!("vk={} eaten={}", wparam.0 & 0xFFFF, outcome.eaten),
+        );
         self.finish(&outcome.followup);
         if outcome.followup.reconvert
             && let Some(ctx) = context
@@ -778,6 +800,7 @@ impl Core {
     fn set_focus(&self, foreground: bool) {
         // フォーカス取得・喪失をエンジンに伝える。喪失時の確定文字列は composition を閉じて反映する
         self.focused.set(foreground);
+        crate::e2e_probe::record_event("set_focus", &format!("foreground={foreground}"));
         if foreground {
             let _ = self.engine.focus_in(&self.session_id);
             return;

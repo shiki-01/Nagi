@@ -6,21 +6,23 @@ use windows::Win32::Graphics::Gdi::{
     FF_DONTCARE, FW_NORMAL, OUT_DEFAULT_PRECIS,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, SetFocus, VK_MENU, keybd_event,
+    GetFocus, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, SetFocus, VK_MENU, keybd_event,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, ES_AUTOHSCROLL, GetForegroundWindow, HWND_TOPMOST,
-    RegisterClassExW, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SendMessageW,
-    SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WM_GETTEXT,
-    WM_GETTEXTLENGTH, WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, ES_AUTOHSCROLL, GetClassNameW, GetForegroundWindow,
+    GetWindowThreadProcessId, HWND_TOPMOST, RegisterClassExW, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow,
+    WINDOW_EX_STYLE, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETFONT, WNDCLASSEXW, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 
 use super::pump;
 
 /// 作ったウィンドウ
+#[derive(Clone, Copy)]
 pub struct HostWindow {
     /// 最上位ウィンドウ
     pub hwnd: HWND,
@@ -182,4 +184,42 @@ pub fn edit_text(edit: HWND) -> String {
 pub fn set_edit_text(edit: HWND, text: &str) {
     let w = wide(text);
     let _ = unsafe { SetWindowTextW(edit, PCWSTR(w.as_ptr())) };
+}
+
+/// フォーカスを一度外して戻す。IME を有効にする前にフォーカスが入っていたため、
+/// TIP のキーシンクが `OnSetFocus` を受けていない可能性への対策
+pub fn refocus(w: &HostWindow) {
+    let _ = unsafe { SetFocus(None) };
+    pump(100);
+    let _ = unsafe { SetForegroundWindow(w.hwnd) };
+    let _ = unsafe { SetFocus(Some(w.edit)) };
+    pump(150);
+}
+
+fn window_info(label: &str, h: HWND) -> String {
+    if h.is_invalid() {
+        return format!("{label}=null");
+    }
+    let mut pid = 0u32;
+    let tid = unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+    let mut class = [0u16; 64];
+    let n = unsafe { GetClassNameW(h, &mut class) }.max(0) as usize;
+    format!(
+        "{label}={:?} class={} tid={tid} pid={pid}",
+        h.0,
+        String::from_utf16_lossy(&class[..n])
+    )
+}
+
+/// 前面・フォーカスの状況（診断用）
+pub fn describe_focus(w: &HostWindow) -> String {
+    format!(
+        "current_tid={} pid={} | host(tid/pid below) {} | {} | {} | edit_text_len={}",
+        unsafe { GetCurrentThreadId() },
+        std::process::id(),
+        window_info("host", w.hwnd),
+        window_info("foreground", unsafe { GetForegroundWindow() }),
+        window_info("focus", unsafe { GetFocus() }),
+        edit_text(w.edit).chars().count()
+    )
 }
