@@ -173,10 +173,17 @@ impl WinHost {
             };
             self.probe.poll();
             let before = counts(&self.probe);
+            let lines_before = self.probe.line_count();
             self.type_text("a")?;
             pump(400);
             let obs = self.read_observation();
             let after = counts(&self.probe);
+            // その 1 キー分のイベント列（set_focus / test_key_down / key_down / engine_result / marked）をそのまま出す
+            let new_lines = (self.probe.line_count() - lines_before).min(30) as usize;
+            println!(
+                "[ready round={round}] 'a' 1 回分のプローブ行（{new_lines} 行）:\n{}",
+                self.probe.recent(new_lines)
+            );
             println!(
                 "[ready round={round}] 'a' 1 回あたりの件数: test_key_down={} key_down={} engine_result={}",
                 after[0] - before[0],
@@ -246,6 +253,16 @@ impl Host for WinHost {
 
     fn idle(&mut self, ms: u64) {
         pump(ms);
+    }
+
+    fn diagnostics(&mut self) -> String {
+        self.read_observation();
+        // イベント行は vk・lParam・真偽値だけ。marked 行はテスト入力（フィクスチャ）の文字列を含む
+        format!(
+            "{}\n--- 直近のプローブ行（最大 40 行）---\n{}",
+            host::describe_focus(&self.window),
+            self.probe.recent(40)
+        )
     }
 
     fn screenshot(&mut self, path: &Path) -> Result<(), String> {

@@ -106,6 +106,17 @@ impl ProbeReader {
         &self.committed
     }
 
+    /// 直近 `n` 行（`tail` の範囲内）。診断用
+    pub fn recent(&self, n: usize) -> String {
+        let skip = self.tail.len().saturating_sub(n);
+        self.tail
+            .iter()
+            .skip(skip)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// イベント行（`event`）の累計件数
     pub fn event_count(&self, name: &str) -> u64 {
         self.events.get(name).copied().unwrap_or(0)

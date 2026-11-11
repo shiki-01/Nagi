@@ -40,6 +40,10 @@ pub trait Host {
     fn idle(&mut self, ms: u64);
     /// スクリーンショットを PNG で保存する
     fn screenshot(&mut self, path: &Path) -> Result<(), String>;
+    /// 最初の失敗時に出す診断（直近のプローブ行など）。既定は空
+    fn diagnostics(&mut self) -> String {
+        String::new()
+    }
 }
 
 /// `results.json` の 1 要素
@@ -190,6 +194,7 @@ pub fn run_all(
     artifacts: &Artifacts,
 ) -> Vec<ResultEntry> {
     let mut results = Vec::new();
+    let mut diagnosed = false;
     for suite in suites.iter().filter(|s| s.runs_on(platform)) {
         for scenario in &suite.scenarios {
             let id = format!("{}/{}", suite.suite, scenario.name);
@@ -201,6 +206,13 @@ pub fn run_all(
                 println!("PASS {id}");
             } else {
                 println!("FAIL {id}: {}", entry.message);
+                if !diagnosed {
+                    diagnosed = true;
+                    let d = host.diagnostics();
+                    if !d.is_empty() {
+                        println!("--- 最初の失敗時の診断 ---\n{d}");
+                    }
+                }
             }
             results.push(entry);
         }
