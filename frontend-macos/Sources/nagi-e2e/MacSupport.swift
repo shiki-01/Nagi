@@ -115,15 +115,104 @@ enum InputSources {
         var selectStatus: Int32
     }
 
-    /// 入力ソース（入力モード）を有効化して選択する
+    private static func boolProperty(_ source: TISInputSource, _ key: String) -> Bool? {
+        guard let raw = TISGetInputSourceProperty(source, key as CFString) else { return nil }
+        return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(raw).takeUnretainedValue())
+    }
+
+    /// id 一致の入力ソース（includeAllInstalled: 無効なものも含む）
+    private static func source(id: String) -> TISInputSource? {
+        find([keyInputSourceID: id] as CFDictionary).first
+    }
+
+    /// 1 行の説明（ID / 種別 / enabled / select-capable）
+    static func describe(_ source: TISInputSource) -> String {
+        func flag(_ value: Bool?) -> String { value.map { $0 ? "yes" : "no" } ?? "-" }
+        return "\(property(source, keyInputSourceID) ?? "?") type=\(property(source, "TISPropertyInputSourceType") ?? "-")"
+            + " enabled=\(flag(boolProperty(source, "TISPropertyInputSourceIsEnabled")))"
+            + " enableCapable=\(flag(boolProperty(source, "TISPropertyInputSourceIsEnableCapable")))"
+            + " selectCapable=\(flag(boolProperty(source, "TISPropertyInputSourceIsSelectCapable")))"
+            + " selected=\(flag(boolProperty(source, "TISPropertyInputSourceIsSelected")))"
+    }
+
+    /// 診断: Nagi 関連と com.apple.keylayout.* の入力ソースを列挙する（全件だと多いので絞る）
+    static func dump(matching needle: String) -> [String] {
+        let all = find(nil)
+        var lines = ["入力ソース総数: \(all.count)"]
+        for source in all {
+            let id = property(source, keyInputSourceID) ?? ""
+            let bundle = property(source, "TISPropertyBundleID") ?? ""
+            if id.lowercased().contains(needle.lowercased()) || bundle.lowercased().contains(needle.lowercased())
+                || id.hasPrefix("com.apple.keylayout.")
+            {
+                lines.append("  " + describe(source))
+            }
+        }
+        return lines
+    }
+
+    /// 入力ソース（入力モード）を有効化して選択する（1 回だけ試す）
     static func enableAndSelect(id: String) -> SelectReport {
-        let filter = [keyInputSourceID: id] as CFDictionary
-        guard let source = find(filter).first else {
+        guard let source = source(id: id) else {
             return SelectReport(found: false, enableStatus: -1, selectStatus: -1)
         }
         let enable = TISEnableInputSource(source)
         let select = TISSelectInputSource(source)
         return SelectReport(found: true, enableStatus: enable, selectStatus: select)
+    }
+
+    /// 有効化 → 待機 → 選択をリトライし、currentID() が id になるまで待つ（最大 timeout 秒）。
+    /// 有効化直後は TIS の一覧に反映されず select が -50 になることがあるため。ログを `log` に積む
+    static func selectWithRetry(id: String, timeout: TimeInterval, log: (String) -> Void) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        var attempt = 0
+        while Date() < deadline {
+            attempt += 1
+            if currentID() == id { return true }
+            guard let target = source(id: id) else {
+                log("  試行 \(attempt): 入力ソースが見つかりません")
+                pump(1)
+                continue
+            }
+            // 3 回目以降は一度標準の英字キーボードへ切り替えてから選ぶ（現在値と同一視されるのを避ける）
+            if attempt >= 3, attempt % 2 == 1, let us = source(id: "com.apple.keylayout.US") {
+                log("  試行 \(attempt): いったん US を選択 -> \(TISSelectInputSource(us))")
+                pump(0.5)
+            }
+            let enable = TISEnableInputSource(target)
+            pump(0.5)
+            let select = TISSelectInputSource(target)
+            pump(0.5)
+            log("  試行 \(attempt): enable=\(enable) select=\(select) current=\(currentID() ?? "nil") | \(describe(target))")
+            if select == 0, currentID() == id { return true }
+            pump(1)
+        }
+        return currentID() == id
+    }
+
+    /// 最後の手段: com.apple.HIToolbox の AppleEnabledInputSources / AppleSelectedInputSources を書き換えて
+    /// 選択させる。cfprefsd と入力メニューのエージェントを再起動して反映を促す
+    static func selectViaDefaults(bundleID: String, modeID: String, log: (String) -> Void) -> Bool {
+        let dict =
+            "<dict><key>InputSourceKind</key><string>Input Mode</string>"
+            + "<key>Bundle ID</key><string>\(bundleID)</string>"
+            + "<key>Input Mode</key><string>\(modeID)</string></dict>"
+        // 有効一覧には追記、選択中は Nagi だけにする
+        for args in [
+            ["write", "com.apple.HIToolbox", "AppleEnabledInputSources", "-array-add", dict],
+            ["write", "com.apple.HIToolbox", "AppleSelectedInputSources", "-array", dict],
+        ] {
+            let result = runProcess("/usr/bin/defaults", args)
+            log("  defaults \(args[0...2].joined(separator: " ")) -> \(result.status) \(result.output)")
+        }
+        runProcess("/usr/bin/killall", ["cfprefsd"])
+        runProcess("/usr/bin/killall", ["TextInputMenuAgent"])
+        runProcess("/usr/bin/killall", ["SystemUIServer"])
+        pump(3)
+        // 反映後に再度 TIS 経由の選択も試す
+        let ok = selectWithRetry(id: modeID, timeout: 10, log: log)
+        log("  defaults 後の現在の入力ソース: \(currentID() ?? "nil")")
+        return ok
     }
 }
 

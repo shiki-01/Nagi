@@ -202,15 +202,8 @@ final class Runner {
             }
         }
 
-        if !config.skipInstall {
-            let report = InputSources.enableAndSelect(id: japaneseInputSourceID)
-            print(
-                "入力ソース \(japaneseInputSourceID): found=\(report.found) enable=\(report.enableStatus) select=\(report.selectStatus)"
-            )
-            if !report.found {
-                return fail(ExitCode.setup, "入力ソース \(japaneseInputSourceID) が見つかりません（--register の結果を確認してください）")
-            }
-        }
+        // 入力ソースの選択（有効化直後は select が -50 になることがあるのでリトライ + 診断 + defaults フォールバック）
+        if let code = selectInputSource() { return code }
 
         // (c) NagiTestHost の起動と前面化
         let hostURL: URL
@@ -238,6 +231,28 @@ final class Runner {
             screenshot(named: "host-not-active")
         }
         return nil
+    }
+
+    /// 成功なら nil、失敗なら終了コード
+    private func selectInputSource() -> Int32? {
+        let id = japaneseInputSourceID
+        if InputSources.currentID() == id { return nil }
+        let report = InputSources.enableAndSelect(id: id)
+        print("入力ソース \(id): found=\(report.found) enable=\(report.enableStatus) select=\(report.selectStatus)")
+        print("入力ソースの状態（選択前）:")
+        InputSources.dump(matching: "nagi").forEach { print($0) }
+        if InputSources.selectWithRetry(id: id, timeout: 30, log: { print($0) }) { return nil }
+
+        print("TISSelectInputSource で選べませんでした。defaults (com.apple.HIToolbox) によるフォールバックを試します")
+        if InputSources.selectViaDefaults(bundleID: bundleID, modeID: id, log: { print($0) }) { return nil }
+
+        print("入力ソースの状態（失敗後）:")
+        InputSources.dump(matching: "nagi").forEach { print($0) }
+        screenshot(named: "select-input-source-failed")
+        return fail(
+            ExitCode.unreachable,
+            "入力ソース \(id) を選択できません（現在: \(InputSources.currentID() ?? "nil")）。"
+                + "GUI セッションに紐づかない環境、またはシステム設定での手動追加が必要な環境の可能性があります")
     }
 
     private func executableName() -> String {
@@ -318,6 +333,8 @@ final class Runner {
         if InputSources.currentID() != japaneseInputSourceID {
             lines.append("  Nagi の入力ソースが選択されていません（TISSelectInputSource が拒否された可能性）")
         }
+        lines.append("  入力ソース一覧:")
+        lines.append(contentsOf: InputSources.dump(matching: "nagi"))
         lines.append("  それ以外: IME プロセス/エンジンの起動失敗。`log show --predicate 'process == \"\(executableName())\"' --last 5m` を確認")
         return fail(ExitCode.unreachable, lines.joined(separator: "\n"))
     }

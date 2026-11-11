@@ -91,6 +91,7 @@ jobs:
         run: |
           mkdir -p e2e-out
           log show --last 15m --style compact --predicate 'process == "NagiIMEApp" OR process == "imserver" OR process == "NagiTestHost"' > e2e-out/unified.log 2>&1 || true
+          defaults read com.apple.HIToolbox > e2e-out/hitoolbox.txt 2>&1 || true
           ~/Library/Input\ Methods/Nagi.app/Contents/MacOS/NagiIMEApp --diagnose > e2e-out/diagnose.txt 2>&1 || true
 
       - uses: actions/upload-artifact@v4
@@ -103,4 +104,5 @@ jobs:
             e2e-out/host.log
             e2e-out/unified.log
             e2e-out/diagnose.txt
+            e2e-out/hitoolbox.txt
           if-no-files-found: warn
