@@ -511,7 +511,7 @@ G-17 で選択機構のみとしていた範囲操作に、Mozkey（`koyasi777/m
 
 G-25 の続き。G-24 の非同期通知基盤に乗せて、実際にライブ変換の結果を配信するようにした。
 
-- **デバウンススレッド方式**: `process_key` のたびに、Composing 状態かつ入力の reading 文字数が `live_conversion_min_key_length` 以上なら、その場でスレッドを1本立てて `live_conversion_delay_ms` だけ sleep してから `Engine::live_convert` を呼ぶ。古いスレッドをキャンセルしない（G-25 の設計により無害）。高速に連続入力すると短命スレッドが積み重なる可能性があるが、遅延（既定228ms）より速いキー入力間隔は現実的にまれであり、各スレッドのコスト（sleep + 1回のロック取得）も小さいため許容する
+- **デバウンススレッド方式**: `process_key` のたびに、Composing 状態かつ入力の reading 文字数が `live_conversion_min_key_length` 以上なら、その場でスレッドを1本立てて `live_conversion_delay_ms` だけ sleep してから `Engine::live_convert` を呼ぶ。古いスレッドをキャンセルしない（G-25 の設計により無害）。高速に連続入力すると短命スレッドが積み重なる可能性があるが、遅延（既定228ms）より速いキー入力間隔は現実的にまれであり、各スレッドのコスト（sleep + 1回のロック取得）も小さいため許容する（→ G-51 で世代カウンタによる破棄を追加。スレッド自体は引き続き打鍵ごとに spawn するが、古いものは sleep 後・ロック取得後に即終了する）
 - **既定値は Mozkey の実測値を採用**: `live_conversion_delay_ms = 228`、`live_conversion_min_key_length = 2`（`koyasi777/mozkey` の `config.proto` 実測。ユーザーから「mozkey を参照」との回答）
 - **`Server.engine` を `Arc<Mutex<Engine>>` 化**: デバウンススレッドとメインスレッドが同じ `Engine` を安全に共有するための変更。ロックはポイズン時も中身を使って継続する（`unwrap_or_else(PoisonError::into_inner)`）方針にした。IME サーバーは一部の処理でパニックが起きても全体を落とさず動き続けることを優先する
 - **`update_candidates` の非同期配信は対象外**（今回のスコープ外）: ライブ変換は候補ウィンドウを開かない（Mozkey の挙動を参照）ため不要
@@ -814,7 +814,16 @@ G-25 の続き。G-24 の非同期通知基盤に乗せて、実際にライブ�
 - **修正**: (1) 自動時は `min(cpu_cores, 6)`（`AUTO_N_THREADS_MAX`、`runtime.rs`）。Light は従来どおりその半分（最小 1）。`n_threads > 0` の明示指定は変更しない。(2) `set_n_threads` は値が変わったときだけ ctx を破棄する（`infer/src/lib.rs`。llama feature 内のため単体テストは省略。モデルが要る）。
 - **暫定判断**: 上限 6 は根拠となる実測なしの暫定値。
 - **未計測**: p95 レイテンシ（Space 変換・ライブ変換）への影響。`nagi-live-bench` での実測が必要。
-- **未対応**: 打鍵ごとにスレッドが積み上がる問題（推論は取消不能で、連打すると並行して走り続ける）。
+- **未対応**: 打鍵ごとにスレッドが積み上がる問題（推論は取消不能で、連打すると並行して走り続ける）。→ G-51 で対策。
+
+### G-51. 打鍵ごとのデバウンススレッドの世代破棄・陳腐化した LLM 要求の打ち切り（2026-11-11、暫定・要レビュー）
+
+- **背景**: G-50 の後も、待機中に CPU が高止まりしスレッドが増える。打鍵ごとの使い捨てスレッドが古い要求を取り消せず、推論がモデルのロック待ちで溜まって、打鍵停止後も処理し続ける。
+- **対策 1（`server/src/server.rs`）**: 入力中候補（`maybe_schedule_composing_candidates`）とライブ変換（`maybe_schedule_live_conversion`）に、種別ごとの世代カウンタ（`DebounceGen`）を持つ。spawn 時に世代を採り、sleep 後とエンジンのロック取得後の 2 回、自分が最新でなければ何もせず終了する。最新の打鍵の分は必ず 1 回走る。結果の破棄は従来どおり `revision`（と `Engine` 側の reading 一致確認）でも行う。
+- **対策 2（`server/src/pipeline.rs`）**: `LlmState` に要求の通し番号を持ち、`nagi-llm-beam` / `nagi-llm-score` / `nagi-llm-convert` はモデルのロック取得直後に「呼び出し側が諦めた（`recv_timeout` 超過）かつより新しい要求がある」なら推論せず終了する（`is_stale_request`）。`nagi-llm-convert` は、完了通知を伴う要求（outer あり。遅れて届く結果をキャッシュ＋通知する設計）は陳腐化と見なさず、通知なしの要求のみ対象にする。`nagi-llm-fuzzy` は元から予算（deadline）超過で最初の 1 件の前に打ち切るため変更なし。
+- **対策 3（推論自体の中断）**: 未対応。実行中の推論を止める abort callback は導入していない。
+- **テスト**: `DebounceGen` と `is_stale_request` / 要求番号の単体テスト（llama feature 不要）。
+- **残課題・要確認**: 実機（macOS）で待機中の CPU 使用率・スレッド数が下がったことの確認が必要（未確認）。推論中の要求は完走する。打鍵ごとの spawn 自体は残る（スレッドプール化・単一ワーカー化は未対応）。
 
 
 ### H-6. iOS キーボード拡張のメモリ実測（2026-10-14、ユーザー実測・要レビュー）

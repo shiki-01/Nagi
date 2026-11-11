@@ -24,6 +24,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,9 +37,26 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// 入力中の候補を作るまでのデバウンス。キー入力が続く間は、最後のキーのあとに 1 回だけ作る
 const COMPOSING_CANDIDATES_DELAY: Duration = Duration::from_millis(25);
 
+/// デバウンス用の世代カウンタ。打鍵ごとに進め、遅延後に自分の世代が最新でなければ何もしない（G-51）
+#[derive(Debug, Default)]
+struct DebounceGen(AtomicU64);
+
+impl DebounceGen {
+    /// 新しい世代を採る
+    fn bump(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn is_latest(&self, gen_id: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == gen_id
+    }
+}
+
 /// JSON-RPC サーバー
 pub struct Server {
     engine: Arc<Mutex<Engine>>,
+    composing_gen: Arc<DebounceGen>,
+    live_gen: Arc<DebounceGen>,
     runtime: Arc<Runtime>,
     reload: Reloadable,
     initial_mode: InputMode,
@@ -69,6 +87,8 @@ impl Server {
         Server {
             initial_mode: config.initial_mode,
             engine: Arc::new(Mutex::new(Engine::new(backend, config))),
+            composing_gen: Arc::default(),
+            live_gen: Arc::default(),
             runtime: Runtime::detached(false),
             reload: Reloadable::detached(),
             initialized: false,
@@ -87,6 +107,8 @@ impl Server {
         Server {
             initial_mode: config.initial_mode,
             engine: Arc::new(Mutex::new(engine)),
+            composing_gen: Arc::default(),
+            live_gen: Arc::default(),
             runtime: built.runtime,
             reload: built.reload,
             initialized: false,
@@ -254,7 +276,8 @@ impl Server {
     }
 
     /// 入力中（変換前）の候補を、デバウンス後にバックグラウンドで作り、`update_candidates` で届ける。
-    /// 入力のたびに呼ぶ。古いスレッドは、実行時点の入力と読みが一致しなければ何もしない
+    /// 入力のたびに呼ぶ。古いスレッドは、世代が最新でない（または実行時点の入力と読みが一致しない）
+    /// なら何もしない（最新の打鍵の分は必ず 1 回走る）
     fn maybe_schedule_composing_candidates(&self, session_id: &str) {
         let Some(reading) = self.engine_lock().composing_candidate_reading(session_id) else {
             return;
@@ -262,12 +285,22 @@ impl Server {
         let engine = self.engine.clone();
         let runtime = self.runtime.clone();
         let session_id = session_id.to_string();
+        let gens = self.composing_gen.clone();
+        let my_gen = gens.bump();
         std::thread::spawn(move || {
             std::thread::sleep(COMPOSING_CANDIDATES_DELAY);
-            let result = engine
+            if !gens.is_latest(my_gen) {
+                return;
+            }
+            let mut guard = engine
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .refresh_composing_candidates(&session_id, &reading);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // ロック待ちの間に新しい打鍵があれば、そちらのスレッドに任せる
+            if !gens.is_latest(my_gen) {
+                return;
+            }
+            let result = guard.refresh_composing_candidates(&session_id, &reading);
+            drop(guard);
             if let Some(r) = result
                 && let Some(candidates) = r.candidates
             {
@@ -281,8 +314,8 @@ impl Server {
     }
 
     /// ライブ変換の対象なら、デバウンス後に `live_convert` を試みるスレッドを立てる。
-    /// スレッドが増えても無害（`Engine::live_convert` が、実行時点の入力と reading が
-    /// 一致しない限り何もしないため。古いスレッドをキャンセルする仕組みは不要）
+    /// 世代カウンタで古いスレッドは何もせず終わる（最新の打鍵の分は必ず 1 回走る。
+    /// `Engine::live_convert` も実行時点の入力と reading が一致しない限り何もしない）
     fn maybe_schedule_live_conversion(&self, session_id: &str) {
         let tunables = self.runtime.tunables();
         if !tunables.live_conversion_enabled {
@@ -298,12 +331,21 @@ impl Server {
         let runtime = self.runtime.clone();
         let session_id = session_id.to_string();
         let delay = std::time::Duration::from_millis(tunables.live_conversion_delay_ms);
+        let gens = self.live_gen.clone();
+        let my_gen = gens.bump();
         std::thread::spawn(move || {
             std::thread::sleep(delay);
-            let result = engine
+            if !gens.is_latest(my_gen) {
+                return;
+            }
+            let mut guard = engine
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .live_convert(&session_id, &reading);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !gens.is_latest(my_gen) {
+                return;
+            }
+            let result = guard.live_convert(&session_id, &reading);
+            drop(guard);
             if let Some(r) = result
                 && let Some(preedit) = r.preedit
             {
@@ -803,5 +845,20 @@ impl Server {
             drop(handle);
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod debounce_tests {
+    use super::DebounceGen;
+
+    #[test]
+    fn only_latest_generation_runs() {
+        let g = DebounceGen::default();
+        let a = g.bump();
+        assert!(g.is_latest(a));
+        let b = g.bump();
+        assert!(!g.is_latest(a), "古い世代は破棄される");
+        assert!(g.is_latest(b), "最新の世代は必ず走る");
     }
 }

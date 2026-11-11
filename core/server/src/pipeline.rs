@@ -59,9 +59,26 @@ struct LlmState {
     unloaded: AtomicBool,
     /// 解放・再読み込みのたびに進める世代。推論の開始時と完了時で変わっていたら、その結果は捨てる
     generation: AtomicU64,
+    /// LLM 呼び出し要求の通し番号。要求のたびに進める（陳腐化の判定用。G-51）
+    requests: AtomicU64,
+}
+
+/// 呼び出し側が待ちをやめ（`abandoned`）、かつ、より新しい要求が投入済みなら、その要求は陳腐化している。
+/// モデルのロックを取れた時点で真なら、推論せずに終わる（打鍵停止後に古い推論が溜まって走り続けるのを防ぐ）
+fn is_stale_request(abandoned: bool, my_seq: u64, latest_seq: u64) -> bool {
+    abandoned && latest_seq > my_seq
 }
 
 impl LlmState {
+    /// 新しい要求の番号を採る
+    fn next_request(&self) -> u64 {
+        self.requests.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn latest_request(&self) -> u64 {
+        self.requests.load(Ordering::SeqCst)
+    }
+
     fn is_unloaded(&self) -> bool {
         self.unloaded.load(Ordering::SeqCst)
     }
@@ -517,11 +534,14 @@ impl Pipeline {
         let (model, cache, runtime) = (llm.model.clone(), llm.cache.clone(), self.runtime.clone());
         let state = llm.state.clone();
         let generation = state.generation();
+        let my_seq = state.next_request();
         let completions = self.completions.clone();
         let req = Self::request(reading, left, eff.persona.as_deref());
         let slot_bg = slot.clone();
+        let slot_stale = slot.clone();
         let key_bg = key.clone();
         let outer_bg = outer.cloned();
+        let outer_stale_free = outer.is_none();
         let n_threads = eff.n_threads;
         std::thread::Builder::new()
             .name("nagi-llm-convert".into())
@@ -529,6 +549,14 @@ impl Pipeline {
                 let result = model.lock().ok().and_then(|mut m| {
                     // 待っている間に解放されたら、推論せず（重みを読み直さず）捨てる
                     if state.is_unloaded() || state.generation() != generation {
+                        return None;
+                    }
+                    // 呼び出し側が諦め、完了通知も要らず（outer なし）、より新しい要求がある: 推論しない。
+                    // 通知を伴う要求は、遅れて届く結果に価値があるので陳腐化とは見なさない
+                    let abandoned = slot_stale.lock().is_ok_and(|s| *s == Slot::Abandoned);
+                    if outer_stale_free
+                        && is_stale_request(abandoned, my_seq, state.latest_request())
+                    {
                         return None;
                     }
                     m.set_n_threads(n_threads);
@@ -606,6 +634,9 @@ impl Pipeline {
         let (tx, rx) = mpsc::sync_channel::<Vec<String>>(1);
         let model = llm.model.clone();
         let state = llm.state.clone();
+        let my_seq = state.next_request();
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let abandoned_bg = abandoned.clone();
         let mut req = Self::request(reading, left, eff.persona.as_deref());
         req.beam_width = width;
         let reading_owned = reading.to_string();
@@ -616,6 +647,13 @@ impl Pipeline {
                     .lock()
                     .ok()
                     .filter(|_| !state.is_unloaded())
+                    .filter(|_| {
+                        !is_stale_request(
+                            abandoned_bg.load(Ordering::SeqCst),
+                            my_seq,
+                            state.latest_request(),
+                        )
+                    })
                     .and_then(|mut m| m.convert(&req).ok())
                     .unwrap_or_default();
                 let surfaces: Vec<String> = hyps
@@ -628,7 +666,10 @@ impl Pipeline {
         if spawned.is_err() {
             return Vec::new();
         }
-        rx.recv_timeout(eff.sync_budget).unwrap_or_default()
+        rx.recv_timeout(eff.sync_budget).unwrap_or_else(|_| {
+            abandoned.store(true, Ordering::SeqCst);
+            Vec::new()
+        })
     }
 
     /// 候補の対数確率スコア（予算内に終わらなければ `None`）
@@ -643,13 +684,22 @@ impl Pipeline {
         let (tx, rx) = mpsc::sync_channel::<Option<Vec<f32>>>(1);
         let model = llm.model.clone();
         let state = llm.state.clone();
+        let my_seq = state.next_request();
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let abandoned_bg = abandoned.clone();
         let req = Self::request(reading, left, eff.persona.as_deref());
         let n_threads = eff.n_threads;
         std::thread::Builder::new()
             .name("nagi-llm-score".into())
             .spawn(move || {
                 let scores = model.lock().ok().and_then(|mut m| {
-                    if state.is_unloaded() {
+                    if state.is_unloaded()
+                        || is_stale_request(
+                            abandoned_bg.load(Ordering::SeqCst),
+                            my_seq,
+                            state.latest_request(),
+                        )
+                    {
                         return None;
                     }
                     m.set_n_threads(n_threads);
@@ -658,7 +708,11 @@ impl Pipeline {
                 let _ = tx.send(scores);
             })
             .ok()?;
-        rx.recv_timeout(eff.sync_budget).ok().flatten()
+        let scores = rx.recv_timeout(eff.sync_budget).ok().flatten();
+        if scores.is_none() {
+            abandoned.store(true, Ordering::SeqCst);
+        }
+        scores
     }
 
     fn dict_segments(
@@ -1495,5 +1549,26 @@ fn qwerty_substitute(typed: u8, intended: u8) -> f32 {
         0.6
     } else {
         1.0
+    }
+}
+
+#[cfg(test)]
+mod stale_tests {
+    use super::*;
+
+    #[test]
+    fn stale_only_when_abandoned_and_newer_exists() {
+        assert!(is_stale_request(true, 1, 2));
+        assert!(!is_stale_request(false, 1, 2), "待っている要求は捨てない");
+        assert!(!is_stale_request(true, 2, 2), "最新の要求は捨てない");
+    }
+
+    #[test]
+    fn request_numbers_increase() {
+        let s = LlmState::default();
+        let a = s.next_request();
+        let b = s.next_request();
+        assert!(b > a);
+        assert_eq!(s.latest_request(), b);
     }
 }
