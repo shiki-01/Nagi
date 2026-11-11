@@ -38,21 +38,27 @@ final class E2ERunner {
             currentSuite = suite.suite
             currentScenario = scenario.name
             var failure: String?
+            // 入力系の操作ごとに読んだテキスト欄の表示（失敗メッセージに添える経過）
+            var history: [String] = []
             do {
                 try launchFresh()
                 for (index, step) in scenario.steps.enumerated() {
                     do {
                         try perform(step)
-                        // 診断用: 入力系の操作ごとにテキスト欄の表示を残す（失敗時にどこで食い違ったかを追えるように）
                         if step.tap != nil || step.flick != nil || step.key != nil {
-                            print("[trace] \(suite.suite)/\(scenario.name) step \(index + 1) (\(step.summary)): text=\"\(currentText())\"")
+                            let line = "step\(index + 1) \(step.summary) -> \"\(currentText())\" cand=\(currentCandidates().count)"
+                            history.append(line)
+                            print("[trace] \(suite.suite)/\(scenario.name) \(line)")
                         }
                     } catch {
                         throw E2EError.step("step \(index + 1) (\(step.summary)): \(error)")
                     }
                 }
             } catch {
-                failure = "\(error)"
+                var message = "\(error)"
+                if !history.isEmpty { message += " | 経過: " + history.joined(separator: "; ") }
+                // FAIL 行を grep で取れるよう 1 行にする
+                failure = message.replacingOccurrences(of: "\n", with: " ")
             }
             if let failure = failure {
                 saveScreenshot(name: "FAIL_\(suite.suite)_\(scenario.name)")
