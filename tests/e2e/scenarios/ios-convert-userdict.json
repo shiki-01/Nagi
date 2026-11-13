@@ -1,7 +1,7 @@
 {
   "suite": "ios-convert-userdict",
   "platforms": [
-    "ios"
+    "ios-known-issue"
   ],
   "scenarios": [
     {

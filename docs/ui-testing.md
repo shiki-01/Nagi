@@ -80,6 +80,21 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 - **手動確認（実機）**: 「あい」と入力 → `←` → 「か」を入力して、「あかい」になるか。ならなければ実機でも不具合で、`KeyboardModel.arrow()` 以降の調査が必要。実機で問題なければ、シミュレータ上の XCUITest 固有の現象（`setMarkedText(selectedRange)` の挙動、タップのタイミング、ライブ変換の非同期通知の割り込みなど）と見られる
 - 調査を再開する場合: 拡張側に、E2E のときだけ有効な診断出力（受け取った action とコアのカーソル位置）を足して CI を回す（製品コードに触れる）
 
+### iOS: 変換系シナリオ（ユーザー辞書の注入。保留中）
+
+`tests/e2e/scenarios/ios-convert-userdict.json`（Space 変換でユーザー辞書の固定語になること）は、`ios-known-issue` として保留している（実機ドライバーでは実行せず、ヘッドレスでのみ実行。ヘッドレスは通る）。
+
+- 実装済み: `-nagi-e2e` のときだけ、ホストアプリが `tests/e2e/fixtures/user-dir` を App Group のユーザー領域へ置く（`App/E2EMode.swift` の `installFixtures()`）。通常起動の挙動は変えない
+- CI（`ios-uitest.yml`、手動実行）の結果: 4 件とも、候補が「カタカナ」と「ひらがな」だけで、ユーザー辞書の語が出ない
+- 診断: ホストの配置状況を入力テスト画面の `e2e.fixture-status` に表示し、失敗メッセージ末尾の `| fixture:` に付ける仕組みを入れたが、直近の実行では `(e2e.fixture-status なし)` で、UITest がその要素を取得できていない（Form 内の Text が階層に出ていない可能性。スクロールや `staticTexts` での検索を要確認）
+- 仮説: (a) CI は署名なし（`CODE_SIGNING_ALLOWED=NO`）のため entitlements が埋め込まれず、App Group コンテナが取れない。ホストが書いた場所と拡張が読む場所が別になる。(b) 拡張側が辞書を読み込むタイミングの問題。コード上は、コアが要求のたびに `user_dict/` のディレクトリ stamp を見て再読込するため、(b) は考えにくい
+- 別の不安定さ: `userdict_second_word` で step1 の入力が取りこぼされた（`cand=0`）。キーボード準備直後の最初の入力が不安定
+- 再開手順:
+  1. `ios-uitest` を手動実行する。入力 `suite=ios-convert-userdict`（このスイートだけ実行。約 20 分）、`adhoc_sign=true`（ad-hoc 署名で entitlements を埋め込む実験。ビルドが通るかは未確認）
+  2. `e2e.fixture-status` を UITest が取得できるようにする（診断の復活）
+  3. `appGroup=nil` なら (a) が確定。`adhoc_sign=true` で改善するかを見る。改善しなければ、シミュレータでも使える領域（Application Support 等）を拡張とホストで共有する経路を検討する（製品コードに触れるため要相談）
+  4. 通ったら、`platforms` を `["ios"]` に戻す
+
 ## 未検証の事項と、最初に疑う箇所
 
 これらはいずれもこの開発環境（Linux）では実行できず、CI での初回実行で確認する必要があります。
