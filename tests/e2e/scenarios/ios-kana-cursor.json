@@ -1,0 +1,144 @@
+{
+  "suite": "ios-kana-cursor",
+  "platforms": [
+    "ios-known-issue"
+  ],
+  "scenarios": [
+    {
+      "name": "cursor_move_insert",
+      "steps": [
+        {
+          "tap": [
+            "あ"
+          ]
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "left"
+          }
+        },
+        {
+          "tap": [
+            "←"
+          ]
+        },
+        {
+          "flick": {
+            "key": "か",
+            "dir": "up"
+          }
+        },
+        {
+          "expect": {
+            "text": "あくい"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cursor_left_then_backspace",
+      "steps": [
+        {
+          "tap": [
+            "あ"
+          ]
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "left"
+          }
+        },
+        {
+          "expect": {
+            "text": "あい"
+          }
+        },
+        {
+          "tap": [
+            "←"
+          ]
+        },
+        {
+          "tap": [
+            "⌫"
+          ]
+        },
+        {
+          "expect": {
+            "text": "い"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cursor_left_then_tap_insert",
+      "steps": [
+        {
+          "tap": [
+            "あ"
+          ]
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "left"
+          }
+        },
+        {
+          "tap": [
+            "←"
+          ]
+        },
+        {
+          "tap": [
+            "か"
+          ]
+        },
+        {
+          "expect": {
+            "text": "あかい"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cursor_left_twice_insert",
+      "steps": [
+        {
+          "tap": [
+            "あ"
+          ]
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "left"
+          }
+        },
+        {
+          "tap": [
+            "←"
+          ]
+        },
+        {
+          "tap": [
+            "←"
+          ]
+        },
+        {
+          "flick": {
+            "key": "か",
+            "dir": "up"
+          }
+        },
+        {
+          "expect": {
+            "text": "くあい"
+          }
+        }
+      ]
+    }
+  ]
+}

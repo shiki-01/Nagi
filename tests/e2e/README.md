@@ -44,6 +44,7 @@
 ```
 
 - `platforms`: そのスイートを実行するプラットフォーム（`macos` / `windows` / `ios`）。省略時は全て
+  - `ios-known-issue`: iOS の実機ドライバー（XCUITest）では実行せず、ヘッドレス（`cargo xtask e2e-headless --ios`）でのみ実行する既知の課題用スイート。原因が解消したら `ios` に戻す
 - `steps` の要素は次のいずれか 1 つ
   - `{ "type": "<ASCII 文字列>" }`: 物理キーとして 1 文字ずつ送る（macOS / Windows）
   - `{ "key": "<名前>" }`: 特殊キー。`Return` `Space` `Backspace` `Escape` `Left` `Right` `Up` `Down` `Tab` `Delete`。修飾は `Shift+Left` のように `+` で連結

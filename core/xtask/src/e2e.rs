@@ -417,7 +417,9 @@ pub fn run(opts: Options) -> Result<(), String> {
             continue;
         }
         let platforms = suite.get("platforms").and_then(Value::as_array);
-        let runs_here = |x: &Value| x == "macos" || x == "windows" || (opts.ios && x == "ios");
+        let runs_here = |x: &Value| {
+            x == "macos" || x == "windows" || (opts.ios && (x == "ios" || x == "ios-known-issue"))
+        };
         if platforms.is_some_and(|p| !p.iter().any(runs_here)) {
             eprintln!("SKIP {suite_name}（このランナーの対象外のプラットフォーム）");
             continue;

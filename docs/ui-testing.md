@@ -53,8 +53,8 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 
 | 対象 | 結果 | 備考 |
 | --- | --- | --- |
-| iOS | **13 件中 10 件 PASS**（シミュレータ上で実際にキーボードを操作） | 失敗 3 件はシナリオ開始時のキーボード表示の不安定さ（堅牢化中） |
-| Windows | ビルド・登録・IME 有効化・TSF の起動までは成功した実行がある。キー入力が IME に届かない問題と、実行ごとに Nagi が列挙されないばらつきが残る | 調整中 |
+| iOS | **13 件 PASS**（シミュレータ上で実際にキーボードを操作）。既知の課題 4 件は別スイートに分離 | 下記「iOS: ←キー後の挿入位置（既知の課題）」 |
+| Windows | **17/17 成功**（SendInput → TSF → IME → 入力欄の経路） | E2E が製品の TSF の不具合を 1 件検出し修正（`key_id` のリピート回数） |
 | macOS | ビルド・権限・IME の登録・入力ソースの有効化までは成功。`TISSelectInputSource` が全試行で `-50` になり、Nagi を選択できない | GitHub ホストランナーでは不可能と判断 |
 
 ### macOS: 自前の Mac で実行する
@@ -68,6 +68,17 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 4. `tests/e2e/macos/run.sh` を実行する
 
 常時回したい場合は、この Mac を self-hosted ランナーとして登録し、`macos-e2e.yml` の `runs-on` を `self-hosted` に変更します。
+
+### iOS: ←キー後の挿入位置（既知の課題）
+
+シミュレータ上の XCUITest で、`←` を押しても入力中のカーソルが動かない現象が再現している（原因は未特定）。
+
+- 対象: `tests/e2e/scenarios/ios-kana-cursor.json`（`cursor_move_insert` / `cursor_left_then_backspace` / `cursor_left_then_tap_insert` / `cursor_left_twice_insert`）。`ios-known-issue` として、実機ドライバーでは実行せず、ヘッドレス（`cargo xtask e2e-headless --ios`、コア直叩き）でのみ実行する
+- 事実: `あ`→`い`（あいをフリック）→`←`→`⌫` で、期待「い」のところ「あ」になる（⌫ はコアだけで完結するため、`←` がコアのカーソルに届いていない）。`←` を含んでも結果が変わらない `cursor_left_right_insert` は PASS
+- コード上は、`←` は `TapKeyView` → `KeyboardModel.arrow()` → `perform(.moveCursor)` → `composer.move_left()` に進むはずで、コアは `Composing` のビューに `focus` を持たせない。ヘッドレスでは、ライブ変換 ON でも通る
+- `docs/ios-device-checklist.md` に、実機で `←` により下線の途中へキャレットを動かす確認の記録はあるが、動かした後に文字を挿入する経路の確認記録は無い
+- **手動確認（実機）**: 「あい」と入力 → `←` → 「か」を入力して、「あかい」になるか。ならなければ実機でも不具合で、`KeyboardModel.arrow()` 以降の調査が必要。実機で問題なければ、シミュレータ上の XCUITest 固有の現象（`setMarkedText(selectedRange)` の挙動、タップのタイミング、ライブ変換の非同期通知の割り込みなど）と見られる
+- 調査を再開する場合: 拡張側に、E2E のときだけ有効な診断出力（受け取った action とコアのカーソル位置）を足して CI を回す（製品コードに触れる）
 
 ## 未検証の事項と、最初に疑う箇所
 
@@ -102,15 +113,8 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 
 ### 再開手順
 
-1. 最新の `ios-uitest` の実行結果を確認する（コミット「ios-uitest: 失敗メッセージに各ステップ後のテキスト履歴を含める」）
-   - `FAIL ios-kana/cursor_move_insert` の `| 経過:` 以降を読み、原因を判定する
-     - `step3 tap ←` で text が変わる → `←` の経路の問題
-     - `step4` で "あくい" になった後に "あいく" へ戻る → 後から戻す処理がある
-     - `cand=0` のまま → プリエディット無し（`hasPreedit` 偽）の経路で、ホスト側のキャレットだけが動いている疑い
-   - 実装は `frontend-ios-spike/Keyboard/KeyboardModel.swift` の `arrow()`（887 行付近）。入力中はコアの `perform(.moveCursor)`、プリエディット無しのときだけ `adjustTextPosition`
-   - ヘッドレス（`cargo xtask e2e-headless --ios`）では "あくい" で通っている。iOS 拡張の実設定（ライブ変換が既定 ON、曖昧入力 ON）とフィクスチャ（`live_conversion = false`）の差が候補
-   - テスト側の期待値の誤りなら `tests/e2e/scenarios/ios-kana.json` を直す。実装の不具合なら根拠を付けてユーザーに相談する
-2. 13 件が通ったら後始末をする
+1. iOS の既知の課題（上記）は分離済み。実機での手動確認の結果を受けて、`ios-kana-cursor.json` を `ios` に戻すか、調査を再開する
+2. 後始末をする
    - `.github/workflows/ios-uitest.yml` と `windows-e2e.yml` の検証用 `push` トリガー（`claude/ui-automation-testing-4mgml9` 限定）を削除する（`main` に入れる前に必須）
    - `macos-e2e.yml` は push トリガー削除済み
    - 3 つの新規ワークフローは `main` に無いと `workflow_dispatch` できない。`main` へ入れた後に手動実行へ切り替わる
