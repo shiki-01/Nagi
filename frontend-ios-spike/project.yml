@@ -41,6 +41,11 @@ targets:
         type: folder
         optional: true
         buildPhase: resources
+      # UI テスト（起動引数 -nagi-e2e）用の決定的なユーザー辞書・設定。通常起動では読まない
+      - path: ../tests/e2e/fixtures/user-dir
+        type: folder
+        optional: true
+        buildPhase: resources
       # アプリ内ライセンス表示用（About > ライセンス）。リポジトリルートのファイルをバンドル直下に同梱する
       - path: ../NOTICE
         buildPhase: resources

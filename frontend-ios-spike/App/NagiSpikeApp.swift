@@ -5,7 +5,11 @@ struct NagiSpikeApp: App {
     @StateObject private var layoutInbox = NagiLayoutURLInbox.shared
     @Environment(\.scenePhase) private var scenePhase
 
-    init() { LaunchBaseline.capture() }
+    init() {
+        LaunchBaseline.capture()
+        // UI テスト（起動引数 -nagi-e2e）のときだけ、決定的な辞書・設定を置く。通常起動では何もしない
+        if NagiE2EMode.isEnabled { NagiE2EMode.installFixtures() }
+    }
 
     private static func captureClipboard() {
         ClipboardCapture.captureIfChanged(

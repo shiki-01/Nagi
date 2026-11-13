@@ -1,0 +1,246 @@
+{
+  "suite": "ios-convert-userdict",
+  "platforms": [
+    "ios"
+  ],
+  "scenarios": [
+    {
+      "name": "space_converts_to_userdict_word",
+      "steps": [
+        {
+          "flick": {
+            "key": "た",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "さ",
+            "dir": "up"
+          }
+        },
+        {
+          "flick": {
+            "key": "た",
+            "dir": "down"
+          }
+        },
+        {
+          "flick": {
+            "key": "は",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "tap": [
+            "か"
+          ]
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "tap": [
+            "空白"
+          ]
+        },
+        {
+          "expect": {
+            "text": "テスト変換"
+          }
+        }
+      ]
+    },
+    {
+      "name": "space_twice_selects_next_candidate",
+      "steps": [
+        {
+          "flick": {
+            "key": "た",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "さ",
+            "dir": "up"
+          }
+        },
+        {
+          "flick": {
+            "key": "た",
+            "dir": "down"
+          }
+        },
+        {
+          "flick": {
+            "key": "は",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "tap": [
+            "か"
+          ]
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "tap": [
+            "空白"
+          ]
+        },
+        {
+          "tap": [
+            "空白"
+          ]
+        },
+        {
+          "expect": {
+            "text": "テスト返還"
+          }
+        }
+      ]
+    },
+    {
+      "name": "space_shows_userdict_candidates",
+      "steps": [
+        {
+          "flick": {
+            "key": "た",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "さ",
+            "dir": "up"
+          }
+        },
+        {
+          "flick": {
+            "key": "た",
+            "dir": "down"
+          }
+        },
+        {
+          "flick": {
+            "key": "は",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "tap": [
+            "か"
+          ]
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "tap": [
+            "空白"
+          ]
+        },
+        {
+          "expect": {
+            "candidates_contain": [
+              "テスト変換",
+              "テスト返還"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "userdict_second_word",
+      "steps": [
+        {
+          "flick": {
+            "key": "か",
+            "dir": "left"
+          }
+        },
+        {
+          "flick": {
+            "key": "や",
+            "dir": "down"
+          }
+        },
+        {
+          "tap": [
+            "゛゜小"
+          ]
+        },
+        {
+          "flick": {
+            "key": "あ",
+            "dir": "up"
+          }
+        },
+        {
+          "flick": {
+            "key": "な",
+            "dir": "down"
+          }
+        },
+        {
+          "flick": {
+            "key": "た",
+            "dir": "right"
+          }
+        },
+        {
+          "flick": {
+            "key": "わ",
+            "dir": "up"
+          }
+        },
+        {
+          "flick": {
+            "key": "か",
+            "dir": "left"
+          }
+        },
+        {
+          "tap": [
+            "空白"
+          ]
+        },
+        {
+          "expect": {
+            "text": "今日の天気"
+          }
+        }
+      ]
+    }
+  ]
+}
