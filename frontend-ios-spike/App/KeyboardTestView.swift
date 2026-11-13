@@ -13,6 +13,15 @@ struct KeyboardTestView: View {
     var body: some View {
         NavigationStack {
             Form {
+                // UI テスト（-nagi-e2e）のときだけ: フィクスチャ配置の結果（UITests が失敗時の診断に読む）
+                if NagiE2EMode.isEnabled {
+                    Section("E2E") {
+                        Text(NagiE2EMode.status)
+                            .font(.caption2)
+                            .accessibilityIdentifier("e2e.fixture-status")
+                    }
+                }
+
                 Section("使い方") {
                     Text("入力欄をタップしてキーボードを出し、地球儀キーで Nagi に切り替えてください。"
                         + "切り替えの一覧に Nagi が無いときは、設定 > 一般 > キーボード > 新しいキーボードを追加 で追加します。")

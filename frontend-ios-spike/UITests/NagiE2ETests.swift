@@ -16,7 +16,7 @@ final class NagiE2ETests: XCTestCase {
         }
         defer { runner.writeResults() }
 
-        let suites: [E2ESuite]
+        var suites: [E2ESuite]
         do {
             suites = try E2EScenarioLoader.load(bundle: Bundle(for: Self.self), platform: "ios")
         } catch {
@@ -26,6 +26,16 @@ final class NagiE2ETests: XCTestCase {
         if suites.isEmpty {
             runner.recordSetupFailure("platforms に ios を含むシナリオがありません")
             return
+        }
+        // 環境変数 NAGI_E2E_SUITE（カンマ区切りのスイート名）があれば、そのスイートだけを実行する
+        let filter = (ProcessInfo.processInfo.environment["NAGI_E2E_SUITE"] ?? "")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !filter.isEmpty {
+            suites = suites.filter { filter.contains($0.suite) }
+            if suites.isEmpty {
+                runner.recordSetupFailure("NAGI_E2E_SUITE=\(filter) に一致するスイートがありません")
+                return
+            }
         }
 
         // キーボードを出せるか。出せなければ設定アプリで追加してもう一度試す

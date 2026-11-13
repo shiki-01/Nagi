@@ -30,15 +30,30 @@ enum NagiE2EMode {
         enabled = true
         """
 
+    /// 直近の `installFixtures()` の結果（1 行。`KeyboardTestView` が `e2e.fixture-status` として表示する）
+    private(set) static var status = "fixtures: 未実行"
+
     /// フィクスチャを App Group 内のユーザー領域（`<App Group>/user`。キーボード拡張と共通）へ置く:
-    /// `user_dict/*.tsv|txt` をコピーし、`config.toml` を E2E 用に書き換える。`-nagi-e2e` のときだけ呼ぶこと
+    /// `user_dict/*.tsv|txt` をコピーし、`config.toml` を E2E 用に書き換える。`-nagi-e2e` のときだけ呼ぶこと。
+    /// 結果（見つかったか・置き場所・件数・エラー）は `status` に残す
     static func installFixtures() {
         guard isEnabled else { return }
+        var notes: [String] = []
+        defer { status = notes.joined(separator: "; ") }
+
+        let groupId = SharedStore.shared.appGroupId
+        let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupId)
+        notes.append("appGroup=\(container?.path ?? "nil")")
+        let dict = DataPaths.dictPath(appGroupId: groupId)
+        notes.append("dict=\(dict.path != nil ? "あり" : "なし")(\(dict.source))")
+        notes.append("bundleFixtures=\(bundledFixtures != nil ? "あり" : "なし")")
+
         let located = NagiUserDictStore.locate()
         guard let userDict = located.userDict, let userDir = located.userDir else {
-            NSLog("[nagi-e2e] ユーザー領域を用意できません: %@", located.message ?? "")
+            notes.append("locate失敗: \(located.message ?? "")")
             return
         }
+        notes.append("userDir=\(userDir.path)")
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(at: userDict, withIntermediateDirectories: true)
@@ -46,19 +61,21 @@ enum NagiE2EMode {
             for url in (try? fileManager.contentsOfDirectory(at: userDict, includingPropertiesForKeys: nil)) ?? [] {
                 try? fileManager.removeItem(at: url)
             }
+            var copied: [String] = []
             if let source = bundledFixtures?.appendingPathComponent("user_dict", isDirectory: true) {
                 for file in try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil) {
                     let ext = file.pathExtension.lowercased()
                     guard ext == "tsv" || ext == "txt" else { continue }
                     try fileManager.copyItem(at: file, to: userDict.appendingPathComponent(file.lastPathComponent))
+                    copied.append(file.lastPathComponent)
                 }
-            } else {
-                NSLog("[nagi-e2e] バンドルにフィクスチャ（user-dir）がありません")
             }
+            notes.append("copied=\(copied.count)\(copied)")
             // config.toml は内容が変わるので更新時刻も進み、拡張が focusIn で reload_config を送る
             try e2eConfig.write(to: userDir.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+            notes.append("config=書いた")
         } catch {
-            NSLog("[nagi-e2e] フィクスチャの配置に失敗: %@", "\(error)")
+            notes.append("エラー: \(error)")
         }
     }
 }

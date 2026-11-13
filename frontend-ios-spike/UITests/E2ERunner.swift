@@ -58,6 +58,8 @@ final class E2ERunner {
                 var message = "\(error)"
                 if !history.isEmpty { message += " | 経過: " + history.joined(separator: "; ") }
                 // FAIL 行を grep で取れるよう 1 行にする
+                // ホストのフィクスチャ配置の結果（辞書が拡張に届かない問題の診断用）
+                message += " | fixture: " + fixtureStatus()
                 failure = message.replacingOccurrences(of: "\n", with: " ")
             }
             if let failure = failure {
@@ -69,6 +71,13 @@ final class E2ERunner {
             }
             results.append(ScenarioResult(suite: suite.suite, name: scenario.name, ok: failure == nil, message: failure ?? ""))
         }
+    }
+
+    /// ホストの入力テスト画面に出ているフィクスチャ配置の結果（`e2e.fixture-status`）。読めなければその旨
+    private func fixtureStatus() -> String {
+        let text = app.staticTexts["e2e.fixture-status"]
+        guard text.exists else { return "(e2e.fixture-status なし)" }
+        return text.label
     }
 
     /// 準備ができなかったとき（キーボードが出せないなど）、スイート全体の失敗として記録する

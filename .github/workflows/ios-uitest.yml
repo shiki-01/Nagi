@@ -10,6 +10,15 @@ name: ios-uitest
 
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "実行するスイート名（カンマ区切り。例 ios-convert-userdict。空なら全スイート）"
+        type: string
+        default: ""
+      adhoc_sign:
+        description: "シミュレータ向けに ad-hoc 署名してビルドする（App Group の entitlement を有効にして、ホストと拡張でユーザー領域を共有する。実験）"
+        type: boolean
+        default: false
 
 concurrency:
   group: ios-uitest-${{ github.ref }}
@@ -91,7 +100,15 @@ jobs:
 
       - name: ビルド（ホストアプリ・キーボード拡張・UI テスト）
         working-directory: frontend-ios-spike
+        env:
+          ADHOC_SIGN: ${{ inputs.adhoc_sign }}
         run: |
+          # 既定は署名なし。adhoc_sign=true なら ad-hoc 署名（entitlements = App Group を埋め込む）
+          if [ "$ADHOC_SIGN" = "true" ]; then
+            SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES"
+          else
+            SIGN_FLAGS="CODE_SIGNING_ALLOWED=NO"
+          fi
           mkdir -p build
           set -o pipefail
           xcodebuild build-for-testing \
@@ -99,7 +116,7 @@ jobs:
             -scheme NagiSpikeUITests \
             -destination "id=$SIM_UDID" \
             -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
+            $SIGN_FLAGS \
             2>&1 | tee build/xcodebuild-build.log | tail -n 40
 
       - name: ビルド失敗の error 行
@@ -146,12 +163,15 @@ jobs:
 
       - name: UI テスト（iOS Simulator）
         working-directory: frontend-ios-spike
+        env:
+          E2E_SUITE: ${{ inputs.suite }}
         run: |
           mkdir -p build/e2e-out
           # 失敗したテストをジョブのログに出すため、終了コードを控えてから要約を表示する
           set +e
           # TEST_RUNNER_ 接頭辞の環境変数は UI テストのプロセスへ渡る（results.json / screenshots の出力先）
           TEST_RUNNER_NAGI_E2E_OUT="$PWD/build/e2e-out" \
+          TEST_RUNNER_NAGI_E2E_SUITE="$E2E_SUITE" \
           xcodebuild test-without-building \
             -project NagiSpike.xcodeproj \
             -scheme NagiSpikeUITests \
