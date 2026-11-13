@@ -54,9 +54,9 @@ jobs:
         with:
           workspaces: core
       - name: cargo check
-        run: cargo check -p nagi-windows -p nagi-windows-tsf --target x86_64-pc-windows-gnu --all-targets
+        run: cargo check -p nagi-windows -p nagi-windows-tsf -p nagi-windows-e2e --target x86_64-pc-windows-gnu --all-targets
       - name: clippy
-        run: cargo clippy -p nagi-windows -p nagi-windows-tsf --target x86_64-pc-windows-gnu --all-targets -- -D warnings
+        run: cargo clippy -p nagi-windows -p nagi-windows-tsf -p nagi-windows-e2e --target x86_64-pc-windows-gnu --all-targets -- -D warnings
 
   # Windows の配布スクリプト（H-42）の構文検査。PowerShell の構文エラーは実行するまで分からないため
   windows-scripts:

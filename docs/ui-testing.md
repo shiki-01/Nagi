@@ -99,7 +99,7 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 - iOS 実機でのメモリ上限・フルアクセス・端末依存の挙動
 - macOS の公証・署名後のインストール
 
-実機チェックリスト（`docs/real-hardware-checklist.md`）のうち、キー入力と composition の基本動作（§2〜§5、§8.3〜§8.4）は E2E シナリオへの移行対象です。移行後にチェックリストから外します。
+実機チェックリスト（`docs/real-hardware-checklist.md`）のうち、Windows のキー入力と composition の基本動作（§8.3 の先頭 2 項目）は E2E で自動化済みです（チェックリストに「E2E 済」と注記）。macOS の項目（§2〜§5）は、macOS の E2E が稼働していないため対象外です。
 
 ## 再開メモ（2026-11-11 時点で中断）
 
@@ -114,12 +114,10 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 ### 再開手順
 
 1. iOS の既知の課題（上記）は分離済み。実機での手動確認の結果を受けて、`ios-kana-cursor.json` を `ios` に戻すか、調査を再開する
-2. 後始末をする
-   - `.github/workflows/ios-uitest.yml` と `windows-e2e.yml` の検証用 `push` トリガー（`claude/ui-automation-testing-4mgml9` 限定）を削除する（`main` に入れる前に必須）
-   - `macos-e2e.yml` は push トリガー削除済み
-   - 3 つの新規ワークフローは `main` に無いと `workflow_dispatch` できない。`main` へ入れた後に手動実行へ切り替わる
-   - `docs/real-hardware-checklist.md` のうち、E2E に移せた項目（§2〜§5、§8.3〜§8.4 のキー入力・composition の基本動作）を整理する
-   - `ci.yml` の `windows-tsf` ジョブに `-p nagi-windows-e2e` を足す（単体指定で feature 不足を検出できる。ローカルでは `cargo check --target x86_64-pc-windows-gnu -p nagi-windows-e2e` で確認済み）
+2. 後始末（完了）
+   - 検証用の `push` トリガーは `ios-uitest.yml` / `windows-e2e.yml` から削除済み。`macos-e2e.yml` も push トリガー無し。3 つとも `workflow_dispatch` のみ（`main` に入れた後に手動実行できる）
+   - `ci.yml` の `windows-tsf` ジョブに `-p nagi-windows-e2e` を追加済み
+   - `docs/real-hardware-checklist.md` の §8 に E2E 済の注記を追加済み
 3. 未着手・未解決
    - iOS のユーザー辞書を決定的にする手段（App Group への注入）が無く、変換系シナリオは iOS で未対応
    - Windows の `EnumProfiles` に Nagi が出るまで 45 秒待つ警告が出ていた（`GetProfile` が成功すれば待たずに進める修正は入れた）

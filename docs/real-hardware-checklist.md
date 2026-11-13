@@ -128,6 +128,11 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 
 ## 8. Windows フロント（TSF、H-39〜H-43）— 未検証
 
+> **E2E による自動検証（2026-11）**: `windows-e2e` ワークフロー（windows-latest）で、SendInput → TSF → IME → 入力欄の経路を通した
+> E2E 17 件が成功している（[`docs/ui-testing.md`](ui-testing.md)）。この E2E は標準の EDIT コントロールをホストにした CI 上の検証で、
+> 実アプリ（ブラウザ・Office・チャット等）での確認の代わりにはならない。自動化済みの項目には「E2E 済」と注記した。
+> なお E2E が `key_id` のリピート回数不一致による 1 キー 2 回評価の不具合を検出し、修正している（下記 8.3 の `OnTestKeyDown` の項目）
+
 `frontend-windows/`（`nagi-windows`）と `frontend-windows-tsf/`（`nagi-windows-tsf`）は Linux 上で fmt / clippy / test と
 `x86_64-pc-windows-gnu` の `cargo check` / `clippy` が通っただけで、Windows 実機では一度も動かしていない。
 以下は Windows 10 22H2 以降 / 11 (x64) の実機で確認する項目。確認したら結果と日付を書き込むこと。
@@ -146,9 +151,9 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] DLL と同じディレクトリの imserver が起動する（配置は `%ProgramFiles%\Nagi`、H-42）。データは `%APPDATA%\Nagi\data`
 
 ### 8.3 キー入力・composition
-- [ ] ローマ字入力でひらがなが composition として表示され、Enter で確定、Esc で取り消せる
-- [ ] Space 変換 → 文節移動（←/→）→ 確定が通る
-- [ ] `OnTestKeyDown` だけが呼ばれて `OnKeyDown` が来ない場合の挙動（エンジン状態が先に進む問題）の発生頻度
+- [ ] ローマ字入力でひらがなが composition として表示され、Enter で確定、Esc で取り消せる（E2E 済: 標準 EDIT ホスト上。実アプリでは未確認）
+- [ ] Space 変換 → 文節移動（←/→）→ 確定が通る（E2E 済: Space 変換・候補選択・Esc。文節移動は未カバー）
+- [ ] `OnTestKeyDown` だけが呼ばれて `OnKeyDown` が来ない場合の挙動（エンジン状態が先に進む問題）の発生頻度（E2E で、test と実キーの lParam のリピート回数が異なり結果の引き継ぎが外れる不具合を検出・修正済み。実アプリでの発生頻度は未確認）
 - [ ] 入力 250ms のタイムアウト（実測なしの暫定値）が妥当か。重い変換でもキーを取りこぼさない
 - [ ] エンジン未接続時の素通し（composition 中だけ食う）で入力が壊れない。imserver を強制終了しても自動再起動し、`restore_session` で preedit が復元される
 - [ ] スリープ復帰後の再起動
