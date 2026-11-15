@@ -503,6 +503,8 @@ pub struct InputSection {
     pub romaji_carryover: bool,
     /// グライド入力（QWERTY のなぞり入力。タッチ入力のみ）。既定: false。
     pub glide: bool,
+    /// 英語の候補を選んで確定したとき、後ろに半角スペースを足す（続けて句読点を入力すると消える。H-74）。既定: false。
+    pub auto_space_alpha: bool,
     /// 曖昧入力（タイプミス補正の候補）。
     pub fuzzy: FuzzySection,
     /// 英語の自動判定。
@@ -517,6 +519,7 @@ impl Default for InputSection {
             dakuten_cycle: DakutenCycle::SmallFirst,
             romaji_carryover: true,
             glide: false,
+            auto_space_alpha: false,
             fuzzy: FuzzySection::default(),
             auto_english: AutoEnglishSection::default(),
         }
@@ -1370,6 +1373,7 @@ fn get_known_section_keys(section: &str) -> &'static [&'static str] {
             "dakuten_cycle",
             "romaji_carryover",
             "glide",
+            "auto_space_alpha",
             "fuzzy",
             "auto_english",
         ],

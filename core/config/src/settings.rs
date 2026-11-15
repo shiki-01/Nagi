@@ -405,6 +405,13 @@ pub fn definitions() -> Vec<SettingDef> {
         )
         .platforms(SettingPlatforms::Ios),
         def(
+            "input.auto_space_alpha",
+            "入力",
+            "英単語の後に自動でスペース",
+            "英語の候補（英語の自動判定・綴りの「もしかして」）を選んで確定したときだけ、確定した語の後ろに半角スペースを 1 つ足します。続けて句読点（、。,. ！？ など）を入力すると、足したスペースは消えます。",
+            SettingKind::Bool,
+        ),
+        def(
             "input.auto_english.mode",
             "入力",
             "英語の自動判定",
@@ -715,6 +722,7 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "input.dakuten_cycle" => Some(Text(config.input.dakuten_cycle.as_str().to_string())),
         "input.romaji_carryover" => Some(Bool(config.input.romaji_carryover)),
         "input.glide" => Some(Bool(config.input.glide)),
+        "input.auto_space_alpha" => Some(Bool(config.input.auto_space_alpha)),
         "input.auto_english.mode" => {
             Some(Text(config.input.auto_english.mode.as_str().to_string()))
         }
@@ -1374,6 +1382,25 @@ mod tests {
         let (c, issues) = crate::parse(&r.source).unwrap();
         assert!(issues.is_empty(), "{issues:?}");
         assert!(!c.convert.calculator);
+    }
+
+    #[test]
+    fn input_auto_space_alpha_definition() {
+        let defs = definitions();
+        let d = defs
+            .iter()
+            .find(|d| d.key == "input.auto_space_alpha")
+            .unwrap();
+        assert_eq!(d.platforms, SettingPlatforms::Both);
+        assert!(!crate::Config::default().input.auto_space_alpha);
+        let r = apply_changes(
+            None,
+            &[set("input.auto_space_alpha", SettingValue::Bool(true))],
+        )
+        .unwrap();
+        let (c, issues) = crate::parse(&r.source).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(c.input.auto_space_alpha);
     }
 
     #[test]

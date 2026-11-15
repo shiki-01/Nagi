@@ -186,6 +186,7 @@ pub fn engine_config_from(config: &Config) -> (EngineConfig, Vec<Event>) {
             },
             romaji_carryover: config.input.romaji_carryover,
             glide_input: config.input.glide,
+            auto_space_alpha: config.input.auto_space_alpha,
             fuzzy_input: config.input.fuzzy.enabled,
             retro_review: config.input.fuzzy.enabled && config.input.fuzzy.retro_review,
             auto_english: match config.input.auto_english.mode {

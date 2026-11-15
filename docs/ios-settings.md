@@ -49,7 +49,7 @@
 | `input.glide` | グライド入力（なぞり入力） | bool | false | D | core:input.glide | 実装済み(core・iOS UI)・実機未確認（H-82 / H-83） | QWERTY のローマ字入力（`qwerty-kana`）で、指を離さずに文字の上をなぞって 1 語を入力する。設定画面はコアの記述子（platforms=ios・グループ「入力」）からの汎用フォームに自動で出る。キーボード拡張は `get_settings` で値を読み（セッション生成後・`config.toml` の読み直しのあとの focusIn で 1 回）、オンのときだけ QWERTY のかな配列（英字 1 文字の `text` キーまたは中央が英字 1 文字の `flick` キーが 20 個以上のかなモード。上段だけ `flick`〔上フリックで数字〕のレイアウトも対象。実機未確認）になぞりのジェスチャを付ける。12 キー・英字（qwerty-alpha）・数字記号・パスワード欄では無効。オフの挙動は従来と同一。道のり 40pt 以上かつ 2 キー以上を通過するとなぞり（それ以外はタップ・長押しのまま）。軌跡は細い線で描き、離すと `glide_input` を 1 回送る。候補は出所「なぞり」。**辞書とは別に索引 `<data>/dict/nagi-glide.bin`（約 39MB）が要る**。ホストアプリが辞書から作る（H-84。オンにしたとき・ホームを開いたとき・辞書の更新時に自動、ホームの「なぞり入力の索引」と設定のこの行の下に状態と手動ボタン）。拡張は索引が無い間は、オンでもなぞりのジェスチャを付けず（メモリ上に作らない）、あるときだけ有効にする。**実機未確認・Swift の CI 未確認**。`docs/glide-input.md` |
 | `input.punctuation` | 句読点の種類 | choice: `、。` / `，．` / `，。` | `、。` | S | core:input.punctuation | 既存(GUI) | 12 キーの「、。?!」キーの先頭にも反映 |
 | `input.auto_commit_ms` | 一定時間入力が無ければ自動確定 | int 0–10000（0 = 無効）, step 500 | 0 | D | kbd+core | 見送り(H-74) | 入力を失わない原則との兼ね合いで既定は無効 |
-| `input.auto_space_alpha` | 英単語の後に自動でスペース | bool | false | D | core:input.auto_space_alpha | 新規(core) | 英字入力の予測（backlog 3 章）と同時に検討 |
+| `input.auto_space_alpha` | 英単語の後に自動でスペース | bool | false | D | core:input.auto_space_alpha | 実装済み(core) | H-74。英語の候補を選んで確定したときだけ後ろに半角スペースを足し、続けて句読点を入力したら消す（`delete_before`）。iOS 画面は未対応 |
 | `input.auto_capitalize` | 文頭を自動で大文字（英字） | bool | true | D | kbd | 新規(iOS) | ホストの `autocapitalizationType` に従う。ホストが無効を指定した場合はそちらを優先 |
 | `input.double_space_period` | スペース 2 回で句点 | bool | false | D | kbd | 新規(iOS) | OS 標準の挙動と揃える項目 |
 | `input.auto_close_bracket` | 括弧の自動閉じ | bool | false | D | kbd | 新規(iOS) | 閉じ括弧の間にカーソルを置く |

@@ -226,9 +226,9 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 - コアにまだ無い（9 件）:
   1. `convert.half_width_alnum`（数字・英字を半角で確定。`half` / `full` / `follow_input`）→ **実装済み(core)**（Literal 文節の確定時のみ。候補で明示選択した表記は優先。記号は変えない）
   2. `convert.date_time`（「きょう」「いま」などの日付・時刻候補）→ **実装済み(core)**（`DigitsToDate` と、新しい `DateTimeRewriter`（「きょう」「いま」「ことし」「こんげつ」「ようび」など）の両方の on/off。タイムゾーンは `convert.time_zone` と `set_environment` の `utc_offset_minutes`。選んで確定しても学習しない。H-71・H-72。iOS 実機は未確認）
-  3. `input.auto_commit_ms`（一定時間で自動確定。既定は無効。入力を失わない原則との兼ね合い）
-  4. `input.auto_space_alpha`（英単語の後の自動スペース）
-  5. `input.long_vowel_assist`（「ー」「っ」の補助）
+  3. `input.auto_commit_ms`（一定時間で自動確定。既定は無効。入力を失わない原則との兼ね合い） → **見送り（H-74）**
+  4. `input.auto_space_alpha`（英単語の後の自動スペース） → **実装済み(core)**（英語の候補を選んで確定したときだけ後ろに半角スペースを足す。続けて句読点を入力したら `delete_before` で消す。H-74。iOS 実機は未確認）
+  5. `input.long_vowel_assist`（「ー」「っ」の補助） → **見送り（H-74）**
   6. `userdict.max_entries`（ユーザー辞書の上限。今は iOS 側の定数で、コアの設定に無い）→ **実装済み(core)**（読み込み時は先頭から上限まで、超過分は通知 `user_dict_limit`。`import_user_dict` は超えるなら INVALID_PARAMS で拒否）
   7. `snippet.entries`（スニペットの登録・編集。iOS の `UserDictionaryView` に実装がある可能性があり、確認が要る）
   8. 次語予測の LLM 版（`predict.next_word` の拡張。上の「次語予測」の未決事項）

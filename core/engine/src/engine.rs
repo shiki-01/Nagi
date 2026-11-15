@@ -148,6 +148,9 @@ pub struct EngineConfig {
     pub apps: AppsConfig,
     /// 英語の自動判定（`input.auto_english.mode`。H-51）
     pub auto_english: AutoEnglishMode,
+    /// 英語の候補を選んで確定したとき、後ろに半角スペースを 1 つ足す（`input.auto_space_alpha`。H-74）。
+    /// 続けて句読点を入力したら、足したスペースを消す
+    pub auto_space_alpha: bool,
 }
 
 impl Default for EngineConfig {
@@ -175,6 +178,7 @@ impl Default for EngineConfig {
             glide_input: false,
             apps: AppsConfig::default(),
             auto_english: AutoEnglishMode::default(),
+            auto_space_alpha: false,
         }
     }
 }
@@ -276,6 +280,9 @@ struct Session {
     last_commit: Option<LastCommit>,
     /// このキー処理で確定取消が成功した場合の `delete_before`（`finish` が読んで消費する）
     pending_delete_before: Option<u32>,
+    /// 直前の確定で、英語の候補の後ろに自動のスペースを足した（`input.auto_space_alpha`）。
+    /// 次の入力 1 回だけ意味を持ち、句読点だけの入力ならそのスペースを消す。フォーカス・文脈の変化でも消える
+    auto_space: bool,
     /// `Action::Reconvert` の要求（次の応答の `reconvert_selection` で返す）
     pending_reconvert: bool,
     /// 12 キーのトグル入力の途中状態（直前の入力が `Toggle` のタップだったとき）
@@ -734,6 +741,7 @@ impl Engine {
             live_suppressed: false,
             last_commit: None,
             pending_delete_before: None,
+            auto_space: false,
             pending_reconvert: false,
             touch_toggle: None,
             composing_cands: None,
@@ -768,8 +776,10 @@ impl Engine {
         let mut sess = self.take_session(session_id);
         sess.origins.clear();
         sess.touch_toggle = None;
+        let had_auto_space = std::mem::take(&mut sess.auto_space);
         let mut commit = String::new();
         let consumed = self.handle_key(&mut sess, key, &mut commit);
+        Self::settle_auto_space(&mut sess, had_auto_space, &mut commit);
         // アプリに渡るキー（カーソル移動・削除・改行など）は、直前の確定との隣接を崩す
         if !consumed && key.kind != KeyKind::FlagsChanged {
             Self::discard_recent_commits(&mut sess);
@@ -799,8 +809,10 @@ impl Engine {
         let mut sess = self.take_session(session_id);
         sess.origins.clear();
         sess.last_commit = None;
+        let had_auto_space = std::mem::take(&mut sess.auto_space);
         let mut commit = String::new();
         let consumed = self.apply_reading(&mut sess, input, touch, flick, &mut commit);
+        Self::settle_auto_space(&mut sess, had_auto_space, &mut commit);
         let result = self.finish(&mut sess, consumed, commit);
         self.sessions.insert(session_id.to_string(), sess);
         result
@@ -814,6 +826,7 @@ impl Engine {
     pub fn glide_input(&mut self, params: &GlideInputParams) -> ProcessKeyResult {
         let mut sess = self.take_session(&params.session_id);
         sess.origins.clear();
+        sess.auto_space = false;
         let mut commit = String::new();
         let consumed = self.apply_glide(&mut sess, params, &mut commit);
         let result = self.finish(&mut sess, consumed, commit);
@@ -996,6 +1009,7 @@ impl Engine {
         let mut sess = self.take_session(session_id);
         sess.origins.clear();
         sess.touch_toggle = None;
+        let had_auto_space = std::mem::take(&mut sess.auto_space);
         let mut commit = String::new();
         let consumed = match Self::touch_to_action(&sess.state, action) {
             Some(mapped) => {
@@ -1011,6 +1025,7 @@ impl Engine {
             }
             None => false,
         };
+        Self::settle_auto_space(&mut sess, had_auto_space, &mut commit);
         if !consumed {
             Self::discard_recent_commits(&mut sess);
         }
@@ -1187,9 +1202,11 @@ impl Engine {
             && mode != sess.mode
         {
             self.commit_all(&mut sess, &mut commit);
+            Self::drop_auto_space(&mut sess, &mut commit);
             sess.mode = mode;
             sess.keep_next_words = true;
         }
+        sess.auto_space = false;
         let result = self.finish(&mut sess, false, commit);
         self.sessions.insert(session_id.to_string(), sess);
         result
@@ -1223,6 +1240,7 @@ impl Engine {
         sess.origins.clear();
         let mut commit = String::new();
         self.commit_all(&mut sess, &mut commit);
+        Self::drop_auto_space(&mut sess, &mut commit);
         // フォーカスを離れたら文脈は続かない（次語予測を出さない）
         sess.last_word = None;
         sess.next_words.clear();
@@ -1238,6 +1256,7 @@ impl Engine {
         sess.origins.clear();
         sess.state = State::Direct;
         sess.composer.clear();
+        sess.auto_space = false;
         sess.last_word = None;
         sess.next_words.clear();
         Self::discard_recent_commits(&mut sess);
@@ -1884,6 +1903,10 @@ impl Engine {
         sess.touch_toggle = None;
         sess.live_suppressed = false;
         if covers >= total {
+            if !literal && self.config.auto_space_alpha && is_english_surface(&item.surface) {
+                commit.push(' ');
+                sess.auto_space = true;
+            }
             sess.composer.clear();
             sess.state = State::Direct;
             sess.last_commit = Some(LastCommit {
@@ -1934,6 +1957,7 @@ impl Engine {
     pub fn select_candidate(&mut self, session_id: &str, index: u32) -> ProcessKeyResult {
         let mut sess = self.take_session(session_id);
         sess.origins.clear();
+        sess.auto_space = false;
         let mut commit = String::new();
         if matches!(sess.state, State::Direct) {
             // 確定直後の次語候補: その語をそのまま挿入する
@@ -2168,6 +2192,7 @@ impl Engine {
         sess.origins.clear();
         sess.composer.clear();
         sess.state = State::Direct;
+        sess.auto_space = false;
         if !params.segments.is_empty() {
             if params.converting {
                 let segments: Vec<Segment> = params
@@ -2219,6 +2244,7 @@ impl Engine {
         let mut sess = self.take_session(session_id);
         let mut commit = String::new();
         self.commit_all(&mut sess, &mut commit);
+        Self::drop_auto_space(&mut sess, &mut commit);
         if !text.is_empty() {
             let backend_segments = self.backend.reconvert(text);
             let segments: Vec<Segment> = if backend_segments.is_empty() {
@@ -2266,6 +2292,7 @@ impl Engine {
         {
             // アプリが変わったら、直前の語・次語候補は別のテキストのものになる
             sess.app_id = Some(app.clone());
+            sess.auto_space = false;
             sess.last_word = None;
             sess.next_words.clear();
             Self::discard_recent_commits(&mut sess);
@@ -2291,6 +2318,10 @@ impl Engine {
             let end = utf16::utf16_to_char_index(&st.text, st.cursor).unwrap_or(0);
             let before: String = st.text.chars().take(end).collect();
             sess.left_context = tail_chars(&before, LEFT_CONTEXT_CHARS);
+            // 自動で足したスペースの直後にカーソルが無ければ（移動した・別の場所）、消す対象ではない
+            if !before.ends_with(' ') {
+                sess.auto_space = false;
+            }
             // 直前のテキストが最後に確定した語で終わっていなければ、文脈は途切れている
             if sess
                 .last_word
@@ -2940,6 +2971,17 @@ impl Engine {
                 for s in &conv.segments {
                     commit.push_str(&self.committed_surface(s));
                 }
+                // 英語の候補を選んで確定したときだけ、後ろにスペースを足す
+                if self.config.auto_space_alpha
+                    && conv.segments.last().is_some_and(|s| {
+                        s.kind == SegmentKind::Japanese
+                            && s.candidates.as_ref().is_some_and(|c| c.selected != 0)
+                            && is_english_surface(&s.surface)
+                    })
+                {
+                    commit.push(' ');
+                    sess.auto_space = true;
+                }
                 (!pieces.is_empty()).then_some(pieces)
             }
         };
@@ -2952,6 +2994,36 @@ impl Engine {
             pieces,
             committed_len_utf16: utf16::utf16_len(&commit[before_len..]),
         });
+    }
+
+    /// 自動スペース（`input.auto_space_alpha`）の後始末。直前の確定（`had`）または今回の確定で
+    /// スペースを足していて、今回の入力が句読点 1 文字だけで始まったなら、そのスペースを消す
+    /// （前の確定の分は `delete_before`、今回の確定と同時の分は確定文字列から外す）
+    fn settle_auto_space(sess: &mut Session, had: bool, commit: &mut String) {
+        let lone_punct = matches!(sess.state, State::Composing) && {
+            let text = sess.composer.text();
+            let mut chars = text.chars();
+            matches!((chars.next(), chars.next()), (Some(c), None) if is_sentence_punct(c))
+        };
+        if !lone_punct {
+            return;
+        }
+        if had {
+            sess.pending_delete_before = Some(1);
+        } else if sess.auto_space {
+            Self::drop_auto_space(sess, commit);
+        }
+        sess.auto_space = false;
+    }
+
+    /// 今回の確定の末尾に足した自動スペースを取り除く
+    fn drop_auto_space(sess: &mut Session, commit: &mut String) {
+        if std::mem::take(&mut sess.auto_space) && commit.ends_with(' ') {
+            commit.pop();
+            if let Some(last) = sess.last_commit.as_mut() {
+                last.committed_len_utf16 = last.committed_len_utf16.saturating_sub(1);
+            }
+        }
     }
 
     /// 確定する文節の表記。Literal の数字・英字は `convert.half_width_alnum` の幅にそろえる。
@@ -4606,6 +4678,21 @@ impl Engine {
         result.revision = sess.revision as u32;
         result
     }
+}
+
+/// 英語の候補の表記か（ASCII だけで英字を含み、末尾が空白でない）。`input.auto_space_alpha` の判定
+fn is_english_surface(surface: &str) -> bool {
+    surface.is_ascii()
+        && surface.bytes().any(|b| b.is_ascii_alphabetic())
+        && !surface.ends_with(char::is_whitespace)
+}
+
+/// 自動スペースを消す句読点（文の区切りの記号）
+fn is_sentence_punct(c: char) -> bool {
+    matches!(
+        c,
+        '、' | '。' | '，' | '．' | '！' | '？' | ',' | '.' | '!' | '?'
+    )
 }
 
 /// 数式の記号として扱う全角文字（ローマ字表で `(` `)` `+` などが変わったもの）
