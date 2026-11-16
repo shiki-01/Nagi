@@ -31,7 +31,6 @@ final class IOSSettingsTests: XCTestCase {
         XCTAssertEqual(s.soundMode, "compat")
         XCTAssertTrue(s.layoutByField)
         XCTAssertEqual(s.commitMethod, "insert")
-        XCTAssertEqual(s.hapticEngine, "standard")
         XCTAssertEqual(s.toggleTimeoutMs, 1000)
         XCTAssertTrue(s.composeNumbers)
         XCTAssertTrue(s.keepPreeditOnSymbols)

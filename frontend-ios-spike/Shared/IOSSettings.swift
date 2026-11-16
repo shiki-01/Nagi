@@ -263,14 +263,9 @@ struct NagiIOSSettings: Codable, Equatable {
             kind: .bool, isSimple: false, defaultValue: .bool(true)),
         NagiIOSSettingDef(
             key: Key.keyboardHaptic, group: "キーボード", label: "キー入力の触覚",
-            description: "キーを押したときの振動です。フルアクセスを許可していないと働かない場合があります。",
+            description: "キーを押したときの振動です。システムサウンドの振動で知らせるため、フルアクセスの許可は要りません。",
             kind: NagiIOSSettings.choice([("off", "オフ"), ("light", "弱"), ("medium", "中"), ("heavy", "強")]),
             isSimple: true, defaultValue: .string("light")),
-        NagiIOSSettingDef(
-            key: Key.keyboardHapticEngine, group: "キーボード", label: "触覚の方式（互換モード）",
-            description: "「標準」が働かない端末向けの切替です。「互換」はシステムサウンド（Peek など）の振動でキー入力を知らせます。触覚が「オフ」のときは働きません。",
-            kind: NagiIOSSettings.choice([("standard", "標準"), ("compat", "互換")]),
-            isSimple: false, defaultValue: .string("standard")),
         NagiIOSSettingDef(
             key: Key.keyboardSound, group: "キーボード", label: "キー入力の音",
             description: "システムのキーボードのクリック音を鳴らします（消音スイッチに従います。端末の「キーボードのクリック」設定には従いません）。",
@@ -375,7 +370,6 @@ struct NagiIOSSettings: Codable, Equatable {
         static let keyboardKeyCornerPt = "keyboard.key_corner_pt"
         static let keyboardLayoutByField = "keyboard.layout_by_field"
         static let keyboardHaptic = "keyboard.haptic"
-        static let keyboardHapticEngine = "keyboard.haptic_engine"
         static let keyboardSound = "keyboard.sound"
         static let keyboardCommitMethod = "keyboard.commit_method"
         static let clipboardHistoryEnabled = "clipboard.history.enabled"
@@ -469,7 +463,6 @@ struct NagiIOSSettings: Codable, Equatable {
     var oneHandedWidth: Double { double(Key.keyboardOneHandedWidth) }
     var haptic: String { string(Key.keyboardHaptic) }
     /// 触覚の方式（`standard` / `compat`）
-    var hapticEngine: String { string(Key.keyboardHapticEngine) }
     var soundEnabled: Bool { string(Key.keyboardSound) != "off" }
     /// キー入力の音の方式（`off` / `compat`）。以前の版が保存した `system`（`UIDevice.playInputClick`。実機で鳴らなかったので
     /// 廃止）は選択肢に無いので、読むときに既定の `compat` に丸められる

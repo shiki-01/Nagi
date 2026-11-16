@@ -155,9 +155,8 @@
 | `keyboard.key_corner_pt` | キーの角丸 | float 0–16 pt, step 1 | 6 | D | kbd | 既存(iOS) | |
 | `keyboard.key_label_size` | キー文字の大きさ | float 0.8–1.4（倍率） | 1.0 | D | kbd | 新規(iOS) | Dynamic Type との関係は `a11y.*` で整理 |
 | `keyboard.show_globe` | 地球儀キーを出す | bool | 自動（OS の `needsInputModeSwitchKey`） | D | kbd | 新規(iOS) | 他のキーボードへ切り替えられない端末では常に出す |
-| `keyboard.haptic` | キー入力の触覚 | choice: `off` / `light` / `medium` / `heavy` | `light` | S | kbd | 既存(iOS)・確認済み（2026-10-22） | 触覚の発生にフルアクセスが要るかは、`ios-device-checklist.md` §2 設定タブの確認項目（「フルアクセスなし・ありの両方で振動するか」。2026-10-22 問題なし）。結論（要否）は文書に記録がない（`UIFeedbackGenerator` は拡張では制限あり） |
+| `keyboard.haptic` | キー入力の触覚 | choice: `off` / `light` / `medium` / `heavy` | `light` | S | kbd | 既存(iOS)・確認済み（2026-10-22） | システムサウンド（ID 1519/1520/1521）の振動で知らせる互換方式のみ（H-91）。フルアクセスの有無に関係なく鳴る（2026-11-16 実機）。旧設定 `keyboard.haptic_engine` は廃止（保存済みの値は読み捨て） |
 | `keyboard.sound` | キー入力の音 | choice: `off` / `compat`（表示名「クリック音」） | `compat` | S | kbd | 既存(iOS)・確認済み（2026-10-22） | `compat` はシステムのキーボードのクリック音（`AudioServicesPlaySystemSound(1104)`）を直接鳴らす（端末の「キーボードのクリック」設定には従わず、消音スイッチに従う）。以前あった `system`（`UIDevice.playInputClick`。端末の「キーボードのクリック」設定に従う）は実機で鳴らなかったので廃止した。保存済みの `system` は読むときに既定の `compat` に丸める。独自音源は持たない。**既定は `compat`**（実装 `IOSSettings.swift` の `defaultValue`） |
-| `keyboard.haptic_engine` | 触覚の方式（互換モード） | choice: `standard` / `compat` | `standard` | D | kbd | 実装済み(iOS・要実機確認) | `standard` は `UIImpactFeedbackGenerator`、`compat` は「標準」が働かない端末向けで、システムサウンド（Peek など）の振動で知らせる（`AudioServicesPlaySystemSound`）。`keyboard.haptic` が `off` のときは働かない |
 | `keyboard.commit_method` | 確定の方式（診断用） | choice: `insert` / `mark` / `delete` | `insert` | D（開発者モード） | kbd | 実装済み(iOS)・確認済み（2026-10-22。既定 `insert` は H-31 でも確認。`mark` / `delete` の確認記録は文書にない） | 変換中の文字列がある状態での確定の手順（`HostCompositionApplier.CommitMethod`）。`insert` は `insertText` だけで変換中の範囲を置き換える（失敗しても手前の本文を消さない）。`mark` は確定文字列を `setMarkedText` してから `unmarkText`。`delete` は旧方式（`unmarkText` → `deleteBackward`×N → `insertText`。実機で手前の本文を消すことがあった）。不具合の切り分け用 H-64: 開発者モードがオンのときだけ設定画面に出る（オフの間は保存値があっても `insert` として動く） |
 | `keyboard.sound_volume` | 音量 | float 0–1 | 0.5 | - | kbd | 新規(iOS) | システムサウンド（`compat`）は OS が音量を決めるため、独自音源を持つまでは不要 |
 | `keyboard.theme` | テーマ | choice: `system` / `light` / `dark`（ユーザー定義は未実装） | `system` | S | kbd | 実装済み(iOS)・確認済み（2026-10-22） | 拡張のビューの `overrideUserInterfaceStyle` で上書き |
@@ -335,5 +334,5 @@
 - ホストアプリが `config.toml` を書く経路（FFI で `nagi-config` の関数を公開 / コアを起動して `update_settings`）
 - `privacy.secure_field_off` を設定にするか固定にするか
 - `input.toggle_timeout_ms` `touch.backspace_swipe_word` などコア側に概念がない項目の置き場（トグルの確定タイミングの扱い）
-- 触覚（`UIFeedbackGenerator`）・クリック音がフルアクセス無しで使えるか（実機確認）
+- 触覚（互換方式）はフルアクセス無しで鳴ることを確認済み（H-91）。クリック音のフルアクセス無しでの可否は実機確認
 - iCloud によるバックアップ同期の可否（プライバシー方針との整合）

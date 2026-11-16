@@ -134,7 +134,7 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
         // 再表示で別の VC から戻る場合に備え、常に自分をホストにしてから focusIn する
         model?.host = self
         model?.focusIn()
-        // 触覚・クリック音: フルアクセスの有無を渡し、focusIn で読み直した設定でジェネレータを準備する
+        // 触覚・クリック音: フルアクセスの有無（診断ログ用）を渡し、ログの回数を数え直す
         NagiKeyFeedback.fullAccess = hasFullAccess
         NagiKeyFeedback.prepare()
         // focusIn で読み直した設定の高さを反映する
@@ -194,8 +194,6 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
         ])
         hostView.didMove(toParent: self)
         applyTheme()
-        // 触覚ジェネレータを結びつけるビュー（iOS 17.5 以降）
-        NagiKeyFeedback.anchorView = view
 
         if let existing = KeyboardModel.processShared {
             // 同じプロセスで VC が作り直された: コアを作らずに引き継ぐ（旧 VC が残っていてもコアを二重に持たない）

@@ -30,6 +30,19 @@ enum NagiSetupMarker {
             guard let full = fullAccessLastSeen else { return false }
             return abs(keyboard.timeIntervalSince(full)) < NagiSetupMarker.sameVisitTolerance
         }
+
+        /// フルアクセス行のサブテキスト。「最後にキーボードを開いた時点」の推定であることを示す。未検出なら nil
+        var fullAccessCaption: String? {
+            guard let keyboard = keyboardLastSeen else { return nil }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "ja_JP")
+            formatter.dateFormat = "yyyy-MM-dd HH:mm"
+            let base = "最後にキーボードを開いた時点: \(formatter.string(from: keyboard))"
+            if fullAccessOn == false {
+                return base + "\n最後にキーボードを開いた時点ではオフでした。設定を変えた直後は、一度 Nagi のキーボードを開くと反映されます。"
+            }
+            return base
+        }
     }
 
     static func read() -> Snapshot {
@@ -52,13 +65,14 @@ enum NagiOpenSettings {
 struct NagiSetupStatusSection: View {
     let onShowGuide: () -> Void
 
+    @Environment(\.scenePhase) private var scenePhase
     @State private var marker = NagiSetupMarker.read()
     @State private var data = NagiDataSnapshot.load()
 
     var body: some View {
         Section("セットアップ") {
             NagiSetupStatusRow(title: "キーボードの追加", state: keyboardState)
-            NagiSetupStatusRow(title: "フルアクセス", state: fullAccessState)
+            NagiSetupStatusRow(title: "フルアクセス", state: fullAccessState, detail: marker.fullAccessCaption)
             NagiSetupStatusRow(title: "辞書", state: data.hasDict ? .ok : .ng)
             NagiSetupStatusRow(title: "モデル", state: data.hasModel ? .ok : .ng)
 
@@ -68,6 +82,9 @@ struct NagiSetupStatusSection: View {
                 .buttonStyle(.borderless)
         }
         .onAppear { refresh() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { refresh() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             refresh()
         }
@@ -101,21 +118,30 @@ struct NagiSetupStatusRow: View {
 
     let title: String
     let state: Status
+    /// 補足の説明（省略可）。行の下に小さく出す
+    var detail: String?
 
     var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            switch state {
-            case .ok:
-                Label("OK", systemImage: "checkmark.circle.fill").foregroundColor(.green)
-            case .ng:
-                Label("未設定", systemImage: "xmark.circle.fill").foregroundColor(.red)
-            case .unknown:
-                Label("未検出", systemImage: "questionmark.circle").foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer()
+                switch state {
+                case .ok:
+                    Label("OK", systemImage: "checkmark.circle.fill").foregroundColor(.green)
+                case .ng:
+                    Label("未設定", systemImage: "xmark.circle.fill").foregroundColor(.red)
+                case .unknown:
+                    Label("未検出", systemImage: "questionmark.circle").foregroundColor(.secondary)
+                }
+            }
+            .font(.callout)
+            if let detail = detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
         }
-        .font(.callout)
     }
 }
 
@@ -128,6 +154,7 @@ struct NagiOnboardingView: View {
     /// 手順 4: 入力テストタブへ移動
     let onOpenInputTest: () -> Void
 
+    @Environment(\.scenePhase) private var scenePhase
     @State private var marker = NagiSetupMarker.read()
     @State private var data = NagiDataSnapshot.load()
 
@@ -157,7 +184,7 @@ struct NagiOnboardingView: View {
                 Section("手順 2  フルアクセスを許可する") {
                     Text("追加した Nagi を選び、「フルアクセスを許可」をオンにします。")
                         .font(.callout)
-                    NagiSetupStatusRow(title: "フルアクセス", state: fullAccessState)
+                    NagiSetupStatusRow(title: "フルアクセス", state: fullAccessState, detail: marker.fullAccessCaption)
                     Button("設定アプリを開く") { NagiOpenSettings.open() }
                         .buttonStyle(.borderless)
                     VStack(alignment: .leading, spacing: 6) {
@@ -204,6 +231,9 @@ struct NagiOnboardingView: View {
             .navigationTitle("はじめに")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { refresh() }
+            .onChange(of: scenePhase) { phase in
+                if phase == .active { refresh() }
+            }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                 refresh()
             }

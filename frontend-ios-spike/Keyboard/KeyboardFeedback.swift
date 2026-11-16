@@ -62,48 +62,21 @@ private enum CompatFeedbackPlayer {
 }
 
 /// キー入力のフィードバック（触覚・クリック音）。いずれも失敗しても何も起きない。
-/// 触覚はフルアクセスが無いと出ない（`fullAccess`。`KeyboardViewController` が画面表示のたびに更新する）。
+/// 触覚はシステムサウンド（1519/1520/1521）の振動で、フルアクセスの有無に関係なく鳴る（実機確認済み。H-91）。
+/// `fullAccess` は診断ログ用（`KeyboardViewController` が画面表示のたびに更新する）。
 /// 診断ログ（DiagLog）に、発火のたびに状況を残す（先頭の数十回のみ。focusIn のたびに数え直す）
 enum NagiKeyFeedback {
-    nonisolated(unsafe) private static var generator: UIImpactFeedbackGenerator?
-    nonisolated(unsafe) private static var generatorStyle = ""
     nonisolated(unsafe) private static var logCount = 0
     private static let logLimit = 30
 
-    /// `hasFullAccess` の現在値
+    /// `hasFullAccess` の現在値（診断ログ用）
     nonisolated(unsafe) static var fullAccess = false
-    /// 触覚ジェネレータを結びつけるビュー（iOS 17.5 以降の `init(style:view:)`）。キーボードのビュー
-    nonisolated(unsafe) static weak var anchorView: UIView?
 
-    private static func makeGenerator(_ style: UIImpactFeedbackGenerator.FeedbackStyle) -> UIImpactFeedbackGenerator {
-        if #available(iOS 17.5, *), let view = anchorView {
-            return UIImpactFeedbackGenerator(style: style, view: view)
-        }
-        return UIImpactFeedbackGenerator(style: style)
-    }
-
-    private static func feedbackStyle(for haptic: String) -> UIImpactFeedbackGenerator.FeedbackStyle? {
-        switch haptic {
-        case "light": return .light
-        case "medium": return .medium
-        case "heavy": return .heavy
-        default: return nil
-        }
-    }
-
-    /// 画面の表示時（focusIn）に呼ぶ。ジェネレータを作り直して `prepare()` し、ログの回数を数え直す
+    /// 画面の表示時（focusIn）に呼ぶ。ログの回数を数え直す
     static func prepare() {
         logCount = 0
-        generator = nil
-        generatorStyle = ""
         let settings = NagiKeyMetrics.current
-        if settings.hapticEngine == "standard", let style = feedbackStyle(for: settings.haptic) {
-            let created = makeGenerator(style)
-            generator = created
-            generatorStyle = settings.haptic
-            created.prepare()
-        }
-        DiagLog.log("feedback prepare haptic=\(settings.haptic) engine=\(settings.hapticEngine) sound=\(settings.soundMode) fullAccess=\(fullAccess) generator=\(generator != nil)")
+        DiagLog.log("feedback prepare haptic=\(settings.haptic) sound=\(settings.soundMode) fullAccess=\(fullAccess)")
     }
 
     /// キーを押したときに呼ぶ（メインスレッド）
@@ -112,28 +85,13 @@ enum NagiKeyFeedback {
         let haptic = settings.haptic
         let shouldLog = logCount < logLimit
         if shouldLog { logCount += 1 }
-        if let style = feedbackStyle(for: haptic) {
-            if settings.hapticEngine == "compat" {
-                // 鳴らすのは専用のキュー。ここでは要求するだけで、再生中で捨てたかは後からメインスレッドで分かる
-                if let id = HapticMapping.systemSoundID(for: haptic) {
-                    CompatFeedbackPlayer.play(id, kind: .haptic, onDropped: shouldLog ? {
-                        DiagLog.log("haptic fire kind=\(haptic) engine=compat dropped=true")
-                    } : nil)
-                }
-                if shouldLog {
-                    DiagLog.log("haptic fire kind=\(haptic) engine=compat fullAccess=\(fullAccess) generator=none requested=true")
-                }
-            } else {
-                // 方式を切り替えた・設定が変わった場合はここで作り直す。押下のたびには作らない
-                if generator == nil || generatorStyle != haptic {
-                    generator = makeGenerator(style)
-                    generatorStyle = haptic
-                }
-                generator?.impactOccurred()
-                generator?.prepare()
-                if shouldLog {
-                    DiagLog.log("haptic fire kind=\(haptic) engine=standard fullAccess=\(fullAccess) generator=\(generator != nil)")
-                }
+        // 鳴らすのは専用のキュー。ここでは要求するだけで、再生中で捨てたかは後からメインスレッドで分かる
+        if let id = HapticMapping.systemSoundID(for: haptic) {
+            CompatFeedbackPlayer.play(id, kind: .haptic, onDropped: shouldLog ? {
+                DiagLog.log("haptic fire kind=\(haptic) dropped=true")
+            } : nil)
+            if shouldLog {
+                DiagLog.log("haptic fire kind=\(haptic) fullAccess=\(fullAccess) requested=true")
             }
         }
         if settings.soundEnabled {

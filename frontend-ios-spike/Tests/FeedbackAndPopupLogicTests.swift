@@ -143,15 +143,4 @@ final class FeedbackAndPopupLogicTests: XCTestCase {
             .zero
         )
     }
-
-    // MARK: 設定
-
-    func testHapticEngineSetting() {
-        var s = NagiIOSSettings()
-        XCTAssertEqual(s.hapticEngine, "standard")
-        s.set(NagiIOSSettings.Key.keyboardHapticEngine, .string("compat"))
-        XCTAssertEqual(s.hapticEngine, "compat")
-        s.set(NagiIOSSettings.Key.keyboardHapticEngine, .string("bogus"))
-        XCTAssertEqual(s.hapticEngine, "standard")
-    }
 }
