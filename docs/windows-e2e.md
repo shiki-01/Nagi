@@ -27,9 +27,28 @@ LLM なし（imserver を `llama` feature なしでビルド）。`NAGI_CONFIG_D
 `APPDATA` を一時ディレクトリにし、`cargo xtask e2e-fixture-data` の最小辞書を `%APPDATA%\Nagi\data` として置く
 （TSF は data-dir をそこから決める。ユーザー辞書の重ね合わせにはシステム辞書が要るため）。
 
-## 未検証（Windows 実機・ランナーで動かすまで不明）
+## 確認済み（2026-11、CI 17/17 成功）
 
-- ホストランナーで `SendInput` / 前面化 / 画面キャプチャが通るか（対話デスクトップの有無）
-- 英語環境で ja-JP プロファイルをプロセス内有効化できるか
-- 標準 EDIT が TSF の composition を欄内にインライン表示するか（しなくても `committed` は「末尾が marked のときだけ除く」ので動く想定）
-- IME の起動待ち（`a` → `あ` が出るまで再試行、既定 30 秒）で足りるか
+`romaji-basic.json`（13 件）と `convert-userdict.json`（4 件）が `windows-latest` で成功した。
+
+- ホストランナーで `SendInput` / 前面化 / 画面キャプチャが通る（対話デスクトップが使える）
+- 英語環境でも、`regsvr32 /s` による登録と `ActivateProfile`（プロセス内有効化）が通る
+- IME の起動待ち（`a` → `あ` が出るまで再試行、既定 30 秒）で足りる
+- キー受理、ローマ字→かな、保留ローマ字の表示、BS / Esc / Enter、促音・拗音・`n` の扱い
+- Space 変換、2 回目の Space で次候補、Esc で読みに戻る、Enter で確定、ユーザー辞書の候補、imserver の自動起動
+
+観測は TSF プローブの自己申告（`marked`）と EDIT の `WM_GETTEXT`（`committed`）による。
+
+## E2E の範囲外（実機が必要）
+
+次は E2E で通っていない。実機での確認項目は `docs/real-hardware-checklist.md` §8、手順は `docs/windows-verification.md`。
+
+- ←/→、Shift / Ctrl 付きのキー
+- 候補ウィンドウ（表示・位置・ページ・数字キー・出所ラベル）、表示属性（下線）
+- モード切替キー（半角/全角・変換・無変換・かな・IME ON/OFF）、言語バー・トレイ
+- 再変換、ライブ変換・LLM 差し替え（E2E では設定で OFF）、学習・曖昧入力
+- imserver の強制終了と `restore_session`、スリープ復帰
+- JIS 配列・AltGr、他ホスト（メモ帳・ブラウザ・Office・UWP）
+- 環境/電源/サーマル、パスワード欄
+- インストーラー・更新・アンインストール、VC++ なし・ARM64・Authenticode
+- 標準 EDIT が composition を欄内にインライン表示するか（`committed` は「末尾が marked のときだけ除く」ので E2E の成否には影響しない）

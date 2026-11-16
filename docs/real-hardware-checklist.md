@@ -126,7 +126,7 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - レイテンシベンチ（p95）: 設計書の目標値（キー入力→ひらがな反映 p95 < 16ms 等）を実機で計測できると良い
 - `cargo xtask fetch-model` でモデルを取得した状態で `cargo run --release -p nagi-server --features llama --bin nagi-eval -- --data-dir ../data` を実行すると、精度・レイテンシの計測結果が出る（G-11の数値は評価環境（クラウドサンドボックス）でのもので、実機での再計測が無い）
 
-## 8. Windows フロント（TSF、H-39〜H-43）— 未検証
+## 8. Windows フロント（TSF、H-39〜H-43）— 実アプリでの実機検証は未実施（E2E 17 件は標準 EDIT ホスト上で成功）
 
 > **E2E による自動検証（2026-11）**: `windows-e2e` ワークフロー（windows-latest）で、SendInput → TSF → IME → 入力欄の経路を通した
 > E2E 17 件が成功している（[`docs/ui-testing.md`](ui-testing.md)）。この E2E は標準の EDIT コントロールをホストにした CI 上の検証で、
@@ -134,7 +134,8 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 > なお E2E が `key_id` のリピート回数不一致による 1 キー 2 回評価の不具合を検出し、修正している（下記 8.3 の `OnTestKeyDown` の項目）
 
 `frontend-windows/`（`nagi-windows`）と `frontend-windows-tsf/`（`nagi-windows-tsf`）は Linux 上で fmt / clippy / test と
-`x86_64-pc-windows-gnu` の `cargo check` / `clippy` が通っただけで、Windows 実機では一度も動かしていない。
+`x86_64-pc-windows-gnu` の `cargo check` / `clippy` が通り、CI の E2E（標準 EDIT ホスト上、上記）でも動いたが、
+実アプリ（メモ帳・ブラウザ・Office 等）を使った Windows 実機での検証は未実施。
 以下は Windows 10 22H2 以降 / 11 (x64) の実機で確認する項目。確認したら結果と日付を書き込むこと。
 検証の進め方・コマンド・記録方法は [`docs/windows-verification.md`](windows-verification.md)。
 

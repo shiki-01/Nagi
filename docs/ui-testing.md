@@ -9,7 +9,7 @@
 | --- | --- | --- | --- | --- |
 | 1 | コア（状態機械・変換） | `cargo test`（YAML ゴールデン）、`cargo xtask e2e-headless` | どこでも（Linux 可） | 検証済み |
 | 2 | macOS IMKit | SwiftPM のみ（`NagiTestHost` + `nagi-e2e`）。CGEvent で送出し、テキスト欄の状態ファイルを検証 | `macos-e2e.yml`（macos-latest） | **未検証** |
-| 2 | Windows TSF | Rust（`nagi-e2e-win`）。SendInput で送出し、TSF プローブと EDIT を検証 | `windows-e2e.yml`（windows-latest） | **未検証** |
+| 2 | Windows TSF | Rust（`nagi-e2e-win`）。SendInput で送出し、TSF プローブと EDIT を検証 | `windows-e2e.yml`（windows-latest） | E2E 17/17 成功（標準 EDIT ホスト上。実アプリ・候補ウィンドウ等は実機未検証） |
 | 2 | iOS キーボード拡張 | XCUITest（`NagiSpikeUITests`）。シミュレータ上で操作 | `ios-uitest.yml`（macos-15） | **未検証** |
 | 3 | 見た目の確認 | 各ドライバーが保存するスクリーンショットを、Claude が成果物から目視確認 | 上記の成果物 | 運用のみ |
 
@@ -53,7 +53,7 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 
 | 対象 | 結果 | 備考 |
 | --- | --- | --- |
-| iOS | **13 件 PASS**（シミュレータ上で実際にキーボードを操作）。既知の課題 4 件は別スイートに分離 | 下記「iOS: ←キー後の挿入位置（既知の課題）」 |
+| iOS | **13 件 PASS**（シミュレータ上で実際にキーボードを操作。`ios-kana` を既知の課題 4 件の分離後に実行した件数） | 下記「iOS: ←キー後の挿入位置（既知の課題）」 |
 | Windows | **17/17 成功**（SendInput → TSF → IME → 入力欄の経路） | E2E が製品の TSF の不具合を 1 件検出し修正（`key_id` のリピート回数） |
 | macOS | ビルド・権限・IME の登録・入力ソースの有効化までは成功。`TISSelectInputSource` が全試行で `-50` になり、Nagi を選択できない | GitHub ホストランナーでは不可能と判断 |
 
@@ -85,7 +85,7 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 これらはいずれもこの開発環境（Linux）では実行できず、CI での初回実行で確認する必要があります。
 
 - macOS: Swift のコンパイルエラー。CGEvent 送出に必要な権限。`launchctl setenv` で渡した環境変数が IME に届くか
-- Windows: ホストランナーで対話デスクトップが使えるか。`ActivateProfile` が通るか
+- Windows: 確認済み（2026-11、17/17 成功）: 対話デスクトップ・SendInput・前面化、`regsvr32` 登録と `ActivateProfile`、imserver の自動起動。未検証（E2E の範囲外）の一覧は `docs/windows-e2e.md`
 - iOS: シミュレータでのキーボード拡張の有効化。シミュレータ向け xcframework のビルド。拡張内の要素が XCUITest から見えるか
 - iOS のユーザー辞書は App Group 内にあり、決定的な辞書を注入する手段が未実装。変換系のシナリオは iOS では未対応
 
@@ -99,7 +99,7 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 - iOS 実機でのメモリ上限・フルアクセス・端末依存の挙動
 - macOS の公証・署名後のインストール
 
-実機チェックリスト（`docs/real-hardware-checklist.md`）のうち、Windows のキー入力と composition の基本動作（§8.3 の先頭 2 項目）は E2E で自動化済みです（チェックリストに「E2E 済」と注記）。macOS の項目（§2〜§5）は、macOS の E2E が稼働していないため対象外です。
+実機チェックリスト（`docs/real-hardware-checklist.md`）のうち、Windows のキー入力と composition の基本動作（§8.3 の先頭 2 項目）は E2E で自動化済みです（チェックリストに「E2E 済」と注記）。ただし 2 項目目（Space 変換 → 文節移動 ←/→ → 確定）は、Space 変換・候補選択・Esc までで、文節移動 ←/→ は未カバーです。いずれも標準 EDIT ホスト上の結果で、実アプリでは未確認です。macOS の項目（§2〜§5）は、macOS の E2E が稼働していないため対象外です。
 
 ## 再開メモ（2026-11-11 時点で中断）
 
@@ -107,7 +107,7 @@ cargo xtask e2e-headless --ios      # ios-kana も、コアの touch API で期�
 
 - **Windows**: CI（windows-latest）で E2E **17/17 成功**。実際の SendInput → TSF → IME → 入力欄の経路で検証できている
   - E2E が製品の不具合を 1 件検出し修正した: `frontend-windows-tsf/src/render.rs` の `key_id` が lParam 下位 16bit（リピート回数）を含み、OnTestKeyDown（`0x1E0001`）と OnKeyDown（`0x1E0000`）で不一致 → 結果の引き継ぎが外れて 1 キーが 2 回評価されていた。リピート回数を除く修正と回帰テストを入れた（別コミット。問題があればそのコミットだけ戻せる）
-- **iOS**: シミュレータ上の XCUITest で ios-kana **13 件中 12 件 PASS**。残りは `cursor_move_insert`（期待 "あくい" / 実測 "あいく"）
+- **iOS**（中断時点の記録。分離前の `ios-kana` は 13 件。分離後は上記「CI での実行結果」のとおり 13 件 PASS）: シミュレータ上の XCUITest で ios-kana **13 件中 12 件 PASS**。残りは `cursor_move_insert`（期待 "あくい" / 実測 "あいく"）
   - 切り分け用に、失敗メッセージへ各ステップ後のテキスト履歴（`| 経過: step1 ... -> "あ" cand=N; ...`）を入れた版を push 済み。**この版の CI 結果は未確認**
 - **macOS**: GitHub ホストランナーでは不可能と判断（`TISSelectInputSource` が全試行で `-50`。US の選択は成功するが Nagi の mode だけ失敗）。自前の Mac での実行手順は上記「macOS: 自前の Mac で実行する」
 

@@ -3,12 +3,11 @@ name: Windows UI E2E
 # 実際の OS 入力経路（SendInput でキー送出 → TSF → Nagi の IME → テストホストの EDIT）で Windows フロントを検証する。
 # ドライバー: frontend-windows-e2e（nagi-e2e-win）、シナリオ仕様: tests/e2e/README.md、設計: docs/windows-e2e.md。
 #
-# 不確実性（実際に動かすまで分からない。最初の実行は失敗する前提で、artifact の screenshots と tsf.log を見ること）:
-# - 対話デスクトップ: GitHub ホストランナーの windows-latest は、サービスではなくログイン済みの対話セッションで
-#   ステップが動くとされるが、SendInput が前面ウィンドウに届くか・SetForegroundWindow が通るか・GDI の画面キャプチャが
-#   黒くならないかは未確認。ドライバーは前面化できなければ明示のエラーで終了コード 2 を返す。
-# - 入力方式の有効化: ja-JP の言語パックが無い英語環境でも ITfInputProcessorProfileMgr::ActivateProfile
-#   （TF_IPPMF_FORPROCESS）でプロセス内だけ有効にできる想定だが未確認。失敗時は describe の診断（dll_loaded 等）を出す。
+# 2026-11 の CI で 17/17 成功（実績）。失敗時は artifact の screenshots と tsf.log を見ること:
+# - 対話デスクトップ: windows-latest はログイン済みの対話セッションでステップが動き、SendInput・SetForegroundWindow・
+#   GDI の画面キャプチャが通ることを確認済み。ドライバーは前面化できなければ明示のエラーで終了コード 2 を返す。
+# - 入力方式の有効化: 英語環境でも ITfInputProcessorProfileMgr::ActivateProfile（TF_IPPMF_FORPROCESS）で
+#   プロセス内だけ有効にできることを確認済み。失敗時は describe の診断（dll_loaded 等）を出す。
 # - regsvr32 は管理者権限が必要（ランナーの既定ユーザーは管理者）。
 # - 変換は決定的にする: LLM なし（imserver を llama feature なしでビルド）、システム辞書なし
 #   （語彙なしの最小辞書 e2e-fixture-data のみ）、ユーザー辞書は tests/e2e/fixtures/user-dir のコピー。
@@ -63,8 +62,9 @@ jobs:
         working-directory: core
         run: cargo xtask e2e-fixture-data --out "$GITHUB_WORKSPACE/e2e-out/fixture-data"
 
-      # 仮説: ランナーは英語環境で、ja-JP がユーザーの言語リストに無いと日本語(0x0411)の TIP を
-      # ActivateProfile が拒否する。ja-JP を言語リストに追加する（失敗しても続行。結果は診断として出す）
+      # ランナーは英語環境で、ja-JP がユーザーの言語リストに無いと日本語(0x0411)の TIP を
+      # ActivateProfile が拒否する可能性があるため、ja-JP を言語リストに追加する
+      # （失敗しても続行。結果は診断として出す。この手順が必須かは切り分けていない）
       - name: 言語リストに ja-JP を追加（best-effort）
         shell: pwsh
         continue-on-error: true
