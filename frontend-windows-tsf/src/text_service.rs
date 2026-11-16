@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
-use nagi_protocol::{CandidatesView, InputMode, KeyKind, ProcessKeyResult};
+use nagi_protocol::{CandidatesView, InputMode, KeyKind, ProcessKeyResult, StatusResult};
 use nagi_windows::candidates::{CandidatePage, Rect};
 use nagi_windows::context::{build_context, should_report_before_key};
 use nagi_windows::environment::{
@@ -24,7 +24,9 @@ use nagi_windows::environment::{
 };
 use nagi_windows::keynorm;
 use nagi_windows::mode::{ModeSync, compartment_values};
-use nagi_windows::status::{MenuCommand, MenuEntry, ToastThrottle, toast_for};
+use nagi_windows::status::{
+    MenuCommand, MenuEntry, MenuTargets, PathEnv, ToastThrottle, toast_for,
+};
 use nagi_windows::supervisor::EngineEvent;
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_POINTER, LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
@@ -496,22 +498,53 @@ impl Core {
         self.request_mode(nagi_windows::status::toggled(current));
     }
 
+    /// メニューの各「開く」項目の対象（存在しないものは `None`。作成はしない）
+    fn menu_targets(&self, status: Option<&StatusResult>) -> MenuTargets {
+        let var = |name: &str| {
+            std::env::var_os(name)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
+        let env = PathEnv {
+            app_data: var("APPDATA"),
+            local_app_data: var("LOCALAPPDATA"),
+            module_dir: dll::module_directory(),
+        };
+        nagi_windows::status::resolve_targets(
+            nagi_windows::status::settings_path(status),
+            &env,
+            |p| p.exists(),
+        )
+    }
+
     /// メニューの内容。状態の取得は UI スレッドで最大 250ms 待つ（メニューを開いたときだけ）
     pub(crate) fn lang_bar_menu(&self) -> Vec<MenuEntry> {
         let status = self.engine.status().ok();
-        nagi_windows::status::menu_entries(self.lang_bar_mode(), status.as_ref())
+        let targets = self.menu_targets(status.as_ref());
+        nagi_windows::status::menu_entries(self.lang_bar_mode(), status.as_ref(), &targets)
     }
 
     /// メニューの項目が選ばれた
     pub(crate) fn run_menu_command(&self, command: MenuCommand) {
+        if let MenuCommand::SetMode(mode) = command {
+            self.request_mode(mode);
+            return;
+        }
+        let status = self.engine.status().ok();
+        let targets = self.menu_targets(status.as_ref());
+        let kind = command.kind();
+        let Some(path) = targets.target(command) else {
+            // 灰色のはずだが、メニューを開いてから対象が消えた場合
+            crate::tsf_log::log("menu", &format!("open skipped kind={kind} (no target)"));
+            return;
+        };
         match command {
-            MenuCommand::SetMode(mode) => self.request_mode(mode),
-            MenuCommand::OpenSettings => {
-                let status = self.engine.status().ok();
-                if let Some(path) = nagi_windows::status::settings_path(status.as_ref()) {
-                    langbar::open_in_notepad(path);
-                }
-            }
+            MenuCommand::SetMode(_) => {}
+            MenuCommand::OpenSettings => langbar::open_in_notepad(kind, path),
+            MenuCommand::OpenSettingsFolder
+            | MenuCommand::OpenUserDictFolder
+            | MenuCommand::OpenLogFolder => langbar::open_folder(kind, path),
+            MenuCommand::RunVerify => langbar::run_verify(kind, path),
         }
     }
 

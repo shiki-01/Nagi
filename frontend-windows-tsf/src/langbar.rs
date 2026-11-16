@@ -13,6 +13,7 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use nagi_windows::status::{self, MenuEntry};
@@ -253,21 +254,42 @@ fn make_icon(text: &str, size: i32) -> Result<HICON> {
     icon
 }
 
-/// 設定ファイルをメモ帳で開く（`.toml` に関連付けが無くても開けるようメモ帳を明示する）。
-/// 無いファイルはメモ帳が作成を尋ねる
-pub fn open_in_notepad(path: &str) {
-    let argument = wide(&format!("\"{path}\""));
-    // 戻り値が 32 以下ならエラーだが、開けなくても入力には影響しないので無視する
-    let _ = unsafe {
+/// `ShellExecuteW("open")` で `file` を開く。戻り値が 32 以下なら失敗で、`[menu] open failed` を
+/// tsf.log に残す（パスは出すが入力内容は出さない）。開けなくても入力には影響しないので呼び出し元へは返さない
+fn shell_open(kind: &str, file: PCWSTR, parameters: PCWSTR) {
+    let result = unsafe {
         ShellExecuteW(
             None,
             w!("open"),
-            w!("notepad.exe"),
-            PCWSTR(argument.as_ptr()),
+            file,
+            parameters,
             PCWSTR::null(),
             SW_SHOWNORMAL,
         )
     };
+    let code = result.0 as isize;
+    if code <= 32 {
+        crate::tsf_log::log("menu", &format!("open failed kind={kind} code={code}"));
+    }
+}
+
+/// 設定ファイルをメモ帳で開く（`.toml` に関連付けが無くても開けるようメモ帳を明示する）。
+/// 無いファイルはメモ帳が作成を尋ねる
+pub fn open_in_notepad(kind: &str, path: &Path) {
+    let argument = wide(&format!("\"{}\"", path.display()));
+    shell_open(kind, w!("notepad.exe"), PCWSTR(argument.as_ptr()));
+}
+
+/// フォルダをエクスプローラーで開く
+pub fn open_folder(kind: &str, path: &Path) {
+    let folder = wide(&path.display().to_string());
+    shell_open(kind, PCWSTR(folder.as_ptr()), PCWSTR::null());
+}
+
+/// `verify.ps1 status` を新しいコンソールで起動する（実行後もコンソールを閉じない）
+pub fn run_verify(kind: &str, script: &Path) {
+    let arguments = wide(&status::verify_arguments(script));
+    shell_open(kind, w!("powershell.exe"), PCWSTR(arguments.as_ptr()));
 }
 
 /// 言語バーに登録したボタン。破棄すると登録を外す

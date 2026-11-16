@@ -2117,3 +2117,12 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **決定**: (1) tsf.log に 3 種を追加。`[env] sent ac=… battery_saver=… memory=… thermal=… source=real|override`（変化して送ったときだけ）、`[engine] restart requested (resume: os-notification|tick-gap)`（旧文言 `resume from sleep` を置き換え。検索に依存する箇所は無かった）、`[ctx] secure_input=true|false app=<exe名>`（状態が変わったときだけ）。**列挙値・真偽・実行ファイル名のみで、入力内容・周辺テキストは書かない**。(2) `%LOCALAPPDATA%\Nagi\debug-env.json` があるときだけ OS の検出値を上書きする `OverridingProbe`（`EnvironmentProbe` を包む。`frontend-windows/src/environment.rs`。パスは注入）。**検証専用**で、不正な JSON は実値にフォールバックして警告を 1 回だけ出し、ファイルを消せば次の poll で実値に戻って変化として再送される。(3) 検証スクリプト `frontend-windows/dist/verify.ps1`（status / crash / env / sleep / password / all。zip と `install.ps1` の配置対象に追加）。手順は `docs/windows-verification.md`。
 - **コアは変更なし**。上書きはフロント側の検出層だけで、コアは通常の `set_environment` として受け取る。サーマルの上書きは、周波数からの推定がバッテリー節約中に `None` になるため、推定を経由せず直接渡す（`thermal_override`）。
 - **残る限界**: 閾値そのものの妥当性（メモリ・サーマル）は擬似では検証できない。`password` の WinForms 小窓が TSF に InputScope を返すかは未確認（返さなければ実アプリで確認する）。スクリプトは Linux で実行できず、CI は構文検査のみ。
+
+### H-93. Windows: 入力インジケーターの右クリックメニューに設定・フォルダ・ログ・verify の導線を追加（2026-11-16、ユーザー要望「IME の右クリックから設定を開くボタンを出したい」、実機未確認）
+
+- **背景**: 設定 GUI は未作成（段階 2 で別途）。それまでの導線として、`GUID_LBI_INPUTMODE` のボタン（H-54）の右クリックメニューを拡充した。
+- **決定**: 「設定ファイルを開く…」を「設定を開く（config.toml）…」に改め（メモ帳。従来どおり）、その下に「設定フォルダを開く」「ユーザー辞書フォルダを開く」「ログフォルダを開く」「状態を確認（verify.ps1）」を追加（`MenuCommand` / ID 4〜7）。フォルダは `ShellExecuteW("open")` でエクスプローラー、verify は `powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "<DLL と同じ場所>\verify.ps1" status` を新しいコンソールで起動する。失敗（戻り値 32 以下）は `tsf.log` に `[menu] open failed kind=… code=…`（パスと種別のみ・入力内容なし）。
+- **対象の決め方**（`nagi_windows::status::resolve_targets`。環境変数・DLL の場所・存在判定を注入できる OS 非依存の関数）: user-dir は `get_status` の `config_path` の親（存在するとき）、無ければ `%APPDATA%\Nagi`。ユーザー辞書は `<user-dir>\user_dict` があればそれ、無ければ user-dir。ログは `%LOCALAPPDATA%\Nagi\logs`。**存在しない対象は作らず、項目を灰色にする**（設定ファイル自体は従来どおり、無くてもメモ帳が作成を尋ねるので `config_path` があれば有効）。
+- **構成**: サブメニューは `ITfMenu` の安全性（`AddMenuItem` の `ppmenu` 引数・トレイ側の描画）を実機で確認していないため使わず、平坦な項目のまま。区切り線は 2 本に抑えた。
+- **限界**: user-dir を `config_path` の親とみなすため、`--config` で別の場所を指定した場合はユーザー辞書の場所がずれうる（Windows のフロントは通常 `--config` を渡さない）。実機確認は `docs/real-hardware-checklist.md` §8.5c。
+- **段階 2**: 設定 GUI（別途）。

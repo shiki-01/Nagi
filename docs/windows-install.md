@@ -77,6 +77,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Nagi\unins
 
 インストール先には実機の動作確認用スクリプト `verify.ps1`（クラッシュ復帰・スリープ・環境・パスワード欄の確認。手順は `docs/windows-verification.md`）も置かれます。
 
+タスクバーの入力インジケーター（あ / A）を右クリックすると、設定（`config.toml`）・設定フォルダ・ユーザー辞書フォルダ・ログフォルダを開く項目と、「状態を確認（verify.ps1）」（`verify.ps1 status` を新しいコンソールで実行）が出ます。設定の GUI はまだありません（`config.toml` を直接編集します）。
+
 ## SmartScreen について
 
 この配布物は Authenticode（コード署名）で署名していません。署名の証明書は有償で、現時点では用意していないためです。そのため、ブラウザなどでダウンロードした zip や実行ファイルには、Microsoft Defender SmartScreen が「一般的にダウンロードされていません」「Windows によって PC が保護されました」と警告することがあります。

@@ -2,6 +2,7 @@
 //! 入力内容は含めない。表示（トースト・言語バー・ツールチップ）は次の層が担う。
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nagi_protocol::{InputMode, NotifyLevel, StatusResult};
@@ -95,8 +96,30 @@ pub fn mode_name(mode: InputMode) -> &'static str {
 pub enum MenuCommand {
     /// 入力モードを切り替える
     SetMode(InputMode),
-    /// 設定ファイル（`config.toml`）を開く
+    /// 設定ファイル（`config.toml`）をメモ帳で開く
     OpenSettings,
+    /// 設定フォルダをエクスプローラーで開く
+    OpenSettingsFolder,
+    /// ユーザー辞書フォルダをエクスプローラーで開く
+    OpenUserDictFolder,
+    /// ログフォルダをエクスプローラーで開く
+    OpenLogFolder,
+    /// 状態確認（`verify.ps1 status`）を新しいコンソールで起動する
+    RunVerify,
+}
+
+impl MenuCommand {
+    /// ログ用の短い名前（`[menu] open failed kind=…`）
+    pub fn kind(self) -> &'static str {
+        match self {
+            MenuCommand::SetMode(_) => "mode",
+            MenuCommand::OpenSettings => "settings",
+            MenuCommand::OpenSettingsFolder => "settings_folder",
+            MenuCommand::OpenUserDictFolder => "user_dict_folder",
+            MenuCommand::OpenLogFolder => "log_folder",
+            MenuCommand::RunVerify => "verify",
+        }
+    }
 }
 
 /// 言語バーのメニューの 1 行
@@ -122,6 +145,10 @@ pub enum MenuEntry {
 const ID_HIRAGANA: u32 = 1;
 const ID_ALPHANUMERIC: u32 = 2;
 const ID_SETTINGS: u32 = 3;
+const ID_SETTINGS_FOLDER: u32 = 4;
+const ID_USER_DICT_FOLDER: u32 = 5;
+const ID_LOG_FOLDER: u32 = 6;
+const ID_VERIFY: u32 = 7;
 
 /// 操作 → メニュー項目の識別子
 pub fn command_id(command: MenuCommand) -> u32 {
@@ -129,6 +156,10 @@ pub fn command_id(command: MenuCommand) -> u32 {
         MenuCommand::SetMode(InputMode::Hiragana) => ID_HIRAGANA,
         MenuCommand::SetMode(InputMode::Alphanumeric) => ID_ALPHANUMERIC,
         MenuCommand::OpenSettings => ID_SETTINGS,
+        MenuCommand::OpenSettingsFolder => ID_SETTINGS_FOLDER,
+        MenuCommand::OpenUserDictFolder => ID_USER_DICT_FOLDER,
+        MenuCommand::OpenLogFolder => ID_LOG_FOLDER,
+        MenuCommand::RunVerify => ID_VERIFY,
     }
 }
 
@@ -138,6 +169,10 @@ pub fn command_from_id(id: u32) -> Option<MenuCommand> {
         ID_HIRAGANA => Some(MenuCommand::SetMode(InputMode::Hiragana)),
         ID_ALPHANUMERIC => Some(MenuCommand::SetMode(InputMode::Alphanumeric)),
         ID_SETTINGS => Some(MenuCommand::OpenSettings),
+        ID_SETTINGS_FOLDER => Some(MenuCommand::OpenSettingsFolder),
+        ID_USER_DICT_FOLDER => Some(MenuCommand::OpenUserDictFolder),
+        ID_LOG_FOLDER => Some(MenuCommand::OpenLogFolder),
+        ID_VERIFY => Some(MenuCommand::RunVerify),
         _ => None,
     }
 }
@@ -168,9 +203,100 @@ pub fn settings_path(status: Option<&StatusResult>) -> Option<&str> {
     status?.config_path.as_deref().filter(|p| !p.is_empty())
 }
 
+/// 環境変数・DLL の場所（OS から読んだ値。テストでは注入する）
+#[derive(Debug, Clone, Default)]
+pub struct PathEnv {
+    /// `%APPDATA%`
+    pub app_data: Option<PathBuf>,
+    /// `%LOCALAPPDATA%`
+    pub local_app_data: Option<PathBuf>,
+    /// DLL（`nagi_windows_tsf.dll`）のあるディレクトリ。`verify.ps1` も同じ場所に置かれる
+    pub module_dir: Option<PathBuf>,
+}
+
+/// メニューの各「開く」項目の対象。`None` は開けない（項目を灰色にする）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MenuTargets {
+    /// 設定ファイル（`config.toml`）。ファイル自体が無くてもメモ帳が作成を尋ねるので存在は問わない
+    pub settings_file: Option<PathBuf>,
+    /// 設定フォルダ（存在するときだけ）
+    pub settings_dir: Option<PathBuf>,
+    /// ユーザー辞書フォルダ（`<user-dir>/user_dict`、無ければ user-dir。存在するときだけ）
+    pub user_dict_dir: Option<PathBuf>,
+    /// ログフォルダ（存在するときだけ）
+    pub log_dir: Option<PathBuf>,
+    /// `verify.ps1`（存在するときだけ）
+    pub verify_script: Option<PathBuf>,
+}
+
+impl MenuTargets {
+    /// `command` が開く対象。モード切り替えや、対象が無いときは `None`
+    pub fn target(&self, command: MenuCommand) -> Option<&Path> {
+        match command {
+            MenuCommand::SetMode(_) => None,
+            MenuCommand::OpenSettings => self.settings_file.as_deref(),
+            MenuCommand::OpenSettingsFolder => self.settings_dir.as_deref(),
+            MenuCommand::OpenUserDictFolder => self.user_dict_dir.as_deref(),
+            MenuCommand::OpenLogFolder => self.log_dir.as_deref(),
+            MenuCommand::RunVerify => self.verify_script.as_deref(),
+        }
+    }
+}
+
+/// メニューの対象を決める。`config_path` はコアが教える設定ファイルの場所（user-dir はその親とみなす。
+/// 無ければ `%APPDATA%\Nagi`）。`exists` はディレクトリ・ファイルの存在判定（作成はしない）
+pub fn resolve_targets(
+    config_path: Option<&str>,
+    env: &PathEnv,
+    exists: impl Fn(&Path) -> bool,
+) -> MenuTargets {
+    let settings_file = config_path.filter(|p| !p.is_empty()).map(PathBuf::from);
+    let default_user_dir = env.app_data.as_ref().map(|d| d.join("Nagi"));
+    // user-dir: 設定ファイルの親（存在するとき）→ %APPDATA%\Nagi
+    let user_dir = settings_file
+        .as_deref()
+        .and_then(Path::parent)
+        .filter(|p| !p.as_os_str().is_empty() && exists(p))
+        .map(Path::to_path_buf)
+        .or_else(|| default_user_dir.filter(|p| exists(p)));
+    let user_dict_dir = user_dir.as_ref().map(|d| {
+        let sub = d.join("user_dict");
+        if exists(&sub) { sub } else { d.clone() }
+    });
+    let log_dir = env
+        .local_app_data
+        .as_ref()
+        .map(|d| d.join("Nagi").join("logs"))
+        .filter(|p| exists(p));
+    let verify_script = env
+        .module_dir
+        .as_ref()
+        .map(|d| d.join("verify.ps1"))
+        .filter(|p| exists(p));
+    MenuTargets {
+        settings_file,
+        settings_dir: user_dir,
+        user_dict_dir,
+        log_dir,
+        verify_script,
+    }
+}
+
+/// `verify.ps1 status` を起動する PowerShell の引数（実行後もコンソールを閉じない）
+pub fn verify_arguments(script: &Path) -> String {
+    format!(
+        "-NoProfile -ExecutionPolicy Bypass -NoExit -File \"{}\" status",
+        script.display()
+    )
+}
+
 /// 言語バーのボタンのメニュー。現在のモードにチェックを付け、状態の行（`status` が取れなければ
-/// [`UNAVAILABLE`]）を挟み、設定を開く項目は設定ファイルの場所が分かるときだけ選べる
-pub fn menu_entries(mode: Option<InputMode>, status: Option<&StatusResult>) -> Vec<MenuEntry> {
+/// [`UNAVAILABLE`]）を挟み、設定・フォルダ・確認の項目は対象が分かるときだけ選べる
+pub fn menu_entries(
+    mode: Option<InputMode>,
+    status: Option<&StatusResult>,
+    targets: &MenuTargets,
+) -> Vec<MenuEntry> {
     let mode_item = |target: InputMode| MenuEntry::Command {
         id: command_id(MenuCommand::SetMode(target)),
         label: mode_name(target).to_owned(),
@@ -187,12 +313,22 @@ pub fn menu_entries(mode: Option<InputMode>, status: Option<&StatusResult>) -> V
         None => entries.push(MenuEntry::Info(UNAVAILABLE.to_owned())),
     }
     entries.push(MenuEntry::Separator);
-    entries.push(MenuEntry::Command {
-        id: command_id(MenuCommand::OpenSettings),
-        label: "設定ファイルを開く…".to_owned(),
+    let open_items = [
+        (MenuCommand::OpenSettings, "設定を開く（config.toml）…"),
+        (MenuCommand::OpenSettingsFolder, "設定フォルダを開く"),
+        (
+            MenuCommand::OpenUserDictFolder,
+            "ユーザー辞書フォルダを開く",
+        ),
+        (MenuCommand::OpenLogFolder, "ログフォルダを開く"),
+        (MenuCommand::RunVerify, "状態を確認（verify.ps1）"),
+    ];
+    entries.extend(open_items.map(|(command, label)| MenuEntry::Command {
+        id: command_id(command),
+        label: label.to_owned(),
         checked: false,
-        enabled: settings_path(status).is_some(),
-    });
+        enabled: targets.target(command).is_some(),
+    }));
     entries
 }
 
@@ -327,6 +463,10 @@ mod tests {
             MenuCommand::SetMode(InputMode::Hiragana),
             MenuCommand::SetMode(InputMode::Alphanumeric),
             MenuCommand::OpenSettings,
+            MenuCommand::OpenSettingsFolder,
+            MenuCommand::OpenUserDictFolder,
+            MenuCommand::OpenLogFolder,
+            MenuCommand::RunVerify,
         ];
         let mut ids: Vec<u32> = commands.iter().map(|c| command_id(*c)).collect();
         for c in commands {
@@ -349,10 +489,33 @@ mod tests {
         assert_eq!(button_tooltip(None), "Nagi");
     }
 
+    fn all_targets() -> MenuTargets {
+        let p = |s: &str| Some(PathBuf::from(s));
+        MenuTargets {
+            settings_file: p("C:/n/config.toml"),
+            settings_dir: p("C:/n"),
+            user_dict_dir: p("C:/n/user_dict"),
+            log_dir: p("C:/l/Nagi/logs"),
+            verify_script: p("C:/p/verify.ps1"),
+        }
+    }
+
+    fn command_entries(entries: &[MenuEntry]) -> Vec<(MenuCommand, bool)> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Command { id, enabled, .. } => {
+                    Some((command_from_id(*id).expect("既知の ID"), *enabled))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn menu_checks_current_mode_and_enables_settings_only_with_a_path() {
+    fn menu_checks_current_mode_and_lists_open_items() {
         let status = sample_status(Some("C:/Users/x/AppData/Roaming/Nagi/config.toml"));
-        let entries = menu_entries(Some(InputMode::Alphanumeric), Some(&status));
+        let entries = menu_entries(Some(InputMode::Alphanumeric), Some(&status), &all_targets());
         let checked: Vec<_> = entries
             .iter()
             .filter_map(|e| match e {
@@ -361,25 +524,39 @@ mod tests {
             })
             .collect();
         assert_eq!(checked, ["英数"]);
-        let Some(MenuEntry::Command { enabled, id, .. }) = entries.last() else {
-            panic!("最後は設定の項目");
-        };
-        assert!(*enabled);
-        assert_eq!(command_from_id(*id), Some(MenuCommand::OpenSettings));
+        // 末尾の 5 項目は開く操作（順序込み）で、対象があるので全部選べる
+        let commands = command_entries(&entries);
+        assert_eq!(
+            commands[2..],
+            [
+                (MenuCommand::OpenSettings, true),
+                (MenuCommand::OpenSettingsFolder, true),
+                (MenuCommand::OpenUserDictFolder, true),
+                (MenuCommand::OpenLogFolder, true),
+                (MenuCommand::RunVerify, true),
+            ]
+        );
+        assert!(matches!(
+            entries.iter().rev().nth(4),
+            Some(MenuEntry::Command { label, .. }) if label == "設定を開く（config.toml）…"
+        ));
         // 状態の行（menu_lines）が入る
         assert!(entries.contains(&MenuEntry::Info("変換: 辞書のみ".into())));
+        // 区切り線は 2 本だけ（長くしすぎない）
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| matches!(e, MenuEntry::Separator))
+                .count(),
+            2
+        );
 
-        // 設定ファイルの場所が無い・空・状態が取れないときは選べない
-        for st in [
-            Some(sample_status(None)),
-            Some(sample_status(Some(""))),
-            None,
-        ] {
-            let entries = menu_entries(None, st.as_ref());
-            assert!(matches!(
-                entries.last(),
-                Some(MenuEntry::Command { enabled: false, .. })
-            ));
+        // 対象が無い・状態が取れないときは開く項目が灰色（モードは選べる）
+        for st in [Some(sample_status(None)), None] {
+            let entries = menu_entries(None, st.as_ref(), &MenuTargets::default());
+            let commands = command_entries(&entries);
+            assert!(commands[..2].iter().all(|(_, enabled)| *enabled));
+            assert!(commands[2..].iter().all(|(_, enabled)| !*enabled));
             // モード不明ならチェックは付けない
             assert!(
                 !entries
@@ -387,8 +564,99 @@ mod tests {
                     .any(|e| matches!(e, MenuEntry::Command { checked: true, .. }))
             );
         }
-        let none = menu_entries(Some(InputMode::Hiragana), None);
+        let none = menu_entries(Some(InputMode::Hiragana), None, &all_targets());
         assert!(none.contains(&MenuEntry::Info(UNAVAILABLE.into())));
+    }
+
+    fn env() -> PathEnv {
+        PathEnv {
+            app_data: Some(PathBuf::from("/ad")),
+            local_app_data: Some(PathBuf::from("/lad")),
+            module_dir: Some(PathBuf::from("/pf/Nagi")),
+        }
+    }
+
+    fn existing<'a>(paths: &'a [&'a str]) -> impl Fn(&Path) -> bool + 'a {
+        move |p| paths.iter().any(|x| Path::new(x) == p)
+    }
+
+    #[test]
+    fn resolve_targets_prefers_config_parent_and_user_dict() {
+        let t = resolve_targets(
+            Some("/u/Nagi/config.toml"),
+            &env(),
+            existing(&[
+                "/u/Nagi",
+                "/u/Nagi/user_dict",
+                "/lad/Nagi/logs",
+                "/pf/Nagi/verify.ps1",
+            ]),
+        );
+        assert_eq!(
+            t.settings_file.as_deref(),
+            Some(Path::new("/u/Nagi/config.toml"))
+        );
+        assert_eq!(t.settings_dir.as_deref(), Some(Path::new("/u/Nagi")));
+        assert_eq!(
+            t.user_dict_dir.as_deref(),
+            Some(Path::new("/u/Nagi/user_dict"))
+        );
+        assert_eq!(t.log_dir.as_deref(), Some(Path::new("/lad/Nagi/logs")));
+        assert_eq!(
+            t.verify_script.as_deref(),
+            Some(Path::new("/pf/Nagi/verify.ps1"))
+        );
+        assert_eq!(
+            t.target(MenuCommand::RunVerify),
+            Some(Path::new("/pf/Nagi/verify.ps1"))
+        );
+        assert_eq!(t.target(MenuCommand::SetMode(InputMode::Hiragana)), None);
+    }
+
+    #[test]
+    fn resolve_targets_falls_back_and_never_requires_creation() {
+        // user_dict が無ければ user-dir、config_path が無ければ %APPDATA%\Nagi
+        let t = resolve_targets(None, &env(), existing(&["/ad/Nagi"]));
+        assert_eq!(t.settings_file, None);
+        assert_eq!(t.settings_dir.as_deref(), Some(Path::new("/ad/Nagi")));
+        assert_eq!(t.user_dict_dir.as_deref(), Some(Path::new("/ad/Nagi")));
+        assert_eq!(t.log_dir, None);
+        assert_eq!(t.verify_script, None);
+
+        // config_path の親が無ければ %APPDATA%\Nagi へ。空の config_path は無いものとして扱う
+        let t = resolve_targets(Some("/gone/config.toml"), &env(), existing(&["/ad/Nagi"]));
+        assert_eq!(t.settings_dir.as_deref(), Some(Path::new("/ad/Nagi")));
+        assert!(t.settings_file.is_some());
+        let t = resolve_targets(Some(""), &env(), existing(&[]));
+        assert_eq!(t, MenuTargets::default());
+
+        // 環境変数が全く無い
+        let t = resolve_targets(None, &PathEnv::default(), existing(&["/ad/Nagi"]));
+        assert_eq!(t, MenuTargets::default());
+    }
+
+    #[test]
+    fn verify_arguments_quote_the_script_and_keep_the_console() {
+        let a = verify_arguments(Path::new("C:/Program Files/Nagi/verify.ps1"));
+        assert_eq!(
+            a,
+            "-NoProfile -ExecutionPolicy Bypass -NoExit -File \"C:/Program Files/Nagi/verify.ps1\" status"
+        );
+    }
+
+    #[test]
+    fn command_kinds_are_distinct() {
+        let mut kinds = vec![
+            MenuCommand::SetMode(InputMode::Hiragana).kind(),
+            MenuCommand::OpenSettings.kind(),
+            MenuCommand::OpenSettingsFolder.kind(),
+            MenuCommand::OpenUserDictFolder.kind(),
+            MenuCommand::OpenLogFolder.kind(),
+            MenuCommand::RunVerify.kind(),
+        ];
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), 6);
     }
 
     #[test]
