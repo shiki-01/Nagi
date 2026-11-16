@@ -68,7 +68,7 @@ jobs:
         shell: pwsh
         run: |
           $bad = 0
-          foreach ($f in 'frontend-windows/dist/install.ps1', 'frontend-windows/dist/uninstall.ps1', 'web/static/install.ps1') {
+          foreach ($f in 'frontend-windows/dist/install.ps1', 'frontend-windows/dist/uninstall.ps1', 'frontend-windows/dist/verify.ps1', 'web/static/install.ps1') {
             $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errors)
             if ($errors.Count) { $bad++; $errors | ForEach-Object { Write-Host "${f}:$($_.Extent.StartLineNumber): $($_.Message)" } }

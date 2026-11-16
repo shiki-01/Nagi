@@ -2110,3 +2110,10 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **標準方式が鳴らない原因は未確定**: 候補は、生成時にアンカービュー（`init(style:view:)`）が window に未所属だった、拡張での `UIFeedbackGenerator` の制限。
 - **変えないこと**: 速打ちで前回の振動の再生中に次の要求を捨てる挙動は別課題。
 - **ホストアプリのフルアクセス表示**: アプリがフォアグラウンドに戻ったとき（`scenePhase` の `.active`）にも再読み込みする。行に「最後にキーボードを開いた時点」の時刻を添え、オフと推定されるときは断定しない文言にする（拡張の `hasFullAccess` をホストが直接読めず、マーカーからの推定のため）。実機確認は `docs/ios-device-checklist.md` §3。
+
+### H-92. Windows の堅牢性・環境の簡単な検証手段: debug-env.json と verify.ps1（2026-11-16、ユーザー承認済みの方針、実機未確認）
+
+- **背景**: クラッシュ復帰・スリープ復帰・環境適応・secure input は実機でしか確かめられないが、tsf.log に環境の送信・復帰の検出経路・secure の判定が出ず、検出値を偽装する手段も無かった。
+- **決定**: (1) tsf.log に 3 種を追加。`[env] sent ac=… battery_saver=… memory=… thermal=… source=real|override`（変化して送ったときだけ）、`[engine] restart requested (resume: os-notification|tick-gap)`（旧文言 `resume from sleep` を置き換え。検索に依存する箇所は無かった）、`[ctx] secure_input=true|false app=<exe名>`（状態が変わったときだけ）。**列挙値・真偽・実行ファイル名のみで、入力内容・周辺テキストは書かない**。(2) `%LOCALAPPDATA%\Nagi\debug-env.json` があるときだけ OS の検出値を上書きする `OverridingProbe`（`EnvironmentProbe` を包む。`frontend-windows/src/environment.rs`。パスは注入）。**検証専用**で、不正な JSON は実値にフォールバックして警告を 1 回だけ出し、ファイルを消せば次の poll で実値に戻って変化として再送される。(3) 検証スクリプト `frontend-windows/dist/verify.ps1`（status / crash / env / sleep / password / all。zip と `install.ps1` の配置対象に追加）。手順は `docs/windows-verification.md`。
+- **コアは変更なし**。上書きはフロント側の検出層だけで、コアは通常の `set_environment` として受け取る。サーマルの上書きは、周波数からの推定がバッテリー節約中に `None` になるため、推定を経由せず直接渡す（`thermal_override`）。
+- **残る限界**: 閾値そのものの妥当性（メモリ・サーマル）は擬似では検証できない。`password` の WinForms 小窓が TSF に InputScope を返すかは未確認（返さなければ実アプリで確認する）。スクリプトは Linux で実行できず、CI は構文検査のみ。

@@ -184,10 +184,13 @@ impl EngineHost {
     }
 
     /// スリープ復帰時などの強制再起動（`restart_now` は接続を待つので別スレッドで行う）
-    pub fn restart_in_background(&self) {
+    pub fn restart_in_background(&self, source: nagi_windows::environment::ResumeSource) {
         let supervisor = Arc::clone(&self.supervisor);
         std::thread::spawn(move || {
-            crate::tsf_log::log("engine", "restart requested (resume from sleep)");
+            crate::tsf_log::log(
+                "engine",
+                &nagi_windows::diag::describe_restart_requested(source),
+            );
             supervisor.restart_now();
         });
     }

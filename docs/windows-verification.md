@@ -444,6 +444,32 @@ Test-Imserver @('--no-llm')    # 辞書のみ
 3. **イベントビューアー**: `eventvwr.msc` > Windows ログ > アプリケーション で、`imserver.exe` のエラー（ソース: Application Error / Windows Error Reporting）。例外コードと障害モジュール（`llama.dll` / `ggml*.dll` / `KERNELBASE.dll` など）が分かれば原因を絞れる。ホストアプリ側（例: `explorer.exe`、`notepad.exe`）のエラーが同時刻にある場合は DLL 側の問題。
 4. 報告に添えるもの: `tsf.log`（`[engine]` 行）、該当する `imserver-<pid>.log`、上記スクリプトの出力（通常と `--no-llm`）、イベントビューアーのエラーの詳細。
 
+### 堅牢性・環境の簡単な検証（verify.ps1）（H-92）
+
+クラッシュ復帰・スリープ復帰・環境（電源・メモリ・サーマル）・パスワード欄の判定を、コマンド 1 つで「操作 → 待機 → tsf.log の判定 → OK / NG」まで行うスクリプトです。インストール先（`C:\Program Files\Nagi\verify.ps1`。zip にも同梱）に置かれます。管理者権限は不要、PowerShell 5.1 で動きます。インストール先・ログ・ユーザーデータの既定は `C:\Program Files\Nagi` / `%LOCALAPPDATA%\Nagi\logs` / `%APPDATA%\Nagi` で、`-InstallDir` `-LogDir` `-UserDir` で変えられます。出力は日本語で、最後に報告用の「結果サマリ（コピー用）」が出ます。NG のときは、その場に「報告に貼るログ行」も出ます（入力内容は含まれません）。
+
+```powershell
+$v = 'C:\Program Files\Nagi\verify.ps1'
+powershell -NoProfile -ExecutionPolicy Bypass -File $v status
+```
+
+事前に Nagi に切り替えてメモ帳などに一度入力し、`tsf.log` が作られている状態にします（無い・未導入ならスクリプトが理由を表示して終了します）。
+
+| サブコマンド | 手順 | 期待結果（OK の条件） | NG のとき報告するもの |
+| --- | --- | --- | --- |
+| `status` | そのまま実行 | DLL を読み込んだプロセス・imserver（PID・起動時刻）・VERSION・`[engine]` 行の末尾が表示される | 出力全体 |
+| `crash` | メモ帳で Nagi に切り替え、ひらがなを 3 文字打って未確定のまま実行 | 30 秒以内に新しい imserver が現れ、`[engine] started` と `session restored` が出る（メモ帳の未確定文字も残る） | サマリのログ行、メモ帳の状態 |
+| `crash -Repeat 6` | 同上。imserver を連続 6 回終了させる | `[engine] entering minimal profile after restarts=5` が出る（元に戻すにはアプリを開き直す） | サマリのログ行 |
+| `env <名前>` | `battery` / `saver` / `memory-warning` / `memory-critical` / `thermal-serious` / `invalid` / `clear`。実行後、言語バー（トレイの「あ」）を右クリックして「プロファイル: …」を見る | 最大 40 秒で `[env] sent … source=override` が出る。メニューのプロファイルが環境に応じて変わる（目視）。`invalid` は警告が 1 回だけ出て実値のまま。`clear` で `source=real` が再送される | サマリのログ行、メニューのプロファイル表示 |
+| `sleep` → `sleep -After` | `sleep` を実行 → メモ帳で未確定文字を作り PC をスリープ → 復帰後 `sleep -After` | `[engine] restart requested (resume: os-notification または tick-gap)` が 1 ホストにつき 1 回、新しい imserver が現れ、親プロセスごとに imserver は 1 つだけ | サマリのログ行（どの検出経路か含む） |
+| `password` | 開いた小窓で Nagi に切り替え、通常欄とパスワード欄に 1 文字ずつ入力して閉じる。続けてメモ帳の通常欄に 1 文字入力 | `[ctx] secure_input=true app=powershell…` が出て、`app=notepad` では出ない | サマリのログ行。パスワード欄で出ない場合はその旨（この小窓が TSF に InputScope を返さない可能性もあるため、実アプリ（ブラウザのログイン欄等）での結果も添える） |
+| `all` | `status` → `crash` → `env`（各種）→ `env clear` → `password` を順に案内 | 上記のとおり。`sleep` は含まれない | サマリ全体 |
+
+- **検証専用ファイル `debug-env.json`**: `env` は `%LOCALAPPDATA%\Nagi\debug-env.json` を書いて OS の検出値（電源・メモリ・サーマル）を上書きします。形式は `{"on_battery":true,"battery_saver":false,"memory":"critical","thermal":"serious"}`（省略した項目は実値。`memory` は normal / warning / critical、`thermal` は nominal / fair / serious / critical）。**検証のためだけの仕組みで、通常の利用では置かないでください**。ファイルがあるあいだ `[env] sent … source=override` になります。検証後は必ず `env clear`（ファイルを消す。次の確認で実値に戻って再送される）。不正な JSON は無視されて実値のままになり、`[env] invalid debug-env.json …` が 1 回だけ出ます。
+- **tsf.log に追加した行**（入力内容は書きません。列挙値・真偽・実行ファイル名のみ）: `[env] sent ac=ac|battery battery_saver=… memory=… thermal=… source=real|override`（環境が変わって送ったときだけ）、`[engine] restart requested (resume: os-notification|tick-gap)`（スリープ復帰での再起動要求。経路の区別）、`[ctx] secure_input=true|false app=<exe名>`（機密欄かどうかが変わったときだけ。周辺テキストは書かない）。
+- Nagi を使っているアプリが複数あると imserver も複数になります（ホストごとに起動）。`crash` はそのすべてを終了させます。検証中は余計なアプリを閉じておくと判定が読みやすくなります。
+- スクリプトは PowerShell が無い Linux では実行できず、CI では構文検査だけを行っています。**実機での初回実行でスクリプト自体の不具合が見つかったら、その出力を報告してください**。
+
 ### 段階 F: 更新・アンインストール（8.7）
 
 #### F-1 更新（上書きインストール）

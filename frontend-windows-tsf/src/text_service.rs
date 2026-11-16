@@ -12,14 +12,16 @@ use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use nagi_protocol::{CandidatesView, InputMode, KeyKind, ProcessKeyResult};
 use nagi_windows::candidates::{CandidatePage, Rect};
 use nagi_windows::context::{build_context, should_report_before_key};
-use nagi_windows::environment::{EnvironmentReporter, ResumeDetector};
+use nagi_windows::environment::{
+    EnvironmentReporter, OverridingProbe, ResumeDetector, ResumeSource,
+};
 use nagi_windows::keynorm;
 use nagi_windows::mode::{ModeSync, compartment_values};
 use nagi_windows::status::{MenuCommand, MenuEntry, ToastThrottle, toast_for};
@@ -54,10 +56,13 @@ use crate::toast_window::ToastWindow;
 static ENGINE: OnceLock<Arc<EngineHost>> = OnceLock::new();
 
 /// プロセス内で共有する環境の報告（変化したときだけ送る。エンジンは 1 つなので 1 つ）
-static ENVIRONMENT: OnceLock<Mutex<EnvironmentReporter<Win32Probe>>> = OnceLock::new();
+static ENVIRONMENT: OnceLock<Mutex<EnvironmentReporter<EnvProbe>>> = OnceLock::new();
 
 /// 通知の間引き（同じ文言を 30 秒は繰り返さない）。プロセス内で 1 つ
 static TOASTS: OnceLock<Mutex<ToastThrottle>> = OnceLock::new();
+
+/// 直近に記録した「機密欄か」の状態（プロセス内。変化したときだけログに書く）
+static SECURE_INPUT_LOGGED: AtomicBool = AtomicBool::new(false);
 
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 
@@ -100,8 +105,24 @@ fn shared_engine() -> Arc<EngineHost> {
         .clone()
 }
 
-fn environment() -> &'static Mutex<EnvironmentReporter<Win32Probe>> {
-    ENVIRONMENT.get_or_init(|| Mutex::new(EnvironmentReporter::new(Win32Probe)))
+/// OS の検出値。`%LOCALAPPDATA%\Nagi\debug-env.json` があるときだけ上書きされる（**検証専用**。
+/// `verify.ps1 env`。通常の利用ではファイルが無いので実値のまま）
+type EnvProbe = OverridingProbe<Win32Probe>;
+
+fn environment() -> &'static Mutex<EnvironmentReporter<EnvProbe>> {
+    ENVIRONMENT.get_or_init(|| {
+        let path = std::env::var_os("LOCALAPPDATA")
+            .filter(|v| !v.is_empty())
+            .map(|dir| nagi_windows::diag::debug_env_path(std::path::Path::new(&dir)))
+            // LOCALAPPDATA が無ければ存在しないパス（上書きなし）
+            .unwrap_or_default();
+        let probe = OverridingProbe::new(
+            Win32Probe,
+            path,
+            Box::new(|message| crate::tsf_log::log("env", message)),
+        );
+        Mutex::new(EnvironmentReporter::new(probe))
+    })
 }
 
 fn toasts() -> &'static Mutex<ToastThrottle> {
@@ -335,12 +356,13 @@ impl Core {
             MessageEvent::Tick => {
                 self.poll_environment();
                 if self.resume.borrow_mut().tick(SystemTime::now()) {
-                    self.engine.restart_in_background();
+                    self.engine.restart_in_background(ResumeSource::TickGap);
                 }
             }
             MessageEvent::Resume => {
                 if self.resume.borrow_mut().notified(SystemTime::now()) {
-                    self.engine.restart_in_background();
+                    self.engine
+                        .restart_in_background(ResumeSource::OsNotification);
                 }
                 self.poll_environment();
             }
@@ -353,9 +375,14 @@ impl Core {
     fn poll_environment(&self) {
         let params = {
             let mut reporter = environment().lock().unwrap_or_else(|e| e.into_inner());
-            reporter.poll()
+            reporter.poll_with_source()
         };
-        if let Some(params) = params {
+        if let Some((params, overridden)) = params {
+            // 列挙値だけを記録する（変化が無い poll は `poll_with_source` が `None` を返すので書かない）
+            crate::tsf_log::log(
+                "env",
+                &nagi_windows::diag::describe_environment_sent(&params, overridden),
+            );
             let _ = self.engine.set_environment(&params);
         }
     }
@@ -620,6 +647,16 @@ impl Core {
         let Some(info) = edit::read_surroundings(context, self.client_id.get()) else {
             return;
         };
+        // 機密欄かどうかが変わったときだけ記録する（周辺テキストは書かない）
+        if SECURE_INPUT_LOGGED.swap(info.secure, Ordering::Relaxed) != info.secure {
+            crate::tsf_log::log(
+                "ctx",
+                &nagi_windows::diag::describe_secure_input(
+                    info.secure,
+                    crate::context_info::app_id(),
+                ),
+            );
+        }
         let params = build_context(
             &self.session_id,
             info.secure,

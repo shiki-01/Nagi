@@ -157,7 +157,9 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] `OnTestKeyDown` だけが呼ばれて `OnKeyDown` が来ない場合の挙動（エンジン状態が先に進む問題）の発生頻度（E2E で、test と実キーの lParam のリピート回数が異なり結果の引き継ぎが外れる不具合を検出・修正済み。実アプリでの発生頻度は未確認）
 - [ ] 入力 250ms のタイムアウト（実測なしの暫定値）が妥当か。重い変換でもキーを取りこぼさない
 - [ ] エンジン未接続時の素通し（composition 中だけ食う）で入力が壊れない。imserver を強制終了しても自動再起動し、`restore_session` で preedit が復元される
+  - 確認方法: `verify.ps1 crash`（連続 6 回で minimal へ入るかは `verify.ps1 crash -Repeat 6`）。手順は `docs/windows-verification.md`「堅牢性・環境の簡単な検証」
 - [ ] スリープ復帰後の再起動
+  - 確認方法: `verify.ps1 sleep` → スリープ → `verify.ps1 sleep -After`（`[engine] restart requested (resume: …)` の検出経路と二重起動なしを判定）
 - [x] ~~ライブ変換・LLM 結果の差し替えが「次のキー入力まで画面に出ない」~~ → H-41 で隠しウィンドウ + PostMessage により解消（実機の確認は 8.5b）
 - [ ] キャレット位置の設定（`ShiftEnd`）。確定後にカーソルが文末に来る
 
@@ -176,9 +178,13 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] 出所ラベル（学習・AI・辞書・もしかして等）の表示
 - [ ] キャレット矩形が取れないアプリでマウス位置に出る（`anchor_rect`）
 - [ ] `set_environment`: AC/電池の切替、バッテリー節約の切替で `get_status` のプロファイルが変わる。電池の無いデスクトップ PC で電池駆動と誤判定されない
+  - 確認方法: `verify.ps1 env battery` / `saver`（検証専用の `debug-env.json` で擬似。`tsf.log` の `[env] sent … source=override` と言語バーの「プロファイル: …」を見る。終了時に `env clear`）。実際の電源切替は従来どおり実機で
 - [ ] メモリ逼迫の推定閾値（利用可能 5%/10%・300MB/800MB）が妥当か（実測なし）。メモリを圧迫したときだけ light/minimal に落ちる
+  - 確認方法: 擬似は `verify.ps1 env memory-warning` / `memory-critical`（閾値そのものの妥当性は実メモリで別途確認）
 - [ ] サーマルの推定（周波数 / 上限の比 85%/60%/40%）。バッテリー節約中や省電力プランで誤って軽いプロファイルに落ちない（節約が有効または不明なら推定しない仕様）
+  - 確認方法: 擬似は `verify.ps1 env thermal-serious`（推定の閾値そのものは検証できない）
 - [ ] `set_context`: 入力開始時にキャレット直前のテキストが送られ、次語候補・文脈が効く。取得できないアプリで前回の文脈が維持される。パスワード欄（`InputScope` の `IS_PASSWORD` = 31 が `windows` クレートの定数と一致するか）で周辺テキストを読まず `secure_input: true`、学習・ログが止まる
+  - 確認方法: `verify.ps1 password`（`tsf.log` の `[ctx] secure_input=true app=…` が出て、メモ帳の通常欄では出ない）
 - [ ] 表示属性: 通常 = 細い実線、注目文節・選択 = 太い実線、確定済み = 点線、スタイル変換 = 破線、保留ローマ字 = 点線。ホストアプリが属性を無視する場合の見え方（MS-IME 風に未変換 = 点線へ変える要否）
 - [ ] 通知の文言（エンジン停止・minimal 移行・復元失敗・update_available）と 30 秒間引き、モード表示（あ / A）
 

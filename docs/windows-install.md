@@ -75,6 +75,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Nagi\unins
 - 入力方式の登録解除（`regsvr32 /u`）と、`C:\Program Files\Nagi` の削除をします。使用中で消せないファイルは、再起動時に削除されます。
 - 設定・学習データ・ユーザー辞書・取得した辞書とモデル（`%APPDATA%\Nagi`）は**残します**。すべて消すには `-RemoveUserData` を付けます（確認で `yes` の入力が要ります。`-Force` で省略）。学習データだけを消したい場合は、`%APPDATA%\Nagi\learning.tsv` を削除してください。
 
+インストール先には実機の動作確認用スクリプト `verify.ps1`（クラッシュ復帰・スリープ・環境・パスワード欄の確認。手順は `docs/windows-verification.md`）も置かれます。
+
 ## SmartScreen について
 
 この配布物は Authenticode（コード署名）で署名していません。署名の証明書は有償で、現時点では用意していないためです。そのため、ブラウザなどでダウンロードした zip や実行ファイルには、Microsoft Defender SmartScreen が「一般的にダウンロードされていません」「Windows によって PC が保護されました」と警告することがあります。

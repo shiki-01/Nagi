@@ -7,7 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
+use nagi_protocol::{MemoryPressureState, SetEnvironmentParams, ThermalState};
+
 use crate::client::{ClientDiagnostic, ClientError, ExitReport};
+use crate::environment::ResumeSource;
 use crate::supervisor::{EngineEvent, ExitPhase, FailureRecord};
 
 /// ログファイルの上限（超えたら 1 世代前へローテーションする）
@@ -19,6 +22,11 @@ const MAX_MESSAGE_CHARS: usize = 300;
 /// ログファイルのパス（`<LOCALAPPDATA>\Nagi\logs\tsf.log`）
 pub fn log_path(local_app_data: &Path) -> PathBuf {
     local_app_data.join("Nagi").join("logs").join("tsf.log")
+}
+
+/// 検証専用の環境上書きファイルのパス（`<LOCALAPPDATA>\Nagi\debug-env.json`。`environment::OverridingProbe`）
+pub fn debug_env_path(local_app_data: &Path) -> PathBuf {
+    local_app_data.join("Nagi").join("debug-env.json")
 }
 
 /// 1 世代前のログファイルのパス（`tsf.log.1`）
@@ -163,6 +171,49 @@ fn describe_failure_summary(failures: &[FailureRecord]) -> String {
     )
 }
 
+/// 環境を送ったときのログ文言（`[env]`）。**列挙名と真偽だけ**で、入力内容は含まない。
+/// `overridden` は検証用の上書き（`debug-env.json`）が効いているか
+pub fn describe_environment_sent(params: &SetEnvironmentParams, overridden: bool) -> String {
+    let ac = match params.on_battery {
+        Some(true) => "battery",
+        Some(false) => "ac",
+        None => "unknown",
+    };
+    let saver = match params.low_power_mode {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    };
+    let memory = match params.memory_pressure {
+        Some(MemoryPressureState::Normal) => "normal",
+        Some(MemoryPressureState::Warning) => "warning",
+        Some(MemoryPressureState::Critical) => "critical",
+        None => "unknown",
+    };
+    let thermal = match params.thermal {
+        Some(ThermalState::Nominal) => "nominal",
+        Some(ThermalState::Fair) => "fair",
+        Some(ThermalState::Serious) => "serious",
+        Some(ThermalState::Critical) => "critical",
+        None => "unknown",
+    };
+    format!(
+        "sent ac={ac} battery_saver={saver} memory={memory} thermal={thermal} source={}",
+        if overridden { "override" } else { "real" }
+    )
+}
+
+/// スリープ復帰でエンジンの再起動を要求したときのログ文言（検出経路つき）
+pub fn describe_restart_requested(source: ResumeSource) -> String {
+    format!("restart requested (resume: {})", source.as_str())
+}
+
+/// 入力欄が機密（パスワード等）かどうかが変わったときのログ文言（`[ctx]`）。
+/// `app` は実行ファイル名（例 `chrome.exe`）。周辺テキストなど入力内容は含めない
+pub fn describe_secure_input(secure: bool, app: Option<&str>) -> String {
+    format!("secure_input={secure} app={}", app.unwrap_or("unknown"))
+}
+
 /// エンジンのイベントのログ文言。記録しないイベント（preedit・候補の更新）は `None`
 pub fn describe_event(event: &EngineEvent) -> Option<(&'static str, String)> {
     Some(match event {
@@ -241,6 +292,46 @@ mod tests {
         assert_eq!(long.matches('\n').count(), 1);
         assert!(long.chars().count() < 400);
         assert!(long.trim_end().ends_with('…'));
+    }
+
+    #[test]
+    fn environment_log_has_only_enum_names() {
+        let params = SetEnvironmentParams {
+            on_battery: Some(true),
+            low_power_mode: Some(false),
+            thermal: Some(ThermalState::Serious),
+            memory_pressure: Some(MemoryPressureState::Warning),
+            memory_budget_mb: None,
+            utc_offset_minutes: Some(540),
+        };
+        assert_eq!(
+            describe_environment_sent(&params, true),
+            "sent ac=battery battery_saver=false memory=warning thermal=serious source=override"
+        );
+        assert_eq!(
+            describe_environment_sent(&SetEnvironmentParams::default(), false),
+            "sent ac=unknown battery_saver=unknown memory=unknown thermal=unknown source=real"
+        );
+    }
+
+    #[test]
+    fn resume_and_secure_messages() {
+        assert_eq!(
+            describe_restart_requested(ResumeSource::OsNotification),
+            "restart requested (resume: os-notification)"
+        );
+        assert_eq!(
+            describe_restart_requested(ResumeSource::TickGap),
+            "restart requested (resume: tick-gap)"
+        );
+        assert_eq!(
+            describe_secure_input(true, Some("powershell.exe")),
+            "secure_input=true app=powershell.exe"
+        );
+        assert_eq!(
+            describe_secure_input(false, None),
+            "secure_input=false app=unknown"
+        );
     }
 
     #[test]

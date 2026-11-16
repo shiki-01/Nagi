@@ -9,7 +9,7 @@
 //! ```text
 //! nagi_windows_tsf.dll   TSF の入力方式（COM の InprocServer32）
 //! imserver.exe           変換エンジン
-//! install.ps1 / uninstall.ps1
+//! install.ps1 / uninstall.ps1 / verify.ps1（実機の検証用。docs/windows-verification.md）
 //! README.md              docs/windows-install.md（SmartScreen の手順を含む）
 //! LICENSE-MIT / LICENSE-APACHE / NOTICE / THIRD_PARTY_LICENSES.md（元は THIRD_PARTY_LICENSES_WINDOWS.md）
 //! VERSION                バージョン（x.y.z）
@@ -114,6 +114,7 @@ pub fn plan(inputs: &Inputs) -> Result<Vec<Entry>, String> {
             "uninstall.ps1",
             repo.join("frontend-windows/dist/uninstall.ps1"),
         ),
+        file("verify.ps1", repo.join("frontend-windows/dist/verify.ps1")),
         file("README.md", repo.join("docs/windows-install.md")),
         file("LICENSE-MIT", repo.join("LICENSE-MIT")),
         file("LICENSE-APACHE", repo.join("LICENSE-APACHE")),
@@ -403,6 +404,7 @@ mod tests {
                 "Write-Host 'インストール'\n",
             ),
             ("frontend-windows/dist/uninstall.ps1", "Write-Host 'x'\n"),
+            ("frontend-windows/dist/verify.ps1", "Write-Host 'v'\n"),
             ("docs/windows-install.md", "# README\n"),
             ("LICENSE-MIT", "mit\n"),
             ("LICENSE-APACHE", "apache\n"),
@@ -457,6 +459,7 @@ mod tests {
                 "imserver.exe",
                 "install.ps1",
                 "uninstall.ps1",
+                "verify.ps1",
                 "README.md",
                 "LICENSE-MIT",
                 "LICENSE-APACHE",
@@ -502,8 +505,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} が zip に無い"))
                 .1
         };
-        // すべて最上位ディレクトリの下にあり、SHA256SUMS を含めて 11 個
-        assert_eq!(files.len(), 11);
+        // すべて最上位ディレクトリの下にあり、SHA256SUMS を含めて 12 個
+        assert_eq!(files.len(), 12);
         assert!(
             files
                 .iter()
@@ -517,11 +520,12 @@ mod tests {
         // スクリプトだけ UTF-8 BOM 付き（Windows PowerShell 5.1 の文字化け対策）
         assert!(get("install.ps1").starts_with(UTF8_BOM));
         assert!(get("uninstall.ps1").starts_with(UTF8_BOM));
+        assert!(get("verify.ps1").starts_with(UTF8_BOM));
         assert!(!get("README.md").starts_with(UTF8_BOM));
 
         // SHA256SUMS は SHA256SUMS 以外のすべてを、zip の中身どおりに列挙する
         let sums = String::from_utf8(get(CHECKSUM_FILE).clone()).unwrap();
-        assert_eq!(sums.lines().count(), 10);
+        assert_eq!(sums.lines().count(), 11);
         for (name, data) in files.iter().filter(|(n, _)| !n.ends_with(CHECKSUM_FILE)) {
             let short = name.strip_prefix("Nagi-windows-1.2.3/").unwrap();
             let expected = format!("{}  {short}", crate::update_sign::sha256_hex(data));

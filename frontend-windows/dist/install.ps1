@@ -43,7 +43,7 @@ $DllName = 'nagi_windows_tsf.dll'
 $ExeName = 'imserver.exe'
 # 配置するファイル（SHA256SUMS に載っているもの + SHA256SUMS 自身）
 $PayloadFiles = @(
-    'nagi_windows_tsf.dll', 'imserver.exe', 'uninstall.ps1', 'README.md',
+    'nagi_windows_tsf.dll', 'imserver.exe', 'uninstall.ps1', 'verify.ps1', 'README.md',
     'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD_PARTY_LICENSES.md',
     'VERSION', 'SHA256SUMS'
 )

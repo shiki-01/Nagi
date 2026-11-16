@@ -5,7 +5,11 @@
 //! 呼ぶ次の層が担う）、ここは値の解釈と「変化したときだけ送る」判定だけを持つ。
 //! プロファイルの切り替えを決めるのはコア（設計書 §4.7）。省略した項目は「前回の値を維持」になる。
 
+use std::cell::Cell;
+use std::path::PathBuf;
+
 use nagi_protocol::{MemoryPressureState, SetEnvironmentParams, ThermalState};
+use serde::Deserialize;
 
 /// `SYSTEM_POWER_STATUS.ACLineStatus`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +72,15 @@ pub trait EnvironmentProbe {
     fn processor(&self) -> Option<ProcessorSample>;
     /// 現在のローカル時刻の UTC からのずれ（分。夏時間を含む今の値。例: 日本 540）
     fn utc_offset_minutes(&self) -> Option<i32>;
+    /// サーマル状態の直接指定（検証用の上書き専用。既定は `None` = 周波数から推定する）。
+    /// 周波数からの推定はバッテリー節約中は `None` になるため、上書きは推定を経由せず直接渡す
+    fn thermal_override(&self) -> Option<ThermalState> {
+        None
+    }
+    /// 検出値が検証用ファイルで上書きされているか（ログの `source=` 用）
+    fn is_overridden(&self) -> bool {
+        false
+    }
 }
 
 /// 電池駆動か。不明なら `None`
@@ -126,9 +139,11 @@ pub fn snapshot(probe: &dyn EnvironmentProbe) -> SetEnvironmentParams {
     SetEnvironmentParams {
         on_battery: power.as_ref().and_then(on_battery),
         low_power_mode: battery_saver,
-        thermal: probe
-            .processor()
-            .and_then(|cpu| thermal(&cpu, battery_saver)),
+        thermal: probe.thermal_override().or_else(|| {
+            probe
+                .processor()
+                .and_then(|cpu| thermal(&cpu, battery_saver))
+        }),
         memory_pressure: probe.memory().as_ref().map(memory_pressure),
         memory_budget_mb: None,
         utc_offset_minutes: probe.utc_offset_minutes(),
@@ -156,17 +171,194 @@ impl<P: EnvironmentProbe> EnvironmentReporter<P> {
     /// 前回から変化していれば新しい値を返す（返した値を「送信済み」として記録する）。
     /// 何も取得できなかった（全項目 `None`）ときは送らない
     pub fn poll(&mut self) -> Option<SetEnvironmentParams> {
+        self.poll_with_source().map(|(params, _)| params)
+    }
+
+    /// [`poll`](Self::poll) に加えて、その値が検証用の上書きによるものか（`true`）を返す（診断ログ用）
+    pub fn poll_with_source(&mut self) -> Option<(SetEnvironmentParams, bool)> {
+        let overridden = self.probe.is_overridden();
         let current = snapshot(&self.probe);
         if current == SetEnvironmentParams::default() || self.last_sent.as_ref() == Some(&current) {
             return None;
         }
         self.last_sent = Some(current.clone());
-        Some(current)
+        Some((current, overridden))
     }
 
     /// 送信済みの記録を捨てる。次の [`poll`](Self::poll) は現在値を必ず返す
     pub fn reset(&mut self) {
         self.last_sent = None;
+    }
+}
+
+/// 検証専用の環境上書きファイル（`%LOCALAPPDATA%\Nagi\debug-env.json`）の内容。
+///
+/// **実機検証のためだけの仕組み**（`verify.ps1 env`）。通常の利用ではこのファイルは存在せず、
+/// 存在するときだけ OS の検出値を上書きする。省略した項目は実値を使う。
+/// 形式: `{"on_battery":true,"battery_saver":false,"memory":"critical","thermal":"serious"}`
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub struct DebugEnvOverride {
+    /// 電池駆動か
+    pub on_battery: Option<bool>,
+    /// バッテリー節約が有効か
+    pub battery_saver: Option<bool>,
+    /// メモリ逼迫の状態（`normal` / `warning` / `critical`）
+    pub memory: Option<MemoryPressureState>,
+    /// サーマル状態（`nominal` / `fair` / `serious` / `critical`）
+    pub thermal: Option<ThermalState>,
+}
+
+impl DebugEnvOverride {
+    /// 上書きする項目が 1 つでもあるか（`{}` は実値のまま）
+    pub fn is_active(&self) -> bool {
+        self.on_battery.is_some()
+            || self.battery_saver.is_some()
+            || self.memory.is_some()
+            || self.thermal.is_some()
+    }
+}
+
+/// 上書きファイルの解釈。不正なら理由（行・列だけ。ファイルの内容は含めない）を返す
+pub fn parse_debug_env(text: &str) -> Result<DebugEnvOverride, String> {
+    serde_json::from_str(text).map_err(|e| {
+        format!(
+            "invalid debug-env.json (ignored, using real values): line {} column {}",
+            e.line(),
+            e.column()
+        )
+    })
+}
+
+/// 上書き用に偽装するメモリ量（総量 16GB。`memory_pressure` の閾値で Normal / Warning / Critical になる値）
+fn memory_sample_for(state: MemoryPressureState) -> MemorySample {
+    let available_mb = match state {
+        MemoryPressureState::Normal => 8000,
+        MemoryPressureState::Warning => 1000,
+        MemoryPressureState::Critical => 200,
+    };
+    MemorySample {
+        total_mb: 16000,
+        available_mb,
+    }
+}
+
+/// 実際の [`EnvironmentProbe`] を包み、上書きファイルがあるときだけ検出値を差し替える（**検証専用**）。
+///
+/// ファイルは問い合わせのたびに読む（消せば次の poll で実値に戻り、変化として送られる）。
+/// 不正な JSON は無視して実値にし、`warn` を状態が変わるたびに 1 回だけ呼ぶ
+/// （直るか消えるまで繰り返さない）。パスは注入する（OS 非依存・テスト可能）
+pub struct OverridingProbe<P> {
+    inner: P,
+    path: PathBuf,
+    warn: Box<dyn Fn(&str) + Send>,
+    warned: Cell<bool>,
+}
+
+impl<P: EnvironmentProbe> OverridingProbe<P> {
+    /// `path` は上書きファイル、`warn` は不正なファイルの警告の出力先
+    pub fn new(inner: P, path: PathBuf, warn: Box<dyn Fn(&str) + Send>) -> Self {
+        Self {
+            inner,
+            path,
+            warn,
+            warned: Cell::new(false),
+        }
+    }
+
+    /// 有効な上書き。ファイルが無い・不正・空 (`{}`) なら `None`
+    fn active(&self) -> Option<DebugEnvOverride> {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    self.warned.set(false);
+                }
+                return None;
+            }
+        };
+        match parse_debug_env(&text) {
+            Ok(o) => {
+                self.warned.set(false);
+                o.is_active().then_some(o)
+            }
+            Err(message) => {
+                if !self.warned.replace(true) {
+                    (self.warn)(&message);
+                }
+                None
+            }
+        }
+    }
+}
+
+impl<P: EnvironmentProbe> EnvironmentProbe for OverridingProbe<P> {
+    fn power(&self) -> Option<PowerSample> {
+        let real = self.inner.power();
+        let Some(o) = self.active() else {
+            return real;
+        };
+        if o.on_battery.is_none() && o.battery_saver.is_none() {
+            return real;
+        }
+        let mut power = real.unwrap_or(PowerSample {
+            ac_line: AcLineStatus::Unknown,
+            no_battery: false,
+            battery_saver: None,
+        });
+        if let Some(battery) = o.on_battery {
+            power.ac_line = if battery {
+                AcLineStatus::Offline
+            } else {
+                AcLineStatus::Online
+            };
+            power.no_battery = false;
+        }
+        if let Some(saver) = o.battery_saver {
+            power.battery_saver = Some(saver);
+        }
+        Some(power)
+    }
+
+    fn memory(&self) -> Option<MemorySample> {
+        match self.active().and_then(|o| o.memory) {
+            Some(state) => Some(memory_sample_for(state)),
+            None => self.inner.memory(),
+        }
+    }
+
+    fn processor(&self) -> Option<ProcessorSample> {
+        self.inner.processor()
+    }
+
+    fn utc_offset_minutes(&self) -> Option<i32> {
+        self.inner.utc_offset_minutes()
+    }
+
+    fn thermal_override(&self) -> Option<ThermalState> {
+        self.active().and_then(|o| o.thermal)
+    }
+
+    fn is_overridden(&self) -> bool {
+        self.active().is_some()
+    }
+}
+
+/// スリープ復帰の検出経路（診断ログ `restart requested (resume: …)` の区別用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeSource {
+    /// OS の電源通知（`PBT_APMRESUMEAUTOMATIC` 等）
+    OsNotification,
+    /// 定期タイマーの間隔の飛び
+    TickGap,
+}
+
+impl ResumeSource {
+    /// ログ上の名前
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OsNotification => "os-notification",
+            Self::TickGap => "tick-gap",
+        }
     }
 }
 
@@ -409,6 +601,153 @@ mod tests {
     fn reporter_skips_when_nothing_available() {
         let mut r = EnvironmentReporter::new(FakeProbe::default());
         assert!(r.poll().is_none());
+    }
+
+    // ---- 検証用の上書き ----
+
+    struct TempFile(PathBuf);
+    impl TempFile {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("nagi-debug-env-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir.join("debug-env.json"))
+        }
+        fn write(&self, text: &str) {
+            std::fs::write(&self.0, text).unwrap();
+        }
+        fn remove(&self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    fn real_probe() -> FakeProbe {
+        let probe = FakeProbe::default();
+        probe.power.set(Some(AC));
+        probe.memory.set(Some(MemorySample {
+            total_mb: 8000,
+            available_mb: 4000,
+        }));
+        probe.cpu.set(Some(ProcessorSample {
+            current_mhz: 3000,
+            max_mhz: 3000,
+        }));
+        probe
+    }
+
+    fn overriding(
+        file: &TempFile,
+    ) -> (
+        OverridingProbe<FakeProbe>,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let warnings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&warnings);
+        let probe = OverridingProbe::new(
+            real_probe(),
+            file.0.clone(),
+            Box::new(move |m| sink.lock().unwrap().push(m.to_string())),
+        );
+        (probe, warnings)
+    }
+
+    #[test]
+    fn debug_env_parses_partial_and_rejects_garbage() {
+        let o = parse_debug_env(r#"{"on_battery":true,"memory":"critical"}"#).unwrap();
+        assert_eq!(o.on_battery, Some(true));
+        assert_eq!(o.memory, Some(MemoryPressureState::Critical));
+        assert_eq!(o.thermal, None);
+        assert!(o.is_active());
+        assert!(!parse_debug_env("{}").unwrap().is_active());
+        assert!(parse_debug_env("not json").is_err());
+        assert!(parse_debug_env(r#"{"memory":"huge"}"#).is_err());
+    }
+
+    #[test]
+    fn override_absent_file_uses_real_values() {
+        let f = TempFile::new("absent");
+        let (probe, warnings) = overriding(&f);
+        assert!(!probe.is_overridden());
+        assert_eq!(snapshot(&probe).on_battery, Some(false));
+        assert!(warnings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn override_replaces_only_given_items() {
+        let f = TempFile::new("partial");
+        f.write(r#"{"on_battery":true,"memory":"critical","thermal":"serious"}"#);
+        let (probe, _) = overriding(&f);
+        assert!(probe.is_overridden());
+        let s = snapshot(&probe);
+        assert_eq!(s.on_battery, Some(true));
+        // 指定の無い battery_saver は実値
+        assert_eq!(s.low_power_mode, Some(false));
+        assert_eq!(s.memory_pressure, Some(MemoryPressureState::Critical));
+        assert_eq!(s.thermal, Some(ThermalState::Serious));
+    }
+
+    #[test]
+    fn override_thermal_works_even_under_battery_saver() {
+        let f = TempFile::new("saver");
+        f.write(r#"{"battery_saver":true,"thermal":"critical"}"#);
+        let (probe, _) = overriding(&f);
+        let s = snapshot(&probe);
+        assert_eq!(s.low_power_mode, Some(true));
+        assert_eq!(s.thermal, Some(ThermalState::Critical));
+    }
+
+    #[test]
+    fn override_memory_states_map_to_thresholds() {
+        for (name, expected) in [
+            ("normal", MemoryPressureState::Normal),
+            ("warning", MemoryPressureState::Warning),
+            ("critical", MemoryPressureState::Critical),
+        ] {
+            let f = TempFile::new(name);
+            f.write(&format!(r#"{{"memory":"{name}"}}"#));
+            let (probe, _) = overriding(&f);
+            assert_eq!(snapshot(&probe).memory_pressure, Some(expected));
+        }
+    }
+
+    #[test]
+    fn invalid_json_falls_back_and_warns_once() {
+        let f = TempFile::new("invalid");
+        f.write("{oops");
+        let (probe, warnings) = overriding(&f);
+        for _ in 0..5 {
+            assert_eq!(snapshot(&probe).on_battery, Some(false));
+            assert!(!probe.is_overridden());
+        }
+        assert_eq!(warnings.lock().unwrap().len(), 1);
+        // 直ると上書きが効き、また壊すと再び 1 回だけ警告する
+        f.write(r#"{"on_battery":true}"#);
+        assert_eq!(snapshot(&probe).on_battery, Some(true));
+        f.write("{oops");
+        let _ = snapshot(&probe);
+        let _ = snapshot(&probe);
+        assert_eq!(warnings.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn removing_the_file_restores_real_values_as_a_change() {
+        let f = TempFile::new("remove");
+        f.write(r#"{"on_battery":true}"#);
+        let (probe, _) = overriding(&f);
+        let mut r = EnvironmentReporter::new(probe);
+        let (first, overridden) = r.poll_with_source().unwrap();
+        assert_eq!(first.on_battery, Some(true));
+        assert!(overridden);
+        assert!(r.poll().is_none());
+        f.remove();
+        let (back, overridden) = r.poll_with_source().unwrap();
+        assert_eq!(back.on_battery, Some(false));
+        assert!(!overridden);
     }
 
     #[test]
