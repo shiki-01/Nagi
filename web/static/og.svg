@@ -1,25 +1,38 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
-  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b78e8"/><stop offset="1" stop-color="#2b43b0"/></linearGradient></defs>
-  <rect width="1200" height="630" fill="#f5f2eb"/>
-  <g transform="translate(96 96)">
-    <rect x="10" y="10" width="132" height="132" rx="29" fill="#f3d98f"/>
-    <rect width="132" height="132" rx="29" fill="url(#g)"/>
-    <g transform="scale(.129)">
+  <!-- OGP 画像の元。scripts/assets.mjs が 1200×630 の og.png に描画する（明朝体は Noto Serif JP を想定）。
+       トップの冒頭と同じ構図: 水平線の上に読み、下にその表記。右に日と、水面に映る像。 -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b78e8"/><stop offset="1" stop-color="#2b43b0"/></linearGradient>
+    <linearGradient id="w" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#dfe6f0"/><stop offset="1" stop-color="#eef1f5"/></linearGradient>
+    <clipPath id="r"><ellipse cx="1010" cy="330" rx="84" ry="128"/></clipPath>
+  </defs>
+  <rect width="1200" height="630" fill="#eef1f5"/>
+  <rect y="330" width="1200" height="300" fill="url(#w)"/>
+  <!-- 日と、水面に映る像 -->
+  <path d="M926 330a84 84 0 0 1 168 0z" fill="#f1c95d"/>
+  <g fill="#f1c95d" clip-path="url(#r)"><rect x="926" y="331" width="168" height="3" opacity="0.62"/><rect x="926" y="340" width="168" height="3" opacity="0.57"/><rect x="926" y="349" width="168" height="3" opacity="0.53"/><rect x="926" y="358" width="168" height="3" opacity="0.48"/><rect x="926" y="367" width="168" height="3" opacity="0.44"/><rect x="926" y="376" width="168" height="3" opacity="0.40"/><rect x="926" y="385" width="168" height="3" opacity="0.35"/><rect x="926" y="394" width="168" height="3" opacity="0.30"/><rect x="926" y="403" width="168" height="3" opacity="0.26"/><rect x="926" y="412" width="168" height="3" opacity="0.22"/><rect x="926" y="421" width="168" height="3" opacity="0.17"/><rect x="926" y="430" width="168" height="3" opacity="0.12"/><rect x="926" y="439" width="168" height="3" opacity="0.08"/></g>
+  <path d="M0 330H1200" stroke="#121a30" stroke-width="1.5"/>
+  <!-- ロゴ -->
+  <g transform="translate(80 64)">
+    <rect width="60" height="60" rx="13" fill="url(#g)"/>
+    <g transform="scale(.0586)">
       <circle cx="512" cy="392" r="124" fill="#fff3d6"/>
       <path d="M170 566H854" stroke="#ffffff" stroke-width="44" stroke-linecap="round"/>
       <path d="M236 692q69-40 138 0t138 0t138 0t138 0" fill="none" stroke="#ffffff" stroke-opacity=".7" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
       <path d="M376 810q68-38 136 0t136 0" fill="none" stroke="#ffffff" stroke-opacity=".42" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
     </g>
   </g>
-  <text x="270" y="190" font-size="84" font-weight="600" fill="#1c1e26" font-family="'Hiragino Mincho ProN','Noto Serif CJK JP',serif" letter-spacing="3">Nagi</text>
-  <path d="M498 132V196" stroke="#d9d3c5" stroke-width="1.5"/>
-  <text x="518" y="186" font-size="40" fill="#5d5e66" font-family="'Hiragino Mincho ProN','Noto Serif CJK JP',serif">凪</text>
-  <text x="96" y="352" font-size="58" font-weight="600" fill="#1c1e26" font-family="'Hiragino Mincho ProN','Noto Serif CJK JP',serif">端末の中だけで考える、</text>
-  <text x="96" y="432" font-size="58" font-weight="600" fill="#1c1e26" font-family="'Hiragino Mincho ProN','Noto Serif CJK JP',serif">ニューラルかな漢字変換。</text>
-  <circle cx="990" cy="520" r="44" fill="#f3d98f"/>
-  <rect x="930" y="520" width="120" height="50" fill="#f5f2eb"/>
-  <path d="M0 520H1200" stroke="#1c1e26" stroke-width="1.5"/>
-  <path d="M850 556q25-12 50 0t50 0t50 0t50 0t50 0" fill="none" stroke="#2b43b0" stroke-opacity=".75" stroke-width="2" stroke-linecap="round"/>
-  <path d="M920 584q25-12 50 0t50 0t50 0" fill="none" stroke="#2b43b0" stroke-opacity=".4" stroke-width="2" stroke-linecap="round"/>
-  <text x="96" y="582" font-size="24" fill="#5d5e66" font-family="'Hiragino Sans','Noto Sans CJK JP',sans-serif">端末の中で動く日本語入力 ・ nagi.shiki-01.com</text>
+  <g font-family="'Noto Serif JP','Hiragino Mincho ProN','Yu Mincho','Noto Serif CJK JP',serif">
+    <text x="160" y="110" font-size="44" font-weight="600" fill="#121a30" letter-spacing="2">Nagi</text>
+    <path d="M278 72V118" stroke="#cbd3df" stroke-width="1.5"/>
+    <text x="296" y="107" font-size="28" fill="#55607a">凪</text>
+    <!-- 読み -->
+    <text x="80" y="300" font-size="34" fill="#55607a" letter-spacing="6">ゆうがたのうみはなぎだった</text>
+    <!-- 表記（文節ごとの下線。注目文節は太い下線） -->
+    <text y="446" font-size="84" font-weight="600" fill="#121a30"><tspan x="80">夕方の</tspan><tspan x="348">海は</tspan><tspan x="532">凪だった</tspan></text>
+    <path d="M80 470H332M348 470H516" stroke="#121a30" stroke-width="2.5"/>
+    <path d="M532 472H868" stroke="#2b43b0" stroke-width="7"/>
+    <text x="80" y="566" font-size="31" font-weight="600" fill="#121a30" letter-spacing="2">端末の中だけで考える、ニューラルかな漢字変換。</text>
+  </g>
+  <text x="1120" y="106" text-anchor="end" font-size="20" fill="#55607a" letter-spacing="1" font-family="ui-monospace,'SF Mono',Menlo,Consolas,'DejaVu Sans Mono',monospace">nagi.shiki-01.com</text>
 </svg>

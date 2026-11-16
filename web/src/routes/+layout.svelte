@@ -2,7 +2,6 @@
   import '../app.css'
   import { page } from '$app/state'
   import { REPO_URL } from '$lib/site'
-  import Horizon from '$lib/components/site/Horizon.svelte'
 
   let { children } = $props()
   const nav = [
@@ -47,18 +46,16 @@
 
 <footer class="site-footer" class:tool={isTool}>
   {#if !isTool}
-    <Horizon sun={0.18} />
+    <!-- 水平線に半分沈んだ「凪」と、水面に映る像 -->
+    <div class="nagi" aria-hidden="true">
+      <div class="above"><span>凪</span></div>
+      <div class="below"><span>凪</span></div>
+    </div>
   {/if}
   <div class="inner">
     <div class="sign">
-      <picture>
-        <source srcset="/icon-dark.svg" media="(prefers-color-scheme: dark)" />
-        <img src="/icon.svg" alt="" width="44" height="44" />
-      </picture>
-      <div>
-        <p class="word"><span>なぎ</span>【凪】</p>
-        <p class="def">風がやみ、波が静まること。</p>
-      </div>
+      <p class="word"><span>なぎ</span>【凪】</p>
+      <p class="def">風がやみ、波が静まること。</p>
     </div>
     <p class="about">
       Nagi は個人で開発しているオープンソースの日本語入力システムです。<br />
@@ -79,13 +76,14 @@
     position: sticky;
     top: 0;
     z-index: 10;
-    background: var(--bg);
-    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
   }
   .inner {
-    max-width: 1080px;
+    max-width: var(--wrap);
     margin: 0 auto;
-    padding: 0 20px;
+    padding: 0 var(--gutter);
     box-sizing: border-box;
   }
   .inner.wide {
@@ -96,7 +94,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px 24px;
-    min-height: 60px;
+    min-height: 56px;
     flex-wrap: wrap;
   }
   .brand {
@@ -109,7 +107,7 @@
   }
   .brand img {
     display: block;
-    border-radius: 7px;
+    border-radius: 6px;
   }
   .brand .name {
     font-family: var(--font-serif);
@@ -163,15 +161,15 @@
       min-height: 0;
     }
     nav {
-      width: calc(100% + 40px);
-      margin: 0 -20px;
+      width: calc(100% + var(--gutter) * 2);
+      margin: 0 calc(var(--gutter) * -1);
       overflow-x: auto;
       scrollbar-width: none;
     }
     .nav {
       flex-wrap: nowrap;
       gap: 0 18px;
-      padding: 0 20px;
+      padding: 0 var(--gutter);
       white-space: nowrap;
     }
     .nav a {
@@ -180,7 +178,7 @@
   }
 
   .site-footer {
-    margin-top: 96px;
+    margin-top: clamp(88px, 12vw, 144px);
     color: var(--muted);
     font-size: 0.875rem;
   }
@@ -188,12 +186,48 @@
     margin-top: 0;
     border-top: 1px solid var(--line);
   }
+  /* 「凪」の上半分を水平線の上に、下半分の代わりに反転した像を水面に置く */
+  .nagi {
+    --size: clamp(7.5rem, 24vw, 17rem);
+    font-family: var(--font-serif);
+    font-weight: 600;
+    font-size: var(--size);
+    line-height: 1;
+    color: var(--fg);
+    user-select: none;
+  }
+  .nagi div {
+    height: 0.56em;
+    overflow: hidden;
+  }
+  .nagi span {
+    display: block;
+    width: fit-content;
+    margin-left: max(var(--gutter), calc((100% - var(--wrap)) / 2 + var(--gutter)));
+  }
+  .nagi .above {
+    border-bottom: 1px solid var(--fg);
+  }
+  .nagi .below {
+    height: 0.4em;
+    background: linear-gradient(var(--water), var(--bg));
+  }
+  .nagi .below span {
+    transform: scaleY(-1);
+    transform-origin: 50% 0.28em;
+    opacity: 0.13;
+    -webkit-mask-image: linear-gradient(to top, #000, transparent 75%);
+    mask-image: linear-gradient(to top, #000, transparent 75%);
+  }
   .site-footer .inner {
     display: grid;
     gap: 20px 48px;
     grid-template-columns: minmax(0, 1fr);
+    padding-top: 12px;
+    padding-bottom: 44px;
+  }
+  .site-footer.tool .inner {
     padding-top: 28px;
-    padding-bottom: 40px;
   }
   @media (min-width: 760px) {
     .site-footer .inner {
@@ -201,18 +235,9 @@
       align-items: start;
     }
   }
-  .sign {
-    display: flex;
-    gap: 14px;
-    align-items: center;
-  }
-  .sign img {
-    display: block;
-    border-radius: 10px;
-  }
   .sign p {
     margin: 0;
-    line-height: 1.5;
+    line-height: 1.6;
   }
   .word {
     font-family: var(--font-serif);

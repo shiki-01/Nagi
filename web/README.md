@@ -3,7 +3,7 @@
 `nagi.shiki-01.com` 用。Svelte 5 (runes) + SvelteKit 2 (adapter-static) + Master CSS 2.0.0-rc.88 + TypeScript。
 
 - `/` 紹介、`/support` サポート（App Store の「サポート URL」に使う）、`/privacy` プライバシーポリシー、`/custom-keyboard` キーボードレイアウト編集 GUI、`/reference` レイアウト JSON のリファレンス
-- `sitemap.xml` / `robots.txt` は `src/routes/*/+server.ts` で prerender。公開ページの一覧は `src/lib/site.ts` の `PAGES`（ページを足したらここにも追加）。メタ情報・OGP は `lib/components/Meta.svelte`
+- `sitemap.xml` / `robots.txt` は `src/routes/*/+server.ts` で prerender。公開ページの一覧は `src/lib/site.ts` の `PAGES`（ページを足したらここにも追加）
 - 404 は `+error.svelte` と adapter-static の `fallback: '404.html'`（ホスティング側で 404.html を未存在パスの応答に設定する）
 - レイアウト仕様: `../docs/ios-keyboard-layout.md`、スキーマ: `../config/keyboard/layout.schema.json`
   （TypeScript 型と検証は `src/lib/keyboard/types.ts` / `validate.ts`。`keyboard.test.ts` が ajv でスキーマと突き合わせる）
@@ -30,10 +30,15 @@
 
 ## デザイン
 
-- 色・書体のトークンは `src/app.css` の `:root`。色はアプリアイコン（藍・水平線・朝の日）から取り、ライトは生成りの紙、ダークは夜の海。見出しは OS の明朝体（Web フォントは読み込まない）
-- アイコン: `static/icon.svg`（= `favicon.svg`）・`static/icon-dark.svg` は `../frontend-ios-spike/icon-src/` の角丸版、`apple-touch-icon.png` は iOS の `icon-light.png` を 180px に縮小したもの。アイコンを変えたらここも作り直す
-- `og.png` は `static/og.svg` をブラウザで 1200×630 に描画したもの
-- サイト用の部品は `src/lib/components/site/`（`Horizon` = アイコンの線画、`ConversionDemo` = トップの変換デモ。台本の再生のみでエンジンは動かさない）
+- 題材は「凪いだ海」。色・書体のトークンは `src/app.css` の `:root`。ライトは朝凪（靄のかかった空と水面）、ダークは夜凪（藍の夜の海）で、色相は藍に寄せ、暖色はアプリアイコンの日の色（`--sun`）だけに絞る。見出しは OS の明朝体（Web フォントは読み込まない）
+- 構図の約束: **水平線の上に読み（ひらがな）、下にその表記**（「読みが真実で、表記はその射影」という内部表現を、水面に映る像として見せる）。トップの冒頭（`components/site/Minamo.svelte`）・特徴の見本・OGP 画像・フッターの「凪」がこの構図を共有する。下線は IME の表示属性に合わせる（入力中 = 点線、文節 = 細線、注目文節 = 藍の太線）。小さな印は「水平線に掛かる日（半円）」（ラベルの前・対応状況の現在位置）
+- 似た系統のサイトに寄せないため、使わないもの: 角丸カードの格子、影、グラデーションの塊、絵文字アイコン、中央寄せの冒頭。区切りは罫線（水平線）だけで行う
+- トップ（`routes/+page.svelte`）の対応状況・版・計測値は手書き。リリースのたびに `docs/progress.md` の「リリース記録」と GitHub Releases に合わせて直す（計測値の出典は `docs/progress.md`・`docs/decisions.md` H-17）
+- `Minamo.svelte` の変換デモは台本の再生のみでエンジンは動かさない。初期表示（JS 無し・動きを減らす設定）は 1 本目の変換後
+- アイコン: `static/icon.svg`（= `favicon.svg`）・`static/icon-dark.svg` は `../frontend-ios-spike/icon-src/` の角丸版。アイコンを変えたらここも作り直す
+- 画像アセットは `npm run assets`（`scripts/assets.mjs`。`PW_CHROMIUM` に Chromium のパス）で作り直す: `og.png`（`static/og.svg` を 1200×630 に描画。明朝体は実行環境の Noto Serif JP などを使うので、無い環境では入れてから実行する）、`icon-192.png`・`icon-512.png`・`icon-maskable-512.png`（`manifest.webmanifest` 用）、`apple-touch-icon.png`（180px）
+- メタ情報・OGP は `lib/components/Meta.svelte`（`og:image` の寸法と代替テキスト、`twitter:image` を含む）
+- Figma: `https://www.figma.com/design/4MYOxTqpi3em0Vl6quIH8u/Nagi` の `website` ページ（トップのデスクトップ／モバイル、ライト／ダーク）と `assets` ページ（OGP・アイコン）。コードが正で、見た目を変えたら Figma 側も更新する
 
 ## 開発
 

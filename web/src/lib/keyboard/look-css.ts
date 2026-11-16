@@ -24,24 +24,24 @@ export interface Palette {
 
 export const PALETTES: Readonly<Record<Scheme, Palette>> = {
   light: {
-    fg: '#1c1e26',
-    muted: '#5d5e66',
-    line: '#d9d3c5',
-    keyBg: '#fdfcf9',
-    keyFnBg: '#cbc6ba',
+    fg: '#121a30',
+    muted: '#55607a',
+    line: '#cbd3df',
+    keyBg: '#f9fafc',
+    keyFnBg: '#c3cad6',
     keyAccentBg: '#2b43b0',
     keyAccentFg: '#ffffff',
-    kbBg: '#dcd8ce'
+    kbBg: '#d5dbe5'
   },
   dark: {
-    fg: '#ece8df',
-    muted: '#a6a7b0',
-    line: '#2b303d',
-    keyBg: '#4a4f5e',
-    keyFnBg: '#2f333f',
+    fg: '#e6eaf5',
+    muted: '#99a3c0',
+    line: '#252f55',
+    keyBg: '#4a5068',
+    keyFnBg: '#2a3150',
     keyAccentBg: '#9db0ff',
-    keyAccentFg: '#0b0e1c',
-    kbBg: '#1f222b'
+    keyAccentFg: '#0a0f20',
+    kbBg: '#1a2140'
   }
 }
 

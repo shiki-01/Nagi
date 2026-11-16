@@ -460,17 +460,17 @@ describe('プレビューの CSS', () => {
     expect(cssColor('#FF000080', light)).toBe('rgba(255,0,0,0.502)')
     expect(cssColor('#FF0000FF', light, 0.5)).toBe('rgba(255,0,0,0.5)')
     expect(cssColor('@clear', light)).toBe('rgba(0,0,0,0)')
-    expect(cssColor('@key', light)).toBe('rgba(253,252,249,1)')
+    expect(cssColor('@key', light)).toBe('rgba(249,250,252,1)')
     expect(cssColor('@accent', PALETTES.dark)).toBe('rgba(157,176,255,1)')
   })
   it('指定なしは現行の見た目（役割の色・角丸 7・縁取り）', () => {
     const f = faceCss({}, 'normal', { palette: light })
-    expect(f.face).toMatchObject({ inset: '0px', 'background-color': 'rgba(253,252,249,1)', 'border-radius': '7px', 'box-shadow': '0 1px 0 rgba(0,0,0,0.3)', transition: 'none' })
+    expect(f.face).toMatchObject({ inset: '0px', 'background-color': 'rgba(249,250,252,1)', 'border-radius': '7px', 'box-shadow': '0 1px 0 rgba(0,0,0,0.3)', transition: 'none' })
     expect(f.face.opacity).toBeUndefined()
     expect(f.face.transform).toBeUndefined()
     expect(f.image).toBeNull()
     expect(faceCss({}, 'accent', { palette: light }).face).toMatchObject({ 'background-color': 'rgba(43,67,176,1)', color: 'rgba(255,255,255,1)' })
-    expect(faceCss({}, 'function', { palette: PALETTES.dark }).face['background-color']).toBe('rgba(47,51,63,1)')
+    expect(faceCss({}, 'function', { palette: PALETTES.dark }).face['background-color']).toBe('rgba(42,49,80,1)')
   })
   it('各プロパティを CSS にする', () => {
     const look = resolveLook(
