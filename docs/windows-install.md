@@ -54,6 +54,7 @@ irm https://nagi.shiki-01.com/install.ps1 | iex
 | `C:\Program Files\Nagi\` | `nagi_windows_tsf.dll`（入力方式）、`imserver.exe`（変換エンジン）、`uninstall.ps1`、ライセンス、`VERSION`、`SHA256SUMS` |
 | `%APPDATA%\Nagi\data\` | 辞書（`dict\nagi-dict.bin`）とモデル（`models\*.gguf`）。配布元から取得したもの |
 | `%APPDATA%\Nagi\` | 設定（`config.toml`）、学習データ、ユーザー辞書 |
+| `%ProgramData%\Microsoft\Windows\Start Menu\Programs\Nagi\` | スタートメニューのショートカット（設定・設定フォルダ・ログフォルダ・状態確認） |
 | レジストリ | COM の登録（`HKCR\CLSID`）、TSF の入力方式、「アプリと機能」の項目（`HKLM\...\Uninstall\Nagi`） |
 
 Program Files に置くのは、UWP などの保護されたアプリにも DLL を読み込ませるためです。
@@ -76,6 +77,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Nagi\unins
 - 設定・学習データ・ユーザー辞書・取得した辞書とモデル（`%APPDATA%\Nagi`）は**残します**。すべて消すには `-RemoveUserData` を付けます（確認で `yes` の入力が要ります。`-Force` で省略）。学習データだけを消したい場合は、`%APPDATA%\Nagi\learning.tsv` を削除してください。
 
 インストール先には実機の動作確認用スクリプト `verify.ps1`（クラッシュ復帰・スリープ・環境・パスワード欄の確認。手順は `docs/windows-verification.md`）も置かれます。
+
+スタートメニューの「Nagi」フォルダ（全ユーザー）に、「Nagi 設定（config.toml）」（メモ帳で開く）、「Nagi 設定フォルダ」（`%APPDATA%\Nagi`）、「Nagi ログフォルダ」（`%LOCALAPPDATA%\Nagi\logs`）、「Nagi 状態確認（verify）」（`verify.ps1 status` を新しいコンソールで実行）のショートカットが作られます（アンインストールで削除。作れなくてもインストールは成功します）。入力インジケーターのメニューに頼らずに設定を開けます。
 
 タスクバーの入力インジケーター（あ / A）を右クリックすると、設定（`config.toml`）・設定フォルダ・ユーザー辞書フォルダ・ログフォルダを開く項目と、「状態を確認（verify.ps1）」（`verify.ps1 status` を新しいコンソールで実行）が出ます。設定の GUI はまだありません（`config.toml` を直接編集します）。
 

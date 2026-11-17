@@ -70,6 +70,7 @@ impl ITfLangBarItem_Impl for Button_Impl {
         if pinfo.is_null() {
             return Err(E_POINTER.into());
         }
+        crate::tsf_log::log("langbar", "GetInfo called");
         let mut info = TF_LANGBARITEMINFO {
             clsidService: CLSID_NAGI_TEXT_SERVICE,
             guidItem: GUID_LBI_INPUTMODE,
@@ -90,10 +91,12 @@ impl ITfLangBarItem_Impl for Button_Impl {
     }
 
     fn GetStatus(&self) -> Result<u32> {
+        crate::tsf_log::log("langbar", "GetStatus called status=0");
         Ok(0)
     }
 
-    fn Show(&self, _fshow: BOOL) -> Result<()> {
+    fn Show(&self, fshow: BOOL) -> Result<()> {
+        crate::tsf_log::log("langbar", &format!("Show called show={}", fshow.as_bool()));
         Ok(())
     }
 
@@ -103,7 +106,22 @@ impl ITfLangBarItem_Impl for Button_Impl {
 }
 
 impl ITfLangBarItemButton_Impl for Button_Impl {
-    fn OnClick(&self, click: TfLBIClick, _pt: &POINT, _prcarea: *const RECT) -> Result<()> {
+    fn OnClick(&self, click: TfLBIClick, pt: &POINT, _prcarea: *const RECT) -> Result<()> {
+        // 右クリック等で OS が呼んでいるかの切り分け用（毎回記録する。座標は画面座標）
+        crate::tsf_log::log(
+            "langbar",
+            &format!(
+                "OnClick called click={} ({}) x={} y={}",
+                click.0,
+                if click == TF_LBI_CLK_LEFT {
+                    "left"
+                } else {
+                    "right"
+                },
+                pt.x,
+                pt.y
+            ),
+        );
         // 左クリックでモードの切り替え。右クリックのメニューは OS が `InitMenu` で出す
         if click == TF_LBI_CLK_LEFT
             && let Some(core) = self.core.upgrade()
@@ -115,11 +133,16 @@ impl ITfLangBarItemButton_Impl for Button_Impl {
 
     fn InitMenu(&self, pmenu: Ref<ITfMenu>) -> Result<()> {
         let menu = pmenu.ok()?;
-        let core = self
-            .core
-            .upgrade()
-            .ok_or_else(|| windows::core::Error::from(E_FAIL))?;
-        for entry in core.lang_bar_menu() {
+        let core = self.core.upgrade().ok_or_else(|| {
+            crate::tsf_log::log("langbar", "InitMenu called but core is gone");
+            windows::core::Error::from(E_FAIL)
+        })?;
+        let entries = core.lang_bar_menu();
+        crate::tsf_log::log(
+            "langbar",
+            &format!("InitMenu called entries={}", entries.len()),
+        );
+        for entry in entries {
             match entry {
                 MenuEntry::Separator => add_item(menu, 0, TF_LBMENUF_SEPARATOR, "")?,
                 MenuEntry::Info(text) => add_item(menu, 0, TF_LBMENUF_GRAYED, &text)?,
@@ -144,6 +167,7 @@ impl ITfLangBarItemButton_Impl for Button_Impl {
     }
 
     fn OnMenuSelect(&self, wid: u32) -> Result<()> {
+        crate::tsf_log::log("langbar", &format!("OnMenuSelect called id={wid}"));
         if let (Some(command), Some(core)) = (status::command_from_id(wid), self.core.upgrade()) {
             core.run_menu_command(command);
         }

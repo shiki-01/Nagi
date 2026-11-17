@@ -9,6 +9,7 @@
   1. 同梱ファイルを SHA256SUMS で検証する
   2. 管理者権限で %ProgramFiles%\Nagi に配置し、regsvr32 で入力方式（TSF）を登録する
      （管理者でなければ UAC の確認を出して、この手順だけを昇格して実行する）
+     あわせてスタートメニューに「Nagi」フォルダ（設定・設定フォルダ・ログフォルダ・状態確認）を作る
   3. 辞書とモデルを配布元から取得する（現在のユーザーの %APPDATA%\Nagi\data。昇格しないで実行する）
 
   辞書とモデルは同梱・再配布しない。この PC が配布元から直接取得し、SHA-256 を検証して辞書を組み立てる。
@@ -124,7 +125,39 @@ function Copy-Replacing([string]$From, [string]$To) {
     Unblock-File -LiteralPath $To -ErrorAction SilentlyContinue
 }
 
-# 管理者権限が要る手順: 配置・登録・「アプリと機能」への登録
+# スタートメニュー（全ユーザー）の「Nagi」フォルダに設定への入口を作る。OS の入力インジケーターのメニューに
+# 頼らず設定・ログ・状態確認を開けるようにするため（decisions.md H-94）。
+# ユーザーデータの場所は、昇格後は別ユーザーのことがあるため、ショートカットの中で環境変数を展開させる。
+# 失敗しても導入は失敗にしない（警告のみ）
+function New-StartMenuShortcuts([string]$TargetInstallDir) {
+    try {
+        $folder = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Nagi'
+        New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        $shell = New-Object -ComObject WScript.Shell
+        $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $verify = Join-Path $TargetInstallDir 'verify.ps1'
+        # Arguments の環境変数はシェルが展開しないので、config.toml だけ cmd 経由（cmd が %APPDATA% を展開する）で
+        # メモ帳を開く。無いファイルはメモ帳が作成を尋ねる
+        $items = @(
+            @{ Name = 'Nagi 設定（config.toml）'; Target = $cmd; Arguments = '/c start "" notepad.exe "%APPDATA%\Nagi\config.toml"'; Minimized = $true },
+            @{ Name = 'Nagi 設定フォルダ'; Target = '%APPDATA%\Nagi'; Arguments = ''; Minimized = $false },
+            @{ Name = 'Nagi ログフォルダ'; Target = '%LOCALAPPDATA%\Nagi\logs'; Arguments = ''; Minimized = $false },
+            @{ Name = 'Nagi 状態確認（verify）'; Target = $powershell; Arguments = ('-NoProfile -ExecutionPolicy Bypass -NoExit -File "{0}" status' -f $verify); Minimized = $false }
+        )
+        foreach ($item in $items) {
+            $link = $shell.CreateShortcut((Join-Path $folder ($item.Name + '.lnk')))
+            $link.TargetPath = $item.Target
+            if ($item.Arguments) { $link.Arguments = $item.Arguments }
+            if ($item.Minimized) { $link.WindowStyle = 7 }
+            $link.Save()
+        }
+    } catch {
+        Say "警告: スタートメニューのショートカットを作れませんでした（導入には影響しません）: $($_.Exception.Message)"
+    }
+}
+
+# 管理者権限が要る手順: 配置・登録・「アプリと機能」への登録・スタートメニューのショートカット
 function Install-Privileged([string]$SourceDir) {
     Test-Payload $SourceDir
 
@@ -159,6 +192,8 @@ function Install-Privileged([string]$SourceDir) {
     foreach ($key in @('NoModify', 'NoRepair')) {
         New-ItemProperty -Path $UninstallKey -Name $key -Value 1 -PropertyType DWord -Force | Out-Null
     }
+
+    New-StartMenuShortcuts $InstallDir
 }
 
 # 昇格した子プロセスから呼ばれたとき: 配置だけして終わる（失敗は窓が閉じる前に読めるよう待つ）

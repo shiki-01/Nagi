@@ -113,6 +113,9 @@ function Uninstall-Privileged {
         }
     }
     Remove-Item -Path $UninstallKey -Recurse -Force -ErrorAction SilentlyContinue
+    # スタートメニューのショートカット（install.ps1 が作る）。無ければ何もしない
+    $startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Nagi'
+    Remove-Item -LiteralPath $startMenu -Recurse -Force -ErrorAction SilentlyContinue
     if ($pending) {
         Say '使用中のファイルは再起動時に削除されます。サインアウトか再起動をしてください'
     }

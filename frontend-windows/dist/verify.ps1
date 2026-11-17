@@ -14,7 +14,8 @@
                             memory-critical / thermal-serious / invalid / clear
     sleep                   スリープ前の記録（復帰後に sleep -After を実行する）
     sleep -After            復帰後の判定
-    password                パスワード欄の判定（secure_input）を確認する
+    password                パスワード欄の判定（secure_input）を、ブラウザ（Edge / Chrome）の
+                            パスワード欄で確認する。-WinForms は ES_PASSWORD の参考確認（IME が無効になるのが正常）
     all                     status・crash・env・password を順に案内する（sleep は別に実行）
 
   使い方:
@@ -34,7 +35,8 @@ param(
     [string]$LogDir = (Join-Path $env:LOCALAPPDATA 'Nagi\logs'),
     [int]$Repeat = 1,
     [int]$TimeoutSec = 0,
-    [switch]$After
+    [switch]$After,
+    [switch]$WinForms
 )
 
 $ErrorActionPreference = 'Continue'
@@ -62,6 +64,7 @@ function Add-Result([string]$Item, [string]$Status, [string]$Detail, [string[]]$
     if ($Status -eq 'OK') { $color = 'Green' }
     elseif ($Status -eq 'NG') { $color = 'Red' }
     elseif ($Status -eq 'WARN') { $color = 'Yellow' }
+    elseif ($Status -eq 'INFO') { $color = 'Gray' }
     Write-Host ('  [' + $Status + '] ' + $Item + ': ' + $Detail) -ForegroundColor $color
     if ($Status -eq 'NG' -and @($Logs).Count -gt 0) {
         Write-Host '  --- 報告に貼るログ行 ---' -ForegroundColor Red
@@ -117,18 +120,20 @@ function Read-LogSince([long]$Position) {
     finally { if ($fs -ne $null) { $fs.Dispose() } }
 }
 
-# 行のパターンに合うものが出るまで待つ（最大 $Seconds 秒）。見つかった行の配列を返す（無ければ空）
+# 行のパターンに合うものが出るまで待つ（最大 $Seconds 秒）。見つかった行の配列を返す（無ければ空）。
+# 呼び出し側は @(Wait-ForLog ...) で受ける。`return ,$hits` のように配列を包むと @() の中でさらに
+# 1 要素の入れ子になり、行ごとの -match / $Matches が効かなくなる（検出経路が空になった原因。H-94）
 function Wait-ForLog([long]$Position, [string]$Pattern, [int]$Seconds) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ($true) {
         $hits = @(Read-LogSince $Position | Where-Object { $_ -match $Pattern })
-        if ($hits.Count -gt 0) { Write-Host ''; return ,$hits }
+        if ($hits.Count -gt 0) { Write-Host ''; return $hits }
         if ((Get-Date) -ge $deadline) { break }
         Write-Host '.' -NoNewline
         Start-Sleep -Milliseconds 1000
     }
     Write-Host ''
-    return ,@()
+    return @()
 }
 
 # NG のときに貼るログ行（操作以降の [engine] [env] [ctx] 行の末尾）
@@ -368,17 +373,25 @@ function Invoke-Sleep {
     Write-Info '復帰後の再起動を最大 60 秒待ちます。'
     $hits = @(Wait-ForLog $pos 'restart requested \(resume: (os-notification|tick-gap)\)' 60)
     if ($hits.Count -gt 0) {
-        $routes = @($hits | ForEach-Object { if ($_ -match 'resume: ([a-z-]+)') { $Matches[1] } } | Select-Object -Unique)
+        # 実ログ形式: 2026-11-17T15:05:35Z pid=1234 [engine] restart requested (resume: os-notification)
+        $routes = @()
+        foreach ($h in $hits) {
+            $m = [regex]::Match([string]$h, 'resume: ([a-z-]+)')
+            if ($m.Success -and ($routes -notcontains $m.Groups[1].Value)) { $routes += $m.Groups[1].Value }
+        }
         Add-Result 'sleep/復帰の検出' 'OK' ('再起動の要求が記録された（検出経路: ' + ($routes -join ', ') + '）') $hits
     }
     else { Add-Result 'sleep/復帰の検出' 'NG' 'restart requested (resume: …) が出ない（電源通知もタイマーの飛びも検出していない）' (Get-Evidence $pos) }
 
     # 同じホストが 2 回要求していないか（pid= ごと。復帰は 60 秒に 1 回だけ報告する設計）
     $byPid = @{}
-    foreach ($h in $hits) { if ($h -match 'pid=(\d+) ') { $k = $Matches[1]; if ($byPid.ContainsKey($k)) { $byPid[$k]++ } else { $byPid[$k] = 1 } } }
+    foreach ($h in $hits) {
+        $m = [regex]::Match([string]$h, 'pid=(\d+) ')
+        if ($m.Success) { $k = $m.Groups[1].Value; if ($byPid.ContainsKey($k)) { $byPid[$k]++ } else { $byPid[$k] = 1 } }
+    }
     $dups = @($byPid.Keys | Where-Object { $byPid[$_] -gt 1 })
     if ($dups.Count -eq 0) { Add-Result 'sleep/二重検出' 'OK' '同じホストでの再起動要求は 1 回だけ' @() }
-    else { Add-Result 'sleep/二重検出' 'NG' ('同じホスト（pid=' + ($dups -join ',') + '）が復帰を複数回検出した') $hits }
+    else { Add-Result 'sleep/二重検出' 'INFO' ('同じホスト（pid=' + ($dups -join ',') + '）で復帰の検出が複数回ある。explorer.exe のようにホスト内に複数のスレッドマネージャがあると、エンジンもその数だけ起動するため設計どおり（NG にしない）') @() }
 
     Start-Sleep -Seconds 5
     $now = Get-ImserverProcesses
@@ -388,8 +401,16 @@ function Invoke-Sleep {
 
     $groups = @(Get-ImserverByParent)
     $multi = @($groups | Where-Object { $_.Count -gt 1 })
-    if ($multi.Count -eq 0) { Add-Result 'sleep/imserver の重複' 'OK' 'ホスト 1 つにつき imserver は 1 つだけ' @() }
-    else { Add-Result 'sleep/imserver の重複' 'NG' ('同じ親に imserver が複数: 親 PID=' + (($multi | ForEach-Object { $_.Name }) -join ',')) (Get-Evidence $pos) }
+    if ($multi.Count -eq 0) { Add-Result 'sleep/同一ホストの複数エンジン' 'OK' 'ホスト 1 つにつき imserver は 1 つだけ' @() }
+    else {
+        # explorer.exe など、ホスト内にスレッドマネージャが複数あると Activate もエンジンも複数になる（設計どおり）
+        $desc = @($multi | ForEach-Object {
+            $parentName = '?'
+            try { $parentName = (Get-Process -Id ([int]$_.Name) -ErrorAction Stop).ProcessName } catch { }
+            ('親 PID=' + $_.Name + '(' + $parentName + ') imserver ' + $_.Count + ' 個')
+        })
+        Add-Result 'sleep/同一ホストの複数エンジン' 'INFO' ($desc -join ' / ') @()
+    }
 
     $restored = @(Read-LogSince $pos | Where-Object { $_ -match 'session restored' })
     if ($restored.Count -gt 0) { Add-Result 'sleep/セッション復元' 'OK' 'session restored が記録された。メモ帳の未確定文字が残っていることも目視で確認してください' @() }
@@ -399,46 +420,50 @@ function Invoke-Sleep {
 
 # ---- password ----
 
-function Invoke-Password {
-    Write-Title 'password: パスワード欄の判定（secure_input）'
-    if (-not (Test-Prerequisite)) { return }
-    $self = (Get-Process -Id $PID).ProcessName
-    $pos = Get-LogLength
-    Write-Info '小さなウィンドウが開きます。Nagi に切り替えて、上の欄・下（パスワード）の欄にそれぞれ 1 文字入力し、「閉じる」を押してください。'
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Nagi 検証: パスワード欄'
-    $form.Width = 440
-    $form.Height = 250
-    $form.StartPosition = 'CenterScreen'
-    $form.TopMost = $true
-    $l1 = New-Object System.Windows.Forms.Label
-    $l1.Text = '通常のテキストボックス（Nagi に切り替えて 1 文字入力）'
-    $l1.Left = 12; $l1.Top = 12; $l1.Width = 400
-    $t1 = New-Object System.Windows.Forms.TextBox
-    $t1.Left = 12; $t1.Top = 36; $t1.Width = 400
-    $l2 = New-Object System.Windows.Forms.Label
-    $l2.Text = 'パスワードボックス（1 文字入力）'
-    $l2.Left = 12; $l2.Top = 72; $l2.Width = 400
-    $t2 = New-Object System.Windows.Forms.TextBox
-    $t2.Left = 12; $t2.Top = 96; $t2.Width = 400
-    $t2.UseSystemPasswordChar = $true
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = '閉じる'
-    $btn.Left = 12; $btn.Top = 140; $btn.Width = 120
-    $btn.Add_Click({ $form.Close() })
-    foreach ($c in @($l1, $t1, $l2, $t2, $btn)) { $form.Controls.Add($c) }
-    [void]$form.ShowDialog()
-    $form.Dispose()
-
-    Start-Sleep -Seconds 2
-    $lines = @(Read-LogSince $pos)
-    $hit = @($lines | Where-Object { $_ -match ('\[ctx\] secure_input=true app=' + [regex]::Escape($self)) })
-    if ($hit.Count -gt 0) { Add-Result 'password/パスワード欄' 'OK' ('secure_input=true が ' + $self + ' で記録された') $hit }
-    else {
-        Add-Result 'password/パスワード欄' 'NG' ('[ctx] secure_input=true app=' + $self + ' が出ていません。このウィンドウ（WinForms の ES_PASSWORD）では TSF が InputScope を返さない、または Nagi が無効化されている可能性があります。その旨を報告してください') (Get-Evidence $pos)
+function Get-BrowserProcessName {
+    foreach ($n in @('msedge', 'chrome')) {
+        if (@(Get-Process -Name $n -ErrorAction SilentlyContinue).Count -gt 0) { return ($n + '.exe') }
     }
+    return $null
+}
+
+# 最小の HTML（通常欄とパスワード欄）を書いてブラウザで開く。Chromium はパスワード欄で InputScope=IS_PASSWORD を返す
+function Invoke-Password {
+    Write-Title 'password: パスワード欄の判定（secure_input。ブラウザ）'
+    if (-not (Test-Prerequisite)) { return }
+    $pos = Get-LogLength
+    $html = Join-Path $env:TEMP 'nagi-verify-password.html'
+    $body = '<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>Nagi verify: password</title></head><body>' +
+        '<p>1. 通常の欄: Nagi に切り替えて 1 文字入力し Enter</p><input type="text" id="plain" autofocus size="40">' +
+        '<p>2. パスワード欄: 同様に 1 文字入力し Enter</p><input type="password" id="pw" size="40"></body></html>'
+    [System.IO.File]::WriteAllText($html, $body, (New-Object System.Text.UTF8Encoding($false)))
+    $url = 'file:///' + ($html -replace '\\', '/')
+    $started = $false
+    foreach ($exe in @('msedge', 'chrome')) {
+        try { Start-Process -FilePath $exe -ArgumentList @($url) -ErrorAction Stop; $started = $true; break } catch { }
+    }
+    if (-not $started) {
+        try { Start-Process -FilePath $html -ErrorAction Stop; $started = $true } catch { }
+    }
+    if (-not $started) {
+        Write-Host ('ブラウザを開けませんでした。次のファイルを Edge / Chrome で開いてください: ' + $html) -ForegroundColor Yellow
+    }
+    Write-Info ('ブラウザで ' + $html + ' が開きます。')
+    Write-Info '手順: Nagi に切り替え、通常の欄とパスワード欄に 1 文字ずつ入力して、それぞれ Enter を押してください。'
+    Write-Info '（WinForms 等の標準 EDIT の ES_PASSWORD では Windows が IME 自体を無効にするため判定できません。それが正常です。-WinForms で確認できます）'
+    [void](Read-Host '入力したら Enter')
+    Start-Sleep -Seconds 2
+
+    $browser = Get-BrowserProcessName
+    if ($browser -eq $null) { $browser = 'msedge.exe' }
+    $lines = @(Read-LogSince $pos)
+    $hit = @($lines | Where-Object { $_ -match '\[ctx\] secure_input=true app=(msedge|chrome)\.exe' })
+    if ($hit.Count -gt 0) { Add-Result 'password/パスワード欄' 'OK' 'secure_input=true がブラウザで記録された' $hit }
+    else {
+        Add-Result 'password/パスワード欄' 'NG' ('[ctx] secure_input=true app=' + $browser + ' が出ていません。ブラウザが InputScope を返していない可能性があります（Nagi に切り替えて欄に入力できていたかも確認してください）') (Get-Evidence $pos)
+    }
+    $plainHit = @($lines | Where-Object { $_ -match '\[ctx\] secure_input=false app=(msedge|chrome)\.exe' })
+    if ($plainHit.Count -gt 0) { Write-Info '（通常の欄: secure_input=false が記録されています）' }
 
     Write-Info '次に、メモ帳を開き、通常の入力欄に Nagi で 1 文字入力してください（パスワード欄ではないことの対照）。'
     [void](Read-Host '入力したら Enter')
@@ -446,6 +471,40 @@ function Invoke-Password {
     $wrong = @(Read-LogSince $pos | Where-Object { $_ -match '\[ctx\] secure_input=true app=notepad' })
     if ($wrong.Count -eq 0) { Add-Result 'password/メモ帳の通常欄' 'OK' 'メモ帳では secure_input=true が出ていない' @() }
     else { Add-Result 'password/メモ帳の通常欄' 'NG' '通常のテキスト欄が機密欄と判定された' $wrong }
+}
+
+# WinForms の UseSystemPasswordChar（ES_PASSWORD）。Windows が IME を無効にするため、Nagi が文脈を返さず
+# secure_input=true は出ないのが正常。「出ない = 無効化されている」ことの確認用（結果は判定しない）
+function Invoke-PasswordWinForms {
+    Write-Title 'password -WinForms: ES_PASSWORD の確認（参考）'
+    if (-not (Test-Prerequisite)) { return }
+    $pos = Get-LogLength
+    Write-Info '小さなウィンドウが開きます。下のパスワード欄では Nagi に切り替えても日本語入力が効かない（IME が無効になる）のが正常です。'
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Nagi 検証: ES_PASSWORD'
+    $form.Width = 440
+    $form.Height = 250
+    $form.StartPosition = 'CenterScreen'
+    $form.TopMost = $true
+    $t1 = New-Object System.Windows.Forms.TextBox
+    $t1.Left = 12; $t1.Top = 36; $t1.Width = 400
+    $t2 = New-Object System.Windows.Forms.TextBox
+    $t2.Left = 12; $t2.Top = 96; $t2.Width = 400
+    $t2.UseSystemPasswordChar = $true
+    $btn = New-Object System.Windows.Forms.Button
+    $btn.Text = '閉じる'
+    $btn.Left = 12; $btn.Top = 140; $btn.Width = 120
+    $btn.Add_Click({ $form.Close() })
+    foreach ($c in @($t1, $t2, $btn)) { $form.Controls.Add($c) }
+    [void]$form.ShowDialog()
+    $form.Dispose()
+    Start-Sleep -Seconds 2
+    $self = (Get-Process -Id $PID).ProcessName
+    $hit = @(Read-LogSince $pos | Where-Object { $_ -match ('\[ctx\] secure_input=true app=' + [regex]::Escape($self)) })
+    if ($hit.Count -gt 0) { Add-Result 'password/WinForms' 'INFO' 'secure_input=true が記録された' $hit }
+    else { Add-Result 'password/WinForms' 'INFO' 'secure_input=true は出ていません。ES_PASSWORD では IME 自体が無効になるため判定できないのが正常です' @() }
 }
 
 # ---- サマリ ----
@@ -471,7 +530,7 @@ function Write-Summary {
 }
 
 function Show-Help {
-    Write-Host 'verify.ps1 <status | crash | env <名前> | sleep [-After] | password | all> [-Repeat N] [-TimeoutSec N] [-InstallDir <dir>] [-UserDir <dir>] [-LogDir <dir>]'
+    Write-Host 'verify.ps1 <status | crash | env <名前> | sleep [-After] | password | all> [-Repeat N] [-TimeoutSec N] [-WinForms] [-InstallDir <dir>] [-UserDir <dir>] [-LogDir <dir>]'
     Write-Host '  env の名前: battery | saver | memory-warning | memory-critical | thermal-serious | invalid | clear'
     Write-Host '  詳細: Get-Help .\verify.ps1 -Full / docs/windows-verification.md'
 }
@@ -483,7 +542,7 @@ switch ($Command) {
     'crash' { Invoke-Crash }
     'env' { Invoke-Env }
     'sleep' { Invoke-Sleep }
-    'password' { Invoke-Password }
+    'password' { if ($WinForms) { Invoke-PasswordWinForms } else { Invoke-Password } }
     'all' {
         $script:Interactive = $true
         Invoke-Status
