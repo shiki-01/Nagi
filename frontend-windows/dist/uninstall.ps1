@@ -74,6 +74,9 @@ function Remove-FileOrSchedule([string]$Path) {
         $moved = "$Path.old"
         try {
             Remove-Item -LiteralPath $moved -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $moved) {
+                $moved = '{0}.{1}.old' -f $Path, (Get-Date -Format 'yyyyMMddHHmmssfff')
+            }
             Move-Item -LiteralPath $Path -Destination $moved -Force
             Register-DeleteOnReboot $moved
         } catch {

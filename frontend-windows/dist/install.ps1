@@ -110,6 +110,10 @@ function Copy-Replacing([string]$From, [string]$To) {
     if (Test-Path -LiteralPath $To) {
         $old = "$To.old"
         Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+        # 前回の退避ファイルがまだ使用中で消せないときは、重ならない名前に退避する
+        if (Test-Path -LiteralPath $old) {
+            $old = '{0}.{1}.old' -f $To, (Get-Date -Format 'yyyyMMddHHmmssfff')
+        }
         try {
             Move-Item -LiteralPath $To -Destination $old -Force
         } catch {
