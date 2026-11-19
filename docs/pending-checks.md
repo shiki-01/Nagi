@@ -62,13 +62,13 @@
 
 | No. | 何を確かめるか | 参照先 | 決定 |
 |---|---|---|---|
-| 1 | IMK の `setValue(_:forTag:client:)` の呼ばれ方、英数/かなキーの先取り、`attributedSubstring` の対応アプリ（ブラウザ・ターミナル・Electron）、`setMarkedText` の replacementRange、メモリ逼迫イベントの頻度 | decisions.md H-37 | H-37 |
-| 2 | 配布: hardened runtime で LLM（Metal）と imserver が起動するか、IMK の終了後の再起動（公証は CI の run 13 で成功済み。実機の起動確認は未実施） | decisions.md H-37(5) | H-37 |
-| 3 | アプリから imserver を子プロセスで実行したときの進捗表示、取得中の入力、hardened runtime 下のネットワーク接続 | decisions.md H-38 | H-38 |
-| 4 | Space 変換の候補拡充による Space→候補表示 p95（目標 150ms）への影響、サジェストの ↓/Tab/↑ と選択中 Enter | decisions.md H-45 | H-45 |
-| 5 | 確定文字の複製が再現するか（低頻度。使いながら確認） | decisions.md H-46 | H-46 |
-| 6 | Fn の言語切替アイコン（白い四角・透明）が直ったか。白いままなら CFBundleIconFile を外す | decisions.md H-47 | H-47 |
-| 7 | `activateServer` の `adoptSelectedMode` が、切替結果をアプリごとの記憶として残すか | decisions.md H-49 | H-49 |
+| 1 | **確認済み（2026-11-19、ユーザーの実機確認で問題なし）**: IMK の `setValue(_:forTag:client:)` の呼ばれ方、英数/かなキーの先取り、`attributedSubstring` の対応アプリ（ブラウザ・ターミナル・Electron）、`setMarkedText` の replacementRange、メモリ逼迫イベントの頻度 | decisions.md H-37 | H-37 |
+| 2 | **確認済み（2026-11-19、ユーザーの実機確認で問題なし）**: 配布: hardened runtime で LLM（Metal）と imserver が起動するか、IMK の終了後の再起動（公証は CI の run 13 で成功済み） | decisions.md H-37(5) | H-37 |
+| 3 | **確認済み（2026-11-19、ユーザーの実機確認で問題なし）**: アプリから imserver を子プロセスで実行したときの進捗表示、取得中の入力、hardened runtime 下のネットワーク接続 | decisions.md H-38 | H-38 |
+| 4 | **確認済み（2026-11-19、ユーザーの実機確認で問題なし）**: Space 変換の候補拡充による Space→候補表示 p95（目標 150ms）への影響、サジェストの ↓/Tab/↑ と選択中 Enter | decisions.md H-45 | H-45 |
+| 5 | **確認済み（2026-11-19、ユーザーの実機確認で問題なし）**: 確定文字の複製が再現するか（低頻度。使いながら確認） | decisions.md H-46 | H-46 |
+| 6 | **確認済み（2026-11-19、ユーザーの実機確認で問題なし）**: Fn の言語切替アイコン（白い四角・透明）が直ったか。白いままなら CFBundleIconFile を外す | decisions.md H-47 | H-47 |
+| 7 | **確認済み（2026-11-19、ユーザーの実機確認で問題なし）**: `activateServer` の `adoptSelectedMode` が、切替結果をアプリごとの記憶として残すか | decisions.md H-49 | H-49 |
 
 ## Windows
 
@@ -129,7 +129,7 @@
 | 2 | ライブ変換の変換品質（Space 変換との違和感） | progress.md、real-hardware-checklist.md §2 | G-25 |
 | 3 | 高速タイピング時のデバウンススレッドの負荷 | progress.md、real-hardware-checklist.md §2 | G-26 |
 | 4 | 60 文字超の読みのライブ変換の遅さ | progress.md、real-hardware-checklist.md §2 | G-27 |
-| 5 | Ctrl+Backspace の `delete_before` をフロントで使う（未実装） | progress.md、real-hardware-checklist.md §4 | G-28 |
+| 5 | Ctrl+Backspace の `delete_before` をフロントで使う（macOS は `NagiInputController.deleteBeforeCaret`、Windows は `frontend-windows-tsf/src/edit.rs` に実装済み。実機での確認は macOS のみ未実施・Windows 未検証） | progress.md、real-hardware-checklist.md §4 | G-28 |
 | 6 | reconvert の読み推定の精度と未知語の頻度 | progress.md、real-hardware-checklist.md §5 | G-29 |
 | 7 | 文全体 N-best: 1 件目の LLM 再採点、2 件目以降の並び、候補選択後の矢印での文節展開 | progress.md、real-hardware-checklist.md §3 | G-30, G-34 |
 | 8 | reconvert 初回のメモリ増加が macOS でも同傾向か（Windows は約 270MB で実測済み） | real-hardware-checklist.md §5 | G-29 |
