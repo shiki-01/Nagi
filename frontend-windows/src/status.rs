@@ -13,12 +13,23 @@ use crate::supervisor::EngineEvent;
 pub fn toast_for(event: &EngineEvent) -> Option<String> {
     match event {
         EngineEvent::Notify(n) => {
-            // 起動時のアップデート確認（コアの `update.auto_check`）は info でも知らせる
-            if n.code.as_deref() == Some("update_available") {
-                return Some(format!(
-                    "{}。PowerShell でインストールコマンドをもう一度実行すると更新できます（nagi.shiki-01.com）",
-                    n.message
-                ));
+            // 起動時のアップデート確認（コアの `update.auto_check`）は info でも知らせる。
+            // フロントは imserver に `--stage-updates` を付けるので、新版はバックグラウンドで取得される
+            // （decisions.md H-95）。取得できたら `update_ready`
+            match n.code.as_deref() {
+                Some("update_available") => {
+                    return Some(format!(
+                        "{}。取得中です。取得できたらスタートメニューの「Nagi を更新」から適用できます",
+                        n.message
+                    ));
+                }
+                Some("update_ready") => {
+                    return Some(format!(
+                        "{}。スタートメニューの「Nagi を更新」から適用できます",
+                        n.message
+                    ));
+                }
+                _ => {}
             }
             // ほかの info は頻繁に来うるため出さない（ログのみ）
             (n.level != NotifyLevel::Info).then(|| n.message.clone())
@@ -106,6 +117,8 @@ pub enum MenuCommand {
     OpenLogFolder,
     /// 状態確認（`verify.ps1 status`）を新しいコンソールで起動する
     RunVerify,
+    /// 取得済みの更新を適用する（`apply-update.ps1` を新しいコンソールで起動。UAC が出る）
+    ApplyUpdate,
 }
 
 impl MenuCommand {
@@ -118,6 +131,7 @@ impl MenuCommand {
             MenuCommand::OpenUserDictFolder => "user_dict_folder",
             MenuCommand::OpenLogFolder => "log_folder",
             MenuCommand::RunVerify => "verify",
+            MenuCommand::ApplyUpdate => "apply_update",
         }
     }
 }
@@ -149,6 +163,7 @@ const ID_SETTINGS_FOLDER: u32 = 4;
 const ID_USER_DICT_FOLDER: u32 = 5;
 const ID_LOG_FOLDER: u32 = 6;
 const ID_VERIFY: u32 = 7;
+const ID_APPLY_UPDATE: u32 = 8;
 
 /// 操作 → メニュー項目の識別子
 pub fn command_id(command: MenuCommand) -> u32 {
@@ -160,6 +175,7 @@ pub fn command_id(command: MenuCommand) -> u32 {
         MenuCommand::OpenUserDictFolder => ID_USER_DICT_FOLDER,
         MenuCommand::OpenLogFolder => ID_LOG_FOLDER,
         MenuCommand::RunVerify => ID_VERIFY,
+        MenuCommand::ApplyUpdate => ID_APPLY_UPDATE,
     }
 }
 
@@ -173,6 +189,7 @@ pub fn command_from_id(id: u32) -> Option<MenuCommand> {
         ID_USER_DICT_FOLDER => Some(MenuCommand::OpenUserDictFolder),
         ID_LOG_FOLDER => Some(MenuCommand::OpenLogFolder),
         ID_VERIFY => Some(MenuCommand::RunVerify),
+        ID_APPLY_UPDATE => Some(MenuCommand::ApplyUpdate),
         _ => None,
     }
 }
@@ -212,6 +229,10 @@ pub struct PathEnv {
     pub local_app_data: Option<PathBuf>,
     /// DLL（`nagi_windows_tsf.dll`）のあるディレクトリ。`verify.ps1` も同じ場所に置かれる
     pub module_dir: Option<PathBuf>,
+    /// 取得済みの更新の `ready.json`（`%LOCALAPPDATA%\Nagi\update\ready.json`）の中身。無ければ `None`
+    pub staged_ready_json: Option<String>,
+    /// この DLL の版数（`x.y.z`）。取得済みの更新がこれより新しいときだけ「更新を適用」を出す
+    pub current_version: Option<String>,
 }
 
 /// メニューの各「開く」項目の対象。`None` は開けない（項目を灰色にする）
@@ -227,6 +248,32 @@ pub struct MenuTargets {
     pub log_dir: Option<PathBuf>,
     /// `verify.ps1`（存在するときだけ）
     pub verify_script: Option<PathBuf>,
+    /// `apply-update.ps1`（存在し、かつ現在の版より新しい更新が取得済みのときだけ）
+    pub apply_update_script: Option<PathBuf>,
+    /// 取得済みの更新の版数（`apply_update_script` があるときだけ）
+    pub staged_version: Option<String>,
+}
+
+/// 版数文字列（`x.y.z`、1〜3 要素の数字）を比較用の組にする。不正なら `None`
+fn version_tuple(v: &str) -> Option<(u64, u64, u64)> {
+    let parts: Vec<&str> = v.trim().split('.').collect();
+    if !(1..=3).contains(&parts.len())
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || p.len() > 9 || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    let n = |i: usize| parts.get(i).map_or(0, |p| p.parse().unwrap_or(0));
+    Some((n(0), n(1), n(2)))
+}
+
+/// 取得済みの更新（`ready.json` の中身）の版数。壊れている・版数が不正なら `None`。
+/// ファイルは利用者が書き換えられるので表示用にしか使わない（適用時にコアが再検証する）
+pub fn staged_version(ready_json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(ready_json).ok()?;
+    let version = value.get("version")?.as_str()?;
+    version_tuple(version).map(|_| version.trim().to_owned())
 }
 
 impl MenuTargets {
@@ -239,6 +286,7 @@ impl MenuTargets {
             MenuCommand::OpenUserDictFolder => self.user_dict_dir.as_deref(),
             MenuCommand::OpenLogFolder => self.log_dir.as_deref(),
             MenuCommand::RunVerify => self.verify_script.as_deref(),
+            MenuCommand::ApplyUpdate => self.apply_update_script.as_deref(),
         }
     }
 }
@@ -273,12 +321,30 @@ pub fn resolve_targets(
         .as_ref()
         .map(|d| d.join("verify.ps1"))
         .filter(|p| exists(p));
+    // 取得済みの更新は、現在の版より新しいときだけ（手動で更新した後の古い ready.json は無視する）
+    let staged = env
+        .staged_ready_json
+        .as_deref()
+        .and_then(staged_version)
+        .filter(|staged| {
+            let current = env.current_version.as_deref().and_then(version_tuple);
+            matches!((version_tuple(staged), current), (Some(s), Some(c)) if s > c)
+        });
+    let apply_update_script = staged.as_ref().and_then(|_| {
+        env.module_dir
+            .as_ref()
+            .map(|d| d.join("apply-update.ps1"))
+            .filter(|p| exists(p))
+    });
+    let staged_version = apply_update_script.as_ref().and(staged);
     MenuTargets {
         settings_file,
         settings_dir: user_dir,
         user_dict_dir,
         log_dir,
         verify_script,
+        apply_update_script,
+        staged_version,
     }
 }
 
@@ -286,6 +352,15 @@ pub fn resolve_targets(
 pub fn verify_arguments(script: &Path) -> String {
     format!(
         "-NoProfile -ExecutionPolicy Bypass -NoExit -File \"{}\" status",
+        script.display()
+    )
+}
+
+/// `apply-update.ps1` を起動する PowerShell の引数（実行後もコンソールを閉じない。昇格はスクリプトが行う。
+/// 更新の保存先は既定の `%LOCALAPPDATA%\Nagi\update`）
+pub fn apply_update_arguments(script: &Path) -> String {
+    format!(
+        "-NoProfile -ExecutionPolicy Bypass -NoExit -File \"{}\"",
         script.display()
     )
 }
@@ -329,6 +404,16 @@ pub fn menu_entries(
         checked: false,
         enabled: targets.target(command).is_some(),
     }));
+    // 取得済みの新版があるときだけ「更新を適用」を出す（適用時に UAC の確認が出る）
+    if let (Some(_), Some(version)) = (&targets.apply_update_script, &targets.staged_version) {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Command {
+            id: command_id(MenuCommand::ApplyUpdate),
+            label: format!("更新を適用（{version}）…"),
+            checked: false,
+            enabled: true,
+        });
+    }
     entries
 }
 
@@ -390,6 +475,13 @@ mod tests {
         assert!(toast_for(&notify(NotifyLevel::Error, None)).is_some());
         let update = toast_for(&notify(NotifyLevel::Info, Some("update_available"))).unwrap();
         assert!(update.starts_with("メッセージ。"));
+        assert!(update.contains("取得中です"), "{update}");
+        assert!(update.contains("「Nagi を更新」"), "{update}");
+        let ready = toast_for(&notify(NotifyLevel::Info, Some("update_ready"))).unwrap();
+        assert_eq!(
+            ready,
+            "メッセージ。スタートメニューの「Nagi を更新」から適用できます"
+        );
     }
 
     #[test]
@@ -467,6 +559,7 @@ mod tests {
             MenuCommand::OpenUserDictFolder,
             MenuCommand::OpenLogFolder,
             MenuCommand::RunVerify,
+            MenuCommand::ApplyUpdate,
         ];
         let mut ids: Vec<u32> = commands.iter().map(|c| command_id(*c)).collect();
         for c in commands {
@@ -497,6 +590,7 @@ mod tests {
             user_dict_dir: p("C:/n/user_dict"),
             log_dir: p("C:/l/Nagi/logs"),
             verify_script: p("C:/p/verify.ps1"),
+            ..MenuTargets::default()
         }
     }
 
@@ -573,6 +667,7 @@ mod tests {
             app_data: Some(PathBuf::from("/ad")),
             local_app_data: Some(PathBuf::from("/lad")),
             module_dir: Some(PathBuf::from("/pf/Nagi")),
+            ..PathEnv::default()
         }
     }
 
@@ -645,6 +740,92 @@ mod tests {
     }
 
     #[test]
+    fn apply_update_arguments_quote_the_script_and_keep_the_console() {
+        assert_eq!(
+            apply_update_arguments(Path::new("C:/Program Files/Nagi/apply-update.ps1")),
+            "-NoProfile -ExecutionPolicy Bypass -NoExit -File \"C:/Program Files/Nagi/apply-update.ps1\""
+        );
+    }
+
+    fn staged_env(ready: Option<&str>, current: Option<&str>) -> PathEnv {
+        PathEnv {
+            staged_ready_json: ready.map(str::to_owned),
+            current_version: current.map(str::to_owned),
+            ..env()
+        }
+    }
+
+    #[test]
+    fn staged_version_reads_and_validates_ready_json() {
+        assert_eq!(
+            staged_version(r#"{"version":"0.2.0","sha256":"x"}"#).as_deref(),
+            Some("0.2.0")
+        );
+        assert_eq!(staged_version(r#"{"version":"../0.2.0"}"#), None);
+        assert_eq!(staged_version(r#"{"version":2}"#), None);
+        assert_eq!(staged_version("not json"), None);
+        assert_eq!(staged_version("{}"), None);
+    }
+
+    #[test]
+    fn apply_update_needs_newer_staged_version_and_script() {
+        let present = ["/pf/Nagi/apply-update.ps1"];
+        let ready = r#"{"version":"0.2.0"}"#;
+        // 新しい版が取得済みで、スクリプトもある
+        let t = resolve_targets(
+            None,
+            &staged_env(Some(ready), Some("0.1.12")),
+            existing(&present),
+        );
+        assert_eq!(
+            t.target(MenuCommand::ApplyUpdate),
+            Some(Path::new("/pf/Nagi/apply-update.ps1"))
+        );
+        assert_eq!(t.staged_version.as_deref(), Some("0.2.0"));
+        // 現在の版と同じ・古い（手動で更新済み）・ready.json が無い・版が不明・スクリプトが無い
+        for (ready, current, files) in [
+            (Some(ready), Some("0.2.0"), &present[..]),
+            (Some(ready), Some("0.10.0"), &present[..]),
+            (None, Some("0.1.0"), &present[..]),
+            (Some(ready), None, &present[..]),
+            (Some(ready), Some("0.1.0"), &[][..]),
+        ] {
+            let t = resolve_targets(None, &staged_env(ready, current), existing(files));
+            assert_eq!(t.apply_update_script, None);
+            assert_eq!(t.staged_version, None);
+        }
+        // 0.9 < 0.10（文字列ではなく数値で比べる）
+        let t = resolve_targets(
+            None,
+            &staged_env(Some(r#"{"version":"0.10.0"}"#), Some("0.9.0")),
+            existing(&present),
+        );
+        assert_eq!(t.staged_version.as_deref(), Some("0.10.0"));
+    }
+
+    #[test]
+    fn menu_shows_apply_update_only_when_staged() {
+        let without = menu_entries(None, None, &all_targets());
+        assert!(
+            !command_entries(&without)
+                .iter()
+                .any(|(c, _)| *c == MenuCommand::ApplyUpdate)
+        );
+        let mut targets = all_targets();
+        targets.apply_update_script = Some(PathBuf::from("C:/p/apply-update.ps1"));
+        targets.staged_version = Some("0.2.0".into());
+        let with = menu_entries(None, None, &targets);
+        assert_eq!(
+            command_entries(&with).last(),
+            Some(&(MenuCommand::ApplyUpdate, true))
+        );
+        assert!(matches!(
+            with.last(),
+            Some(MenuEntry::Command { label, .. }) if label == "更新を適用（0.2.0）…"
+        ));
+    }
+
+    #[test]
     fn command_kinds_are_distinct() {
         let mut kinds = vec![
             MenuCommand::SetMode(InputMode::Hiragana).kind(),
@@ -653,10 +834,11 @@ mod tests {
             MenuCommand::OpenUserDictFolder.kind(),
             MenuCommand::OpenLogFolder.kind(),
             MenuCommand::RunVerify.kind(),
+            MenuCommand::ApplyUpdate.kind(),
         ];
         kinds.sort_unstable();
         kinds.dedup();
-        assert_eq!(kinds.len(), 6);
+        assert_eq!(kinds.len(), 7);
     }
 
     #[test]

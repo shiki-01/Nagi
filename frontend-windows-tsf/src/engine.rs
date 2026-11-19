@@ -40,14 +40,24 @@ pub struct EngineLocation {
     pub executable: PathBuf,
     /// 辞書・モデルのディレクトリ（`--data-dir`）
     pub data_dir: PathBuf,
+    /// 取得した更新の保存先（`--update-dir`。`%LOCALAPPDATA%\Nagi\update`。無ければ imserver の既定）
+    pub update_dir: Option<PathBuf>,
 }
 
-/// `imserver` に渡す引数
+/// `imserver` に渡す引数。`--stage-updates` で、新版の取得・署名検証と利用者領域への保存を
+/// imserver のバックグラウンドに任せる（適用は `apply-update.ps1`。decisions.md H-95）。
+/// minimal 起動で追加される `--no-llm` とは独立
 pub fn engine_arguments(location: &EngineLocation) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "--data-dir".to_string(),
         location.data_dir.to_string_lossy().into_owned(),
-    ]
+        "--stage-updates".to_string(),
+    ];
+    if let Some(dir) = &location.update_dir {
+        args.push("--update-dir".to_string());
+        args.push(dir.to_string_lossy().into_owned());
+    }
+    args
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -336,10 +346,17 @@ mod tests {
         let loc = EngineLocation {
             executable: PathBuf::from("imserver.exe"),
             data_dir: PathBuf::from("C:/Users/x/AppData/Roaming/Nagi/data"),
+            update_dir: Some(PathBuf::from("C:/Users/x/AppData/Local/Nagi/update")),
         };
         assert_eq!(
             engine_arguments(&loc),
-            ["--data-dir", "C:/Users/x/AppData/Roaming/Nagi/data"]
+            [
+                "--data-dir",
+                "C:/Users/x/AppData/Roaming/Nagi/data",
+                "--stage-updates",
+                "--update-dir",
+                "C:/Users/x/AppData/Local/Nagi/update"
+            ]
         );
     }
 
@@ -348,6 +365,7 @@ mod tests {
         let loc = EngineLocation {
             executable: PathBuf::from("/nonexistent/imserver"),
             data_dir: PathBuf::from("/nonexistent"),
+            update_dir: None,
         };
         let host = EngineHost::new(&loc, "0.0.0");
         assert!(!host.is_connected());

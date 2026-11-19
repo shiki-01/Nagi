@@ -9,11 +9,12 @@
   1. 同梱ファイルを SHA256SUMS で検証する
   2. 管理者権限で %ProgramFiles%\Nagi に配置し、regsvr32 で入力方式（TSF）を登録する
      （管理者でなければ UAC の確認を出して、この手順だけを昇格して実行する）
-     あわせてスタートメニューに「Nagi」フォルダ（設定・設定フォルダ・ログフォルダ・状態確認）を作る
+     あわせてスタートメニューに「Nagi」フォルダ（設定・設定フォルダ・ログフォルダ・状態確認・更新）を作る
   3. 辞書とモデルを配布元から取得する（現在のユーザーの %APPDATA%\Nagi\data。昇格しないで実行する）
 
   辞書とモデルは同梱・再配布しない。この PC が配布元から直接取得し、SHA-256 を検証して辞書を組み立てる。
-  入力内容や個人情報は送らない。更新は同じ手順の再実行（上書き）で行う。
+  入力内容や個人情報は送らない。更新は同じ手順の再実行（上書き）か、取得済みの更新を適用する
+  スタートメニューの「Nagi を更新」（apply-update.ps1）で行う。
 
 .PARAMETER InstallDir
   配置先。既定は %ProgramFiles%\Nagi。UWP / 保護されたアプリにも DLL を読ませるため、
@@ -44,7 +45,7 @@ $DllName = 'nagi_windows_tsf.dll'
 $ExeName = 'imserver.exe'
 # 配置するファイル（SHA256SUMS に載っているもの + SHA256SUMS 自身）
 $PayloadFiles = @(
-    'nagi_windows_tsf.dll', 'imserver.exe', 'uninstall.ps1', 'verify.ps1', 'README.md',
+    'nagi_windows_tsf.dll', 'imserver.exe', 'uninstall.ps1', 'verify.ps1', 'apply-update.ps1', 'README.md',
     'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD_PARTY_LICENSES.md',
     'VERSION', 'SHA256SUMS'
 )
@@ -137,13 +138,17 @@ function New-StartMenuShortcuts([string]$TargetInstallDir) {
         $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
         $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $verify = Join-Path $TargetInstallDir 'verify.ps1'
+        $applyUpdate = Join-Path $TargetInstallDir 'apply-update.ps1'
         # Arguments の環境変数はシェルが展開しないので、config.toml だけ cmd 経由（cmd が %APPDATA% を展開する）で
         # メモ帳を開く。無いファイルはメモ帳が作成を尋ねる
         $items = @(
             @{ Name = 'Nagi 設定（config.toml）'; Target = $cmd; Arguments = '/c start "" notepad.exe "%APPDATA%\Nagi\config.toml"'; Minimized = $true },
             @{ Name = 'Nagi 設定フォルダ'; Target = '%APPDATA%\Nagi'; Arguments = ''; Minimized = $false },
             @{ Name = 'Nagi ログフォルダ'; Target = '%LOCALAPPDATA%\Nagi\logs'; Arguments = ''; Minimized = $false },
-            @{ Name = 'Nagi 状態確認（verify）'; Target = $powershell; Arguments = ('-NoProfile -ExecutionPolicy Bypass -NoExit -File "{0}" status' -f $verify); Minimized = $false }
+            @{ Name = 'Nagi 状態確認（verify）'; Target = $powershell; Arguments = ('-NoProfile -ExecutionPolicy Bypass -NoExit -File "{0}" status' -f $verify); Minimized = $false },
+            # 取得済みの更新を適用する（UAC が 1 回出る。更新の保存先は %LOCALAPPDATA%\Nagi\update が既定なので、
+            # 環境変数が展開されないショートカットの引数では渡さない。H-95）
+            @{ Name = 'Nagi を更新'; Target = $powershell; Arguments = ('-NoProfile -ExecutionPolicy Bypass -NoExit -File "{0}"' -f $applyUpdate); Minimized = $false }
         )
         foreach ($item in $items) {
             $link = $shell.CreateShortcut((Join-Path $folder ($item.Name + '.lnk')))

@@ -59,6 +59,12 @@ pub struct ServerOptions {
     /// 作らない（作ると約 1.3 秒・約 39MB を、エンジンのロックを持ったまま使う）。iOS のキーボード拡張向け。
     /// `false`（既定。デスクトップ）なら、無ければ最初のなぞりで辞書から作る
     pub glide_index_file_only: bool,
+    /// 新版が見つかったら配布物を取得・署名検証して `<user_dir>/update/` に保存する（`--stage-updates`。
+    /// Windows のフロントだけが付ける。`update.auto_check` が false なら何もしない）。適用は別（`update_stage`）
+    pub stage_updates: bool,
+    /// 取得した更新の保存先（`--update-dir`。`--stage-updates` と併用）。未指定なら `<user_dir>/update`。
+    /// Windows のフロントは、ローミングされる `%APPDATA%` ではなく `%LOCALAPPDATA%\Nagi\update` を渡す
+    pub update_dir: Option<PathBuf>,
 }
 
 impl Default for ServerOptions {
@@ -72,12 +78,14 @@ impl Default for ServerOptions {
             async_model_load: false,
             memory_budget_mb: None,
             glide_index_file_only: false,
+            stage_updates: false,
+            update_dir: None,
         }
     }
 }
 
 /// 引数から起動オプションを作る（`--data-dir` `--user-dir` `--config` `--no-llm` `--sync-budget-ms`
-/// `--memory-budget-mb` `--glide-index-file-only`、
+/// `--memory-budget-mb` `--glide-index-file-only` `--stage-updates` `--update-dir`、
 /// 環境変数 `NAGI_DATA_DIR`）
 pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<ServerOptions, String> {
     let mut options = ServerOptions {
@@ -95,6 +103,8 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<ServerOptio
             "--config" => options.config_path = Some(PathBuf::from(value("--config")?)),
             "--no-llm" => options.use_llm = false,
             "--glide-index-file-only" => options.glide_index_file_only = true,
+            "--stage-updates" => options.stage_updates = true,
+            "--update-dir" => options.update_dir = Some(PathBuf::from(value("--update-dir")?)),
             "--sync-budget-ms" => {
                 let v = value("--sync-budget-ms")?;
                 options.sync_budget_ms = Some(
@@ -660,28 +670,68 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
             .unwrap_or_else(crate::update_check::default_check_url);
         let state_path = user_dir.as_ref().map(|d| d.join("update_check.json"));
         let current_version = env!("CARGO_PKG_VERSION").to_string();
+        // `--stage-updates`: 新版を取得して保存する先（`--update-dir`、無ければ `<user_dir>/update`）。
+        // どちらも無ければ取得しない
+        let stage_dir = if options.stage_updates {
+            options.update_dir.clone().or_else(|| {
+                user_dir
+                    .as_ref()
+                    .map(|d| d.join(crate::update_stage::DIR_NAME))
+            })
+        } else {
+            None
+        };
         let _ = std::thread::Builder::new()
             .name("nagi-update-check".into())
             .spawn(move || {
+                if let Some(dir) = &stage_dir {
+                    // 手動で更新済みなどで、もう不要になった保存済みの版を片付ける
+                    crate::update_stage::discard_obsolete(dir, &current_version);
+                }
                 if let Some(manifest) = crate::update_check::check_with_throttle(
                     &url,
                     &current_version,
                     state_path.as_deref(),
                 ) {
-                    let message = match &manifest.notes_url {
-                        Some(u) => {
-                            format!(
-                                "新しいバージョン {} が利用可能です（{u}）",
-                                manifest.version
+                    let already_staged = stage_dir
+                        .as_deref()
+                        .is_some_and(|d| crate::update_stage::is_staged(d, &manifest));
+                    // 保存済みなら「取得中」の通知は出さず、update_ready だけを知らせる
+                    if !already_staged {
+                        let message = match &manifest.notes_url {
+                            Some(u) => {
+                                format!(
+                                    "新しいバージョン {} が利用可能です（{u}）",
+                                    manifest.version
+                                )
+                            }
+                            None => format!("新しいバージョン {} が利用可能です", manifest.version),
+                        };
+                        runtime_for_update.push_event(Event {
+                            level: NotifyLevel::Info,
+                            code: "update_available",
+                            message,
+                        });
+                    }
+                    if let Some(dir) = &stage_dir {
+                        // 取得は 1 回だけ。失敗は通知せず stderr のログだけ（入力内容は含まない）
+                        match crate::update_stage::stage_update(dir, &manifest, |m| {
+                            crate::update_check::download_verified(
+                                m,
+                                crate::update_check::update_public_key_hex(),
                             )
+                        }) {
+                            Ok(_) => runtime_for_update.push_event(Event {
+                                level: NotifyLevel::Info,
+                                code: "update_ready",
+                                message: format!(
+                                    "新しい版 {} をダウンロードしました",
+                                    manifest.version
+                                ),
+                            }),
+                            Err(e) => crate::elog!("imserver: 更新の取得に失敗しました: {e}"),
                         }
-                        None => format!("新しいバージョン {} が利用可能です", manifest.version),
-                    };
-                    runtime_for_update.push_event(Event {
-                        level: NotifyLevel::Info,
-                        code: "update_available",
-                        message,
-                    });
+                    }
                 }
             });
     }

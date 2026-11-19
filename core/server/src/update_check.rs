@@ -1,6 +1,7 @@
 //! アップデート確認（`config.toml` の `[update] auto_check`）。
 //! マニフェスト（JSON）を取得し、現在のバージョンより新しいものがあれば知らせる。
-//! ダウンロード・インストールは行わない（確認のみ）。
+//! ダウンロード・インストールは行わない（確認のみ）。Windows の自動更新（取得と適用前の再検証）は
+//! [`crate::update_stage`]。
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -101,7 +102,7 @@ fn record_checked(state_path: &Path) {
 }
 
 /// バージョン文字列（"x.y.z"）を比較用のタプルに変換する。パースできない要素は 0 とする
-fn parse_version(v: &str) -> (u64, u64, u64) {
+pub(crate) fn parse_version(v: &str) -> (u64, u64, u64) {
     let mut parts = v.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
     (
         parts.next().unwrap_or(0),
@@ -221,7 +222,7 @@ fn http_get_bytes(_url: &str) -> Result<Vec<u8>, String> {
 }
 
 /// 取得したバイト列の SHA-256 と ed25519 署名を検証する（HTTP に依存しない）
-fn verify_download(
+pub fn verify_download(
     bytes: &[u8],
     expected_sha256: &str,
     signature_hex: &str,
@@ -237,7 +238,7 @@ fn verify_download(
 }
 
 /// バイト列の SHA-256 を16進数文字列で返す
-fn sha256_hex(data: &[u8]) -> String {
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     hasher.update(data);

@@ -240,7 +240,13 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] `irm https://nagi.shiki-01.com/install.ps1 | iex`（PowerShell 5.1 と 7）: latest.json の取得、SHA-256 検証、SmartScreen が出ないこと。`NAGI_SKIP_DATA=1`。prerelease の間は 404 になる（想定どおり）。公開前に `web.yml` の取り込み（`static/updates/windows/latest.json`）を確認する
 - [ ] ブラウザで取得した zip の SmartScreen / Defender の警告の出方（Edge・Chrome）と、`docs/windows-install.md` の回避手順（zip のブロック解除、「詳細情報」→「実行」）で実際に進める。`.ps1` の MOTW 付きでも `-ExecutionPolicy Bypass` で実行できる
 - [ ] Authenticode 署名（Secrets を登録した場合）: `signtool verify /pa` が通り、署名した DLL / exe が読み込まれる。タイムスタンプの取得
-- [ ] 更新の通知: 旧版の imserver が `/updates/windows/latest.json` を取得し、新版があれば右下のトーストが出る（文言「PowerShell でインストールコマンドを…」）。`update_check.json` による 24 時間の間引き
+- [ ] 更新の通知: 旧版の imserver が `/updates/windows/latest.json` を取得し、新版があれば右下のトーストが出る（文言「…取得中です。取得できたらスタートメニューの「Nagi を更新」から適用できます」→ 取得後「新しい版 X をダウンロードしました。スタートメニューの「Nagi を更新」から適用できます」）。`%APPDATA%\Nagi\update_check.json` による 24 時間の間引き
+- [ ] 自動更新（H-95。取得・署名検証・UAC 1 回での適用。**実機未確認**）。確認用に旧版（例: 0.1.12）を入れた状態で、新しい版 X の `Nagi-windows-X.zip` と `latest.json`（`windows-release.yml` の成果物。署名は zip に対するものなので `download_url` を書き換えても有効）を 1 つのフォルダに置き、`download_url` を `http://localhost:8000/Nagi-windows-X.zip` に書き換えて `python -m http.server 8000` で配る。`%APPDATA%\Nagi\config.toml` に `[update]` `check_url = "http://localhost:8000/latest.json"` を書く（prerelease は web の `latest.json` に載らないため、本番の URL では試せない。`prerelease=false` で公開すれば本番の URL でも確認できる）。`%APPDATA%\Nagi\update_check.json` を消して（24 時間の間引きを外す）、メモ帳などで Nagi を使って imserver を起動する。
+  - [ ] `%LOCALAPPDATA%\Nagi\update\` に `Nagi-windows-X.zip` と `ready.json` ができる（`.tmp` が残らない）。再度 imserver を起動しても再取得しない（ログに取得の記録が増えない）。トースト「新しい版 X をダウンロードしました…」
+  - [ ] 入力インジケーターの右クリックに「更新を適用（X）…」が出る。取得前・適用後は出ない
+  - [ ] スタートメニューの「Nagi を更新」または右クリックの項目で、UAC が 1 回出て、検証 → 展開 → 配置 → 完了メッセージ「サインアウトまたは再起動で全アプリが新しい版になります」。`C:\Program Files\Nagi\VERSION` が X、「アプリと機能」の版が X、`staging` と `update\` の `ready.json`・zip が消える。サインアウト後に新しい版（`Get-Process imserver | Select Path`）
+  - [ ] 失敗系: zip を `update\` に置いたまま 1 バイト書き換えて適用 → 「更新を検証できませんでした」で中止し、何も置き換わらない。`ready.json` の `version` を現在以下にして適用 → 「更新がありません / 新しくありません」で中止。旧い署名済み zip を `Nagi-windows-<大きい版>.zip` の名前で置き `ready.json` の版も大きくして適用 → 「zip の版が一致しません」で中止。UAC で「いいえ」→ エラーで終わり、何も変わらない
+  - [ ] **NG のときに出すログ**: `%LOCALAPPDATA%\Nagi\logs\imserver-*.log`（取得の失敗は「更新の取得に失敗しました」）、`%LOCALAPPDATA%\Nagi\logs\tsf.log`（`[menu]` の行）、`apply-update.ps1` を実行した PowerShell の画面の全文（`Start-Process` の失敗や検証の理由）、`%LOCALAPPDATA%\Nagi\update\ready.json`、`dir "C:\Program Files\Nagi"`
 - [ ] VC++ 再頒布可能パッケージが無い環境（クリーンな Windows）で、DLL（静的 CRT）は読み込まれ、imserver は警告のうえ起動しない / する（imserver は動的 CRT）
 - [ ] ARM64 Windows（エミュレーション）で x64 の DLL がホストに読み込まれるか（現状は未対応の扱い。`install.ps1` は ARM64 を拒否する）
 

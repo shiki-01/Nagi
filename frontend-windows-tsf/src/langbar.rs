@@ -316,6 +316,12 @@ pub fn run_verify(kind: &str, script: &Path) {
     shell_open(kind, w!("powershell.exe"), PCWSTR(arguments.as_ptr()));
 }
 
+/// `apply-update.ps1` を新しいコンソールで起動する（取得済みの更新の適用。スクリプトが UAC の昇格を行う）
+pub fn run_apply_update(kind: &str, script: &Path) {
+    let arguments = wide(&status::apply_update_arguments(script));
+    shell_open(kind, w!("powershell.exe"), PCWSTR(arguments.as_ptr()));
+}
+
 /// 言語バーに登録したボタン。破棄すると登録を外す
 pub struct LangBar {
     manager: ITfLangBarItemMgr,

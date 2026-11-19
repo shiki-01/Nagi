@@ -5,8 +5,13 @@
 //!
 //! データ取得: `imserver --install-data --data-dir <dir> [--model small|xsmall|none]`。辞書とモデルを
 //! 取得して終了する（JSON-RPC は起動しない）。進捗は標準出力に 1 行 1 JSON。
+//!
+//! Windows の自動更新（`docs/decisions.md` H-95）: `--stage-updates`（起動フラグ。新版を取得・検証して
+//! `<user-dir>/update/` に保存）と、`imserver --apply-update-prepare --update-dir <dir> --out <dir>`
+//! （`apply-update.ps1` が昇格後に実行する再検証。成功は終了コード 0 + 標準出力に版数、失敗は非 0 + 標準エラーに理由）。
 
 use nagi_server::install_data::{self, parse_install_args};
+use nagi_server::update_stage::{parse_prepare_args, prepare_apply};
 use nagi_server::{Server, build, parse_args};
 use std::io::{BufReader, BufWriter};
 use std::process::ExitCode;
@@ -17,6 +22,26 @@ fn main() -> ExitCode {
         Ok(Some(args)) => {
             return match install_data::run(&args) {
                 Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    nagi_server::elog!("imserver: {message}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Ok(None) => {}
+        Err(message) => {
+            nagi_server::elog!("imserver: {message}");
+            return ExitCode::from(2);
+        }
+    }
+    // 更新の適用前の再検証: 処理して終了する
+    match parse_prepare_args(std::env::args().skip(1)) {
+        Ok(Some(args)) => {
+            return match prepare_apply(&args) {
+                Ok(version) => {
+                    println!("{version}");
+                    ExitCode::SUCCESS
+                }
                 Err(message) => {
                     nagi_server::elog!("imserver: {message}");
                     ExitCode::FAILURE

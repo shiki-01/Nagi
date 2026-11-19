@@ -18,6 +18,7 @@
 //! - [`calibration`] — キャリブレーション推論の実測結果のファイルへの永続化
 //! - [`install_data`] — `imserver --install-data`（辞書・モデルの取得と組み立て。feature `data-install`）
 //! - [`update_check`] — アップデート確認（`config.toml` の `[update] auto_check`）
+//! - [`update_stage`] — Windows の自動更新（`--stage-updates` の取得・保存と `--apply-update-prepare` の再検証）
 
 pub mod calibration;
 pub mod fuzzy;
@@ -35,6 +36,7 @@ pub mod setup;
 pub mod stderr_log;
 pub mod suppress;
 pub mod update_check;
+pub mod update_stage;
 
 pub use pipeline::Pipeline;
 pub use runtime::{Effective, Event, Runtime, Tunables};

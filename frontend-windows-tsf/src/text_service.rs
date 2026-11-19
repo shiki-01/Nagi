@@ -83,7 +83,28 @@ fn engine_location() -> EngineLocation {
     EngineLocation {
         executable,
         data_dir: appdata.join("Nagi").join("data"),
+        // 取得した更新はローミングしない %LOCALAPPDATA% に置く（apply-update.ps1 の既定と同じ場所）
+        update_dir: std::env::var_os("LOCALAPPDATA")
+            .filter(|v| !v.is_empty())
+            .map(|d| PathBuf::from(d).join("Nagi").join("update")),
     }
+}
+
+/// 取得済みの更新の `ready.json`（`%LOCALAPPDATA%\Nagi\update\ready.json`）の中身。無い・大きすぎる・
+/// 読めなければ `None`。利用者が書き換えられるファイルなので、表示にしか使わない（適用時にコアが再検証する）
+fn read_staged_ready(local_app_data: Option<PathBuf>) -> Option<String> {
+    use std::io::Read;
+    let path = local_app_data?
+        .join("Nagi")
+        .join("update")
+        .join("ready.json");
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 fn shared_engine() -> Arc<EngineHost> {
@@ -509,6 +530,8 @@ impl Core {
             app_data: var("APPDATA"),
             local_app_data: var("LOCALAPPDATA"),
             module_dir: dll::module_directory(),
+            staged_ready_json: read_staged_ready(var("LOCALAPPDATA")),
+            current_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         };
         nagi_windows::status::resolve_targets(
             nagi_windows::status::settings_path(status),
@@ -545,6 +568,7 @@ impl Core {
             | MenuCommand::OpenUserDictFolder
             | MenuCommand::OpenLogFolder => langbar::open_folder(kind, path),
             MenuCommand::RunVerify => langbar::run_verify(kind, path),
+            MenuCommand::ApplyUpdate => langbar::run_apply_update(kind, path),
         }
     }
 
