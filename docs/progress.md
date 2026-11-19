@@ -154,6 +154,10 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 5. `killall TextInputMenuAgent`
 6. システム設定 > キーボード > 入力ソース で Nagi（日本語）を追加する。表示されない場合は再ログインする
 
+### アンインストール
+
+`curl -fsSL https://nagi.shiki-01.com/uninstall.sh | sh`（`web/static/uninstall.sh`）で、動作中の Nagi（NagiIMEApp・同梱の imserver）を止めて `~/Library/Input Methods/Nagi.app` を削除する。設定・学習データ・辞書・モデル（`~/Library/Application Support/com.shiki.nagi/`）は既定では残す。消すときは `curl -fsSL https://nagi.shiki-01.com/uninstall.sh | sh -s -- --purge`（確認プロンプトあり。非対話では `-- --purge --yes`）。入力ソースの一覧から Nagi を外すにはログアウトして再ログインする。何度実行しても失敗しない。
+
 ### macOS のリリース手順（Developer ID 署名・公証、H-37）
 
 1. 初回のみ: `cd core && cargo xtask gen-update-key` で鍵ペアを作る。秘密鍵を Actions Secrets `NAGI_UPDATE_SIGNING_KEY` に登録し、公開鍵で `config/update-public-key.txt` を置き換えてコミットする（2026-10-22 に実施済み）
