@@ -448,9 +448,9 @@ model = "style"              # style | 専用GGUFパス
 - Secure Input検知で学習停止フラグを送る
 - preedit 属性の各アプリでの反映範囲は Phase 0 で実機確認
 - 既知の罠（karukan README等より）: ログイン再認識、TextInputMenuAgentのキャッシュ、スリープ時のパイプ破棄 → 設計に織込み済み
-- 配布（Apple Developer Program 加入済み。**iOS は TestFlight / App Store、H-15**。macOS は現状 ad-hoc 署名で、Developer ID 署名 + 公証への変更を検討可能）:
-  - 現状は ad-hoc 署名のみ
-  - 主導線: `curl -fsSL https://shiki-01.com/nagi/install.sh | sh` で `~/Library/Input Methods` へ配置（curl 取得物には quarantine 属性が付かず Gatekeeper 警告が出ない。配布元の信頼が前提）
+- 配布（Apple Developer Program 加入済み。**iOS は TestFlight / App Store、H-15**。macOS は Developer ID 署名 + 公証で配布。decisions.md H-37(5)）:
+  - Developer ID 署名 + 公証 + staple（`macos-release.yml`）。ad-hoc 署名のビルドは自動更新を断る
+  - 主導線: `curl -fsSL https://nagi.shiki-01.com/install.sh | sh` で `~/Library/Input Methods` へ配置（curl 取得物には quarantine 属性が付かず Gatekeeper 警告が出ない。配布元の信頼が前提）
   - 手動用 zip + 手順書（Gatekeeper の「このまま開く」手順を含む）
   - アンインストールスクリプトも同梱
 

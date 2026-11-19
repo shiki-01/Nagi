@@ -987,7 +987,7 @@ H-3 の決定（案A: タッチ入力は `insert_reading` / `perform_action` の
 - **Apple Developer Program に加入済み**で、iOS は **TestFlight（内部テスト → 外部テスト）→ App Store** で配布する。H-5 の「SideStore によるサイドロード」と、`docs/decisions.md` の「Apple Developer Program には加入しない」（iOS について）は、この決定で置き換える。SideStore 向けの検証項目（再署名後の App Group、無料 Apple ID の制限、7 日失効、AltStore 互換ソース JSON）は不要になった
 - bundle id は `com.shiki01.nagi`（ホスト）、`com.shiki01.nagi.keyboard`（キーボード拡張）、App Group は `group.com.shiki01.nagi`。macOS の IME（`com.shiki.inputmethod.Nagi`）とは別
 - ビルド・署名・アップロードは GitHub Actions `ios-testflight`（手動実行。App Store Connect API キーのクラウド署名。表示バージョンは `ios-vX.Y.Z` タグ、ビルド番号は run_number。CI の開発証明書は前後で失効させて上限を避ける）
-- macOS の配布方針は、加入済みの前提で Developer ID 署名 + 公証へ見直せる（未着手。現状の実装は ad-hoc 署名）→ 2026-10-22 に Developer ID 署名 + 公証へ変更（H-37 (5)。実装済み・Secrets 未登録のため未実行）。Android の配布（APK 直接配布）は変更なし。**SideStore は使わない**（ユーザー決定。関連ワークフロー `ios-spike.yml`・`ios-signing-diag.sh` は削除）
+- macOS の配布方針は、加入済みの前提で Developer ID 署名 + 公証へ見直せる（未着手。現状の実装は ad-hoc 署名）→ 2026-10-22 に Developer ID 署名 + 公証へ変更（H-37 (5)。実装済み。**2026-11-19 訂正**: Secrets は登録済みで、`macos-release` は run 4〜13 のうち run 10 を除き成功、署名・公証・staple・Release 公開まで通っている（run 13 = `macos-v0.1.10`）。「未登録のため未実行」は古い記述）。Android の配布（APK 直接配布）は変更なし。**SideStore は使わない**（ユーザー決定。関連ワークフロー `ios-spike.yml`・`ios-signing-diag.sh` は削除）
 
 ### H-16. モバイル向けコア API: LLM の解放/再読み込み・12 キーの文字表・D-4（2026-10-14、要レビュー）
 
@@ -1293,8 +1293,8 @@ H-3 の決定（案A: タッチ入力は `insert_reading` / `perform_action` の
   - `macos-release.yml`（手動実行。入力の version と `core/Cargo.toml` の一致を検査）: 一時キーチェーン → `bundle-macos --llama --sign-identity`（imserver → .app の順、hardened runtime・timestamp、`--deep` なし）→ notarytool → staple → zip → `sign-update` → `gh release create macos-vX.Y.Z` → `web.yml` を起動。`web.yml` は最新の `macos-v*` リリースの `latest.json` を `static/updates/macos/` に取り込む（リポジトリには入れない）
   - アプリ内の更新はフロントの仕事（CLAUDE.md の分離の原則）として Swift で実装した: SHA-256 と ed25519（CryptoKit。xtask で作った既知の値で互換性をテスト）→ `ditto` で展開 → `codesign -R`（実行中のアプリと同じ Team ID の Developer ID）と `spctl` → `replaceItemAt` で差し替え → 入力中の文字列を確定し `shutdown`（学習を保存）して終了。次に使われたとき OS が新しい版を起動する。ad-hoc 署名のビルドは自動更新を断り、インストールスクリプトを案内する
   - インストールスクリプトは `plutil` で JSON を読み、SHA-256・`codesign --verify`・`spctl` を確かめてから置き換え、`--register` する。シェルでは ed25519 を検証しない（macOS 標準の LibreSSL に頼れないため。HTTPS の取得元と公証で代える）
-  - **迷った判断**: (1) リリースは LLM 有効版のみ（辞書だけで使う場合も同じバイナリで動くため）。(2) 再起動は「終了して OS に起動し直してもらう」方式で、自前で再起動しない。(3) 辞書・モデルはインストール時に取得しない（辞書は Mozc 由来のデータを再配布せず手元で組む方針（§2.3）で、組むには Rust が要る。別途の検討事項）
-  - **未確認**: hardened runtime で LLM（Metal）と imserver の起動が動くか、公証が通るか（Secrets 未登録のため一度も実行していない）、IMK のプロセス終了後の再起動のされ方
+  - **迷った判断**: (1) リリースは LLM 有効版のみ（辞書だけで使う場合も同じバイナリで動くため）。(2) 再起動は「終了して OS に起動し直してもらう」方式で、自前で再起動しない。(3) 辞書・モデルはインストール時に取得しない（→ **同日の H-38 で反転**し、インストール時に自動取得する。ここは経緯として残す）（辞書は Mozc 由来のデータを再配布せず手元で組む方針（§2.3）で、組むには Rust が要る。別途の検討事項）
+  - **未確認**: hardened runtime で LLM（Metal）と imserver の起動が動くか、公証が通るか（**2026-11-19 訂正**: Secrets は登録済みで、CI 上の署名・公証・staple は run 13 まで成功している。実機での hardened runtime 下の起動は未確認のまま）、IMK のプロセス終了後の再起動のされ方
 
 ### H-38. macOS: 辞書とモデルをボタン一つ・インストール時に自動で入れる（2026-10-22、ユーザー指示、要実機確認）
 

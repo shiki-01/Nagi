@@ -63,7 +63,7 @@
 | No. | 何を確かめるか | 参照先 | 決定 |
 |---|---|---|---|
 | 1 | IMK の `setValue(_:forTag:client:)` の呼ばれ方、英数/かなキーの先取り、`attributedSubstring` の対応アプリ（ブラウザ・ターミナル・Electron）、`setMarkedText` の replacementRange、メモリ逼迫イベントの頻度 | decisions.md H-37 | H-37 |
-| 2 | 配布: hardened runtime で LLM（Metal）と imserver が起動するか、公証が通るか、IMK の終了後の再起動（Secrets 未登録で未実行） | decisions.md H-37(5) | H-37 |
+| 2 | 配布: hardened runtime で LLM（Metal）と imserver が起動するか、IMK の終了後の再起動（公証は CI の run 13 で成功済み。実機の起動確認は未実施） | decisions.md H-37(5) | H-37 |
 | 3 | アプリから imserver を子プロセスで実行したときの進捗表示、取得中の入力、hardened runtime 下のネットワーク接続 | decisions.md H-38 | H-38 |
 | 4 | Space 変換の候補拡充による Space→候補表示 p95（目標 150ms）への影響、サジェストの ↓/Tab/↑ と選択中 Enter | decisions.md H-45 | H-45 |
 | 5 | 確定文字の複製が再現するか（低頻度。使いながら確認） | decisions.md H-46 | H-46 |
@@ -117,7 +117,7 @@
 | 1 | ci.yml の core（3 OS の build/test）・windows-tsf・windows-scripts が通るか（ci.yml は手動実行のみ） | progress.md CI 節・Windows 節、decisions.md H-40, H-42 | H-40, H-42 |
 | 2 | Swift のビルド・テスト（ios-test / ios-testflight）。ローカルでコンパイルしていない Swift の変更はここで初めて検証される | decisions.md H-50, H-52, H-53, H-57, H-58, H-65, H-66, H-68, H-69, H-72、keyboard-style-spec.md 進捗 | — |
 | 3 | 曖昧入力 M2（Swift）のビルド・テスト | progress.md 曖昧入力 M2 節、decisions.md H-25 | H-25 |
-| 4 | macos-release.yml（Developer ID 署名・公証・sign-update・リリース作成）の手動実行（Secrets 未登録） | decisions.md H-37(5)、progress.md「macOS のリリース手順」 | H-37 |
+| 4 | macos-release.yml（Developer ID 署名・公証・sign-update・リリース作成）の手動実行（**確認済み 2026-11-19**: run 13 成功、`macos-v0.1.10` 公開済み。Secrets 登録済み） | decisions.md H-37(5)、progress.md「macOS のリリース手順」 | H-37 |
 | 5 | windows-release.yml の手動実行（publish=false）: MSVC ビルド、llama ビルド、bundle-windows、sign-update、Secrets の検査 | decisions.md H-42、real-hardware-checklist.md §8.7、windows-verification.md 段階 B | H-42 |
 | 6 | インストーラのスモークテスト（continue-on-error のためログを開いて確認） | windows-verification.md 段階 B、decisions.md H-42 | H-42 |
 
