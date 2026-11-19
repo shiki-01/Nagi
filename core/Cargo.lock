@@ -1026,6 +1026,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagi-parent-watch"
+version = "0.1.12"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "nagi-profile"
 version = "0.1.12"
 dependencies = [
@@ -1068,6 +1075,7 @@ dependencies = [
  "nagi-infer",
  "nagi-learn",
  "nagi-loanword",
+ "nagi-parent-watch",
  "nagi-profile",
  "nagi-protocol",
  "nagi-rewriter",

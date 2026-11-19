@@ -310,7 +310,7 @@ Get-Content .\web\static\install.ps1 -Raw | Invoke-Expression
 - [ ] 英数キー・半角/全角キー・トレイのクリックの往復でモードが反転し続けない。入力中の文字列が意図せず確定されない。
 - [ ] 英数 = IME 閉のとき、アプリ側が IME オフ扱いで困らない。Activate 直後・エンジン再起動後に OS とコアのモードが揃う。
 - [ ] 従来の言語バー（設定の「言語バー」を有効にした環境、またはデスクトップ言語バー）に「あ / A」のボタンが出る。ホスト切り替えや Deactivate でボタンが残らない。トレイの「あ / A」と二重に出ないか。
-- [ ] 左クリックでひらがな ⇄ 英数、右クリックでメニュー（ひらがな / 英数・状態の行・「設定ファイルを開く…」）が出る。メニューで選ぶとモードが変わる。「設定ファイルを開く…」で `config.toml` がメモ帳で開く。
+- [ ] 左クリックでひらがな ⇄ 英数、右クリックでメニュー（ひらがな / 英数・状態の行・「設定を開く（config.toml）…」など）が出る（0.1.12 の実機では `InitMenu` が呼ばれずメニューが出なかったため、H-96 で `OnClick` の右クリックから自前のポップアップを出す方式に変更。tsf.log に `[langbar] popup menu shown entries=N` / `selected id=N` / `dismissed`）。メニューで選ぶとモードが変わる。1 回の右クリックでメニューが重ならない。外側クリック / Esc で閉じ、閉じた後に入力中のアプリのフォーカスが保たれる。「設定を開く」で `config.toml` がメモ帳で開く。
 - [ ] 長時間・多数回のモード切り替えで GDI オブジェクトが増え続けない（タスクマネージャーの「GDI オブジェクト」列）。DPI 150/200% でアイコンが滲まない。
 
 #### E-6 キー割り当て（8.4）
@@ -345,6 +345,12 @@ Stop-Process -Name imserver -Force
 スリープ復帰:
 
 - [ ] composition 中にスリープ → 復帰すると、エンジンが再起動して preedit が復元される。二重に再起動しない（`Get-Process imserver` の数と PID を確認）。
+
+imserver の寿命（H-96）:
+
+- [ ] タスクマネージャー（詳細）の imserver の数が、Nagi に切り替えて入力したアプリだけに限られる（入力しないアプリ・バックグラウンドの WebView2 等では起動しない。アプリにフォーカスが当たった時点で起動する）。`verify.ps1 status` で数・パス・親 PID・親の生存を確認する。
+- [ ] 入力したアプリを閉じる（強制終了でも）と、そのアプリの imserver が消える（Job Object と `--parent-pid`）。孤児（親が存在しない）が WARN で出ない。
+- [ ] 更新（スタートメニューの「Nagi を更新」）の後、`imserver.exe.old` のプロセスが残らない。更新中に開いていたアプリでも、止められた imserver が自動で再起動して入力を続けられる（新しい exe。学習中の内容は失われる旨がメッセージに出る）。
 - [ ] メッセージ専用ウィンドウの `WM_POWERBROADCAST` が届くか。届かない場合もタイマーの検出（30 秒周期）で復帰するか。どちらの経路で復帰したかを記録する。要確認: 判別方法（現状ログ出力がないため、復帰までの所要時間で推定する）。
 
 #### E-9 入力のタイムアウト 250ms の妥当性（8.3）
@@ -457,12 +463,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $v status
 
 | サブコマンド | 手順 | 期待結果（OK の条件） | NG のとき報告するもの |
 | --- | --- | --- | --- |
-| `status` | そのまま実行 | DLL を読み込んだプロセス・imserver（PID・起動時刻）・VERSION・`[engine]` 行の末尾が表示される | 出力全体 |
+| `status` | そのまま実行 | DLL を読み込んだプロセス・imserver（PID・パス・`.old` の有無・親 PID・親が生きているか。親が存在しない孤児は WARN。H-96）・VERSION・`[engine]` 行の末尾が表示される | 出力全体 |
 | `crash` | メモ帳で Nagi に切り替え、ひらがなを 3 文字打って未確定のまま実行 | 30 秒以内に新しい imserver が現れ、`[engine] started` と `session restored` が出る（メモ帳の未確定文字も残る） | サマリのログ行、メモ帳の状態 |
 | `crash -Repeat 6` | 同上。imserver を連続 6 回終了させる | `[engine] entering minimal profile after restarts=5` が出る（元に戻すにはアプリを開き直す） | サマリのログ行 |
 | `env <名前>` | `battery` / `saver` / `memory-warning` / `memory-critical` / `thermal-serious` / `invalid` / `clear`。実行後、言語バー（トレイの「あ」）を右クリックして「プロファイル: …」を見る | 最大 40 秒で `[env] sent … source=override` が出る。メニューのプロファイルが環境に応じて変わる（目視）。`invalid` は警告が 1 回だけ出て実値のまま。`clear` で `source=real` が再送される | サマリのログ行、メニューのプロファイル表示 |
 | `sleep` → `sleep -After` | `sleep` を実行 → メモ帳で未確定文字を作り PC をスリープ → 復帰後 `sleep -After` | `[engine] restart requested (resume: os-notification または tick-gap)` が 1 ホストにつき 1 回、新しい imserver が現れ、新しい imserver が現れる。同一ホスト（explorer.exe など、ホスト内にスレッドマネージャが複数あるもの）で imserver が複数・復帰検出が複数なのは設計どおりで、NG にせず INFO として pid・数を表示する（H-94） | サマリのログ行（どの検出経路か含む） |
-| `password` | `%TEMP%\nagi-verify-password.html`（通常欄とパスワード欄 `<input type=password>`）が Edge / Chrome で開く。Nagi に切り替えて各欄に 1 文字ずつ入力して Enter。続けてメモ帳の通常欄に 1 文字入力 | `[ctx] secure_input=true app=msedge.exe`（または `chrome.exe`）が出て、`app=notepad` では出ない | サマリのログ行。出ない場合は「ブラウザが InputScope を返していない可能性」としてその旨（H-94）。`-WinForms` は WinForms の `UseSystemPasswordChar`（ES_PASSWORD）の参考確認で、Windows が IME 自体を無効にするため `secure_input=true` が出ないのが正常（判定しない） |
+| `password` | `%TEMP%\nagi-verify-password.html`（通常欄とパスワード欄 `<input type=password>`）が Edge / Chrome で開く。Nagi に切り替えて各欄に 1 文字ずつ入力して Enter。続けてメモ帳の通常欄に 1 文字入力 | ブラウザのパスワード欄では Chromium が IME を無効にするため、Nagi が反応しないのが正常（H-96。`[ctx] secure_input=true app=msedge.exe` が出れば OK、出なければ INFO「判定場面が来ない。正常」で NG にしない）。メモ帳の通常欄では `app=notepad` で `secure_input=true` が出ない | メモ帳の通常欄が機密欄と判定された場合のログ行。`-WinForms` は WinForms の `UseSystemPasswordChar`（ES_PASSWORD）の参考確認で、Windows が IME 自体を無効にするため `secure_input=true` が出ないのが正常（判定しない） |
 | `all` | `status` → `crash` → `env`（各種）→ `env clear` → `password` を順に案内 | 上記のとおり。`sleep` は含まれない | サマリ全体 |
 
 - **検証専用ファイル `debug-env.json`**: `env` は `%LOCALAPPDATA%\Nagi\debug-env.json` を書いて OS の検出値（電源・メモリ・サーマル）を上書きします。形式は `{"on_battery":true,"battery_saver":false,"memory":"critical","thermal":"serious"}`（省略した項目は実値。`memory` は normal / warning / critical、`thermal` は nominal / fair / serious / critical）。**検証のためだけの仕組みで、通常の利用では置かないでください**。ファイルがあるあいだ `[env] sent … source=override` になります。検証後は必ず `env clear`（ファイルを消す。次の確認で実値に戻って再送される）。不正な JSON は無視されて実値のままになり、`[env] invalid debug-env.json …` が 1 回だけ出ます。

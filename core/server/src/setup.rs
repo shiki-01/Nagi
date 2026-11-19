@@ -65,6 +65,9 @@ pub struct ServerOptions {
     /// 取得した更新の保存先（`--update-dir`。`--stage-updates` と併用）。未指定なら `<user_dir>/update`。
     /// Windows のフロントは、ローミングされる `%APPDATA%` ではなく `%LOCALAPPDATA%\Nagi\update` を渡す
     pub update_dir: Option<PathBuf>,
+    /// 親プロセスの PID（`--parent-pid`。Windows のフロントだけが付ける）。指定すると、親が終了したら
+    /// 学習を書き出して終了する（Windows のみ有効。他の OS では無視）。stdin の EOF が来ない場合の保険
+    pub parent_pid: Option<u32>,
 }
 
 impl Default for ServerOptions {
@@ -80,12 +83,13 @@ impl Default for ServerOptions {
             glide_index_file_only: false,
             stage_updates: false,
             update_dir: None,
+            parent_pid: None,
         }
     }
 }
 
 /// 引数から起動オプションを作る（`--data-dir` `--user-dir` `--config` `--no-llm` `--sync-budget-ms`
-/// `--memory-budget-mb` `--glide-index-file-only` `--stage-updates` `--update-dir`、
+/// `--memory-budget-mb` `--glide-index-file-only` `--stage-updates` `--update-dir` `--parent-pid`、
 /// 環境変数 `NAGI_DATA_DIR`）
 pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<ServerOptions, String> {
     let mut options = ServerOptions {
@@ -105,6 +109,13 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<ServerOptio
             "--glide-index-file-only" => options.glide_index_file_only = true,
             "--stage-updates" => options.stage_updates = true,
             "--update-dir" => options.update_dir = Some(PathBuf::from(value("--update-dir")?)),
+            "--parent-pid" => {
+                let v = value("--parent-pid")?;
+                options.parent_pid = Some(
+                    v.parse()
+                        .map_err(|_| format!("--parent-pid が数値ではありません: {v}"))?,
+                );
+            }
             "--sync-budget-ms" => {
                 let v = value("--sync-budget-ms")?;
                 options.sync_budget_ms = Some(

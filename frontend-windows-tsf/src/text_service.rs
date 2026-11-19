@@ -24,6 +24,7 @@ use nagi_windows::environment::{
 };
 use nagi_windows::keynorm;
 use nagi_windows::mode::{ModeSync, compartment_values};
+use nagi_windows::process::SpawnHook;
 use nagi_windows::status::{
     MenuCommand, MenuEntry, MenuTargets, PathEnv, ToastThrottle, toast_for,
 };
@@ -52,7 +53,9 @@ use crate::reconversion::FunctionProvider;
 use crate::render::{self, EditPlan, HandoffCache};
 use crate::toast_window::ToastWindow;
 
-/// プロセス内で共有するエンジン（ホストプロセスごとに 1 つ）。
+/// プロセス内で共有するエンジン（ホストプロセスごとに 1 つ）。作るだけでは imserver を起動しない
+/// （`EngineHost::ensure_started` を、フォーカスが当たったとき・最初のキーで呼ぶ。入力しないホストで
+/// 起動しないため。decisions.md H-96）。
 /// TODO: 複数のホストプロセスでエンジンを共有する（名前付きパイプ + 常駐ブローカー）。
 /// 現状は各ホストプロセスが imserver を起動する（メモリ・起動時間の観点で要再検討。decisions.md H-39）
 static ENGINE: OnceLock<Arc<EngineHost>> = OnceLock::new();
@@ -121,8 +124,14 @@ fn shared_engine() -> Arc<EngineHost> {
                     location.data_dir.exists()
                 ),
             );
-            let host = Arc::new(EngineHost::new(&location, env!("CARGO_PKG_VERSION")));
-            host.start_in_background();
+            // 起動した imserver は Job Object に入れる（ホストの終了・クラッシュで OS が終了させる）
+            let host = Arc::new(EngineHost::with_spawn_hook(
+                &location,
+                env!("CARGO_PKG_VERSION"),
+                Some(SpawnHook::new(crate::job::assign)),
+            ));
+            // エンジンを作った後は DLL をアンロードさせない（`DllCanUnloadNow` が `S_FALSE`）
+            dll::pin_for_engine();
             host
         })
         .clone()
@@ -742,6 +751,8 @@ impl Core {
         let Some(key) = keynorm::normalize(&raw) else {
             return passthrough;
         };
+        // フォーカスの通知を取りこぼした場合の保険（起動済みなら何もしない）。起動が済むまでのキーは素通しになる
+        self.engine.ensure_started();
         // 入力の開始になりうるキー（文字を生むキー）だけ、文脈を送る。毎キーで文書を読まないため
         if let Some(ctx) = context
             && !key.text.is_empty()
@@ -909,6 +920,8 @@ impl Core {
         self.focused.set(foreground);
         crate::e2e_probe::record_event("set_focus", &format!("foreground={foreground}"));
         if foreground {
+            // 入力する可能性のあるホストになったので、ここでエンジンを起動する（先読み。H-96）
+            self.engine.ensure_started();
             let _ = self.engine.focus_in(&self.session_id);
             return;
         }

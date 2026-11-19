@@ -1,5 +1,6 @@
 //! 言語バーのボタン（`ITfLangBarItemButton`）。現在の入力モード（あ / A）を表示し、
-//! 左クリックでひらがな ⇄ 英数を切り替え、メニュー（右クリック）にモード・状態・設定を出す。
+//! 左クリックでひらがな ⇄ 英数を切り替え、メニュー（右クリック。`popup_menu` が `OnClick` で出す）に
+//! モード・状態・設定を出す。
 //!
 //! 何を出すか・どう切り替えるかは `nagi_windows::status`（`menu_entries` / `toggled` / `button_text`）と
 //! `Core` が決める。ここは COM の受け口と、表示用の `HICON`（文字を描いたアイコン）だけ。
@@ -9,6 +10,8 @@
 //! Win8 以降（特に 11）のシェルの入力インジケーター（トレイの「あ / A」）は、言語バー項目のうち
 //! `guidItem == GUID_LBI_INPUTMODE` のものだけを表示する（独自 GUID の項目はレガシー言語バーにしか出ない）。
 //! このボタンがトレイの表示・左クリックでの切り替え・右クリックのメニューの実体になる（decisions.md H-54）。
+//! `BTN_BUTTON` の右クリックでは OS が `InitMenu` を呼ばない（H-96）ため、メニューは `OnClick` から自前で出す。
+//! `InitMenu` は `BTN_MENU` 系のスタイルや他の経路のために残している。
 
 #![allow(unsafe_code)]
 
@@ -122,11 +125,14 @@ impl ITfLangBarItemButton_Impl for Button_Impl {
                 pt.y
             ),
         );
-        // 左クリックでモードの切り替え。右クリックのメニューは OS が `InitMenu` で出す
-        if click == TF_LBI_CLK_LEFT
-            && let Some(core) = self.core.upgrade()
-        {
+        let Some(core) = self.core.upgrade() else {
+            return Ok(());
+        };
+        if click == TF_LBI_CLK_LEFT {
             core.toggle_mode_from_lang_bar();
+        } else {
+            // `TF_LBI_STYLE_BTN_BUTTON` では OS は右クリックで `InitMenu` を呼ばないので、自前で出す（H-96）
+            crate::popup_menu::show(&core, pt);
         }
         Ok(())
     }

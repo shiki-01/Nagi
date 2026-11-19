@@ -25,6 +25,25 @@ pub struct StderrLog {
     pub host_pid: u32,
 }
 
+/// 子プロセスを起動した直後に呼ばれるフック（`Child` を借りて呼ぶ）。OS 固有の後処理
+/// （Windows の Job Object への割り当て、H-96）を、この OS 非依存のクレートの外から差し込むための拡張点。
+/// 失敗しても起動は続ける（フック側でログに残す）。起動のたびに呼ばれる（再起動でも）
+#[derive(Clone)]
+pub struct SpawnHook(Arc<dyn Fn(&Child) + Send + Sync>);
+
+impl SpawnHook {
+    /// フックを作る
+    pub fn new(hook: impl Fn(&Child) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(hook))
+    }
+}
+
+impl std::fmt::Debug for SpawnHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpawnHook")
+    }
+}
+
 /// 子プロセスの起動設定
 #[derive(Debug, Clone)]
 pub struct ProcessEngineConfiguration {
@@ -39,6 +58,8 @@ pub struct ProcessEngineConfiguration {
     /// 子プロセスの stderr の保存先。`None`、またはファイルを開けないときは捨てる（`Stdio::null()`）。
     /// 親の stderr は継承しない（GUI ホストでは壊れていることがあるため）
     pub stderr_log: Option<StderrLog>,
+    /// 起動直後に呼ぶフック（`None` なら何もしない）
+    pub after_spawn: Option<SpawnHook>,
 }
 
 impl ProcessEngineConfiguration {
@@ -50,6 +71,7 @@ impl ProcessEngineConfiguration {
             minimal_extra_arguments: vec!["--no-llm".into()],
             environment: None,
             stderr_log: None,
+            after_spawn: None,
         }
     }
 }
@@ -141,7 +163,11 @@ impl EngineLauncher for ProcessEngineLauncher {
             }
             open_stderr_file(log, minimal)
         });
-        Ok(Box::new(ProcessTransport::with_stderr(command, stderr)))
+        Ok(Box::new(ProcessTransport::with_options(
+            command,
+            stderr,
+            c.after_spawn.clone(),
+        )))
     }
 }
 
@@ -164,6 +190,8 @@ struct Inner {
     exit: Mutex<Option<ExitReport>>,
     /// こちらから終了させている（終了コードを記録しない）
     terminating: AtomicBool,
+    /// 起動直後に呼ぶフック
+    after_spawn: Option<SpawnHook>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -226,6 +254,15 @@ impl ProcessTransport {
 
     /// stderr の保存先つきで作る。`None` なら子の stderr は捨てる（継承しない）
     pub fn with_stderr(command: Command, stderr: Option<File>) -> Self {
+        Self::with_options(command, stderr, None)
+    }
+
+    /// stderr の保存先と起動直後のフックつきで作る
+    pub fn with_options(
+        command: Command,
+        stderr: Option<File>,
+        after_spawn: Option<SpawnHook>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 command: Mutex::new(Some(command)),
@@ -236,6 +273,7 @@ impl ProcessTransport {
                 started_at: Mutex::new(None),
                 exit: Mutex::new(None),
                 terminating: AtomicBool::new(false),
+                after_spawn,
             }),
         }
     }
@@ -265,6 +303,9 @@ impl Transport for ProcessTransport {
         let mut child = command
             .spawn()
             .map_err(|e| ClientError::SendFailed(format!("spawn: {e}")))?;
+        if let Some(hook) = &self.inner.after_spawn {
+            (hook.0)(&child);
+        }
         let (Some(stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
             let _ = child.kill();
             return Err(ClientError::SendFailed("パイプを取得できません".into()));
@@ -497,6 +538,26 @@ mod tests {
         assert!(dir.join("tsf.log").exists());
         assert!(dir.join("imserver-2.log").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn after_spawn_hook_runs_once_per_start_with_the_child() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let mut configuration = ProcessEngineConfiguration::new("true");
+        configuration.after_spawn = Some(SpawnHook::new(move |child| {
+            lock(&recorder).push(child.id());
+        }));
+        let launcher = ProcessEngineLauncher::new(configuration);
+        let client = JsonRpcClient::new(
+            launcher.make_connection(false).unwrap(),
+            Duration::from_millis(500),
+        );
+        client.start().unwrap();
+        wait_closed(&client);
+        let ids = lock(&seen);
+        assert_eq!(ids.len(), 1);
+        assert!(ids[0] > 0);
     }
 
     #[test]

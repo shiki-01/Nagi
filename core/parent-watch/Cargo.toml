@@ -1,0 +1,24 @@
+[package]
+name = "nagi-parent-watch"
+description = "Nagi: 親プロセスの終了を監視する（imserver の `--parent-pid`。Windows のみ有効、他は no-op）。unsafe はここに隔離する。"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Windows 以外では依存を持たない（モバイルのビルドに影響しない）
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[lints.rust]
+# ワークスペース既定は forbid。Win32 の呼び出し（lib.rs の `imp` モジュール）だけ解禁する
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

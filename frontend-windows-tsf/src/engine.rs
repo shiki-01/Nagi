@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -18,7 +19,9 @@ use nagi_protocol::{
     SetContextParams, SetEnvironmentParams, TouchAction,
 };
 use nagi_windows::client::ClientError;
-use nagi_windows::process::{ProcessEngineConfiguration, ProcessEngineLauncher, StderrLog};
+use nagi_windows::process::{
+    ProcessEngineConfiguration, ProcessEngineLauncher, SpawnHook, StderrLog,
+};
 use nagi_windows::session::SessionStore;
 use nagi_windows::supervisor::{Configuration, EngineEvent, EngineSupervisor};
 
@@ -46,12 +49,16 @@ pub struct EngineLocation {
 
 /// `imserver` に渡す引数。`--stage-updates` で、新版の取得・署名検証と利用者領域への保存を
 /// imserver のバックグラウンドに任せる（適用は `apply-update.ps1`。decisions.md H-95）。
+/// `--parent-pid` は、ホストプロセス（この DLL を読んだプロセス）が終了したら imserver も終了させるため
+/// （孤児の防止。H-96。stdin の EOF が来ない場合の保険）。
 /// minimal 起動で追加される `--no-llm` とは独立
 pub fn engine_arguments(location: &EngineLocation) -> Vec<String> {
     let mut args = vec![
         "--data-dir".to_string(),
         location.data_dir.to_string_lossy().into_owned(),
         "--stage-updates".to_string(),
+        "--parent-pid".to_string(),
+        std::process::id().to_string(),
     ];
     if let Some(dir) = &location.update_dir {
         args.push("--update-dir".to_string());
@@ -132,11 +139,22 @@ pub struct EngineHost {
     supervisor: Arc<EngineSupervisor>,
     sessions: Arc<SessionStore>,
     subscribers: Subscribers,
+    /// 起動を始めたか（[`ensure_started`](Self::ensure_started) が 1 回だけ起動するため。再起動の可否も決める）
+    started: AtomicBool,
 }
 
 impl EngineHost {
-    /// 起動はしない（[`start_in_background`](Self::start_in_background) で行う）
+    /// 起動はしない（[`ensure_started`](Self::ensure_started) / [`start_in_background`](Self::start_in_background) で行う）
     pub fn new(location: &EngineLocation, client_version: &str) -> Self {
+        Self::with_spawn_hook(location, client_version, None)
+    }
+
+    /// 子プロセスの起動直後に呼ぶフックつきで作る（Windows の Job Object への割り当て。H-96）
+    pub fn with_spawn_hook(
+        location: &EngineLocation,
+        client_version: &str,
+        after_spawn: Option<SpawnHook>,
+    ) -> Self {
         let mut process = ProcessEngineConfiguration::new(&location.executable);
         process.arguments = engine_arguments(location);
         // imserver の stderr は親から継承せず、ホストごとのファイル（imserver-<pid>.log）へ向ける
@@ -144,6 +162,7 @@ impl EngineHost {
             dir,
             host_pid: std::process::id(),
         });
+        process.after_spawn = after_spawn;
         let launcher = Arc::new(ProcessEngineLauncher::new(process));
 
         let mut config = Configuration::new(client_version);
@@ -170,10 +189,28 @@ impl EngineHost {
             supervisor,
             sessions,
             subscribers,
+            started: AtomicBool::new(false),
         }
     }
 
-    /// 別スレッドで起動する。失敗時の再起動はスーパーバイザーが予約する。
+    /// まだ起動していなければ別スレッドで起動する（2 回目以降は何もしない）。入力しないホストで
+    /// imserver を起動しないため、フォーカスが当たったとき・最初のキーのときに呼ぶ（H-96）。
+    /// 起動済みなら `false`
+    pub fn ensure_started(&self) -> bool {
+        if self.started.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        self.start_in_background();
+        true
+    }
+
+    /// 起動を始めたか
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::SeqCst)
+    }
+
+    /// 別スレッドで起動する（直接呼ばず、通常は [`ensure_started`](Self::ensure_started)）。
+    /// 失敗時の再起動はスーパーバイザーが予約する。
     /// 起動前・起動中のキー入力は `NotConnected` になり、フロントは素通しする
     pub fn start_in_background(&self) {
         let supervisor = Arc::clone(&self.supervisor);
@@ -194,7 +231,11 @@ impl EngineHost {
     }
 
     /// スリープ復帰時などの強制再起動（`restart_now` は接続を待つので別スレッドで行う）
+    /// まだ起動していなければ何もしない（入力しないホストで復帰を機に起動しない）
     pub fn restart_in_background(&self, source: nagi_windows::environment::ResumeSource) {
+        if !self.is_started() {
+            return;
+        }
         let supervisor = Arc::clone(&self.supervisor);
         std::thread::spawn(move || {
             crate::tsf_log::log(
@@ -348,16 +389,37 @@ mod tests {
             data_dir: PathBuf::from("C:/Users/x/AppData/Roaming/Nagi/data"),
             update_dir: Some(PathBuf::from("C:/Users/x/AppData/Local/Nagi/update")),
         };
+        let pid = std::process::id().to_string();
         assert_eq!(
             engine_arguments(&loc),
             [
                 "--data-dir",
                 "C:/Users/x/AppData/Roaming/Nagi/data",
                 "--stage-updates",
+                "--parent-pid",
+                pid.as_str(),
                 "--update-dir",
                 "C:/Users/x/AppData/Local/Nagi/update"
             ]
         );
+    }
+
+    #[test]
+    fn engine_is_not_started_until_requested_and_starts_once() {
+        let loc = EngineLocation {
+            executable: PathBuf::from("/nonexistent/imserver"),
+            data_dir: PathBuf::from("/nonexistent"),
+            update_dir: None,
+        };
+        let host = EngineHost::new(&loc, "0.0.0");
+        assert!(!host.is_started());
+        // 起動前の再起動要求（スリープ復帰など）では起動しない
+        host.restart_in_background(nagi_windows::environment::ResumeSource::TickGap);
+        assert!(!host.is_started());
+        assert!(host.ensure_started());
+        assert!(host.is_started());
+        assert!(!host.ensure_started());
+        host.stop();
     }
 
     #[test]

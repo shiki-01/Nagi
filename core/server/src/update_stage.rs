@@ -526,6 +526,24 @@ mod tests {
         assert!(o.stage_updates && !o.use_llm);
     }
 
+    #[test]
+    fn parent_pid_flag_is_off_by_default_and_parses_a_number() {
+        let parse = |a: &[&str]| {
+            crate::setup::parse_args(
+                a.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )
+        };
+        assert_eq!(parse(&["--data-dir", "d"]).unwrap().parent_pid, None);
+        let o = parse(&["--stage-updates", "--parent-pid", "4242", "--no-llm"]).unwrap();
+        assert_eq!(o.parent_pid, Some(4242));
+        assert!(o.stage_updates && !o.use_llm);
+        assert!(parse(&["--parent-pid", "abc"]).is_err());
+        assert!(parse(&["--parent-pid"]).is_err());
+    }
+
     fn staged_args(t: &Temp, version: &str) -> PrepareArgs {
         let dir = t.0.join("update");
         stage_update(&dir, &manifest(version, TEST_SIGNATURE_HEX), fake_fetch).unwrap();

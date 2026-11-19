@@ -1,7 +1,9 @@
 //! `imserver`: Nagi コアエンジンのサーバープロセス（stdin/stdout の JSON-RPC）。
 //!
 //! 使い方: `imserver [--data-dir <dir>] [--user-dir <dir>] [--config <file>] [--no-llm]
-//! [--sync-budget-ms <ms>]`（`NAGI_DATA_DIR` でも指定可）。ログは stderr のみ。入力内容は出力しない。
+//! [--sync-budget-ms <ms>] [--parent-pid <pid>]`（`NAGI_DATA_DIR` でも指定可）。ログは stderr のみ。入力内容は出力しない。
+//!
+//! `--parent-pid <pid>`（Windows のみ有効）: 親プロセスが終了したら学習を保存して終了する（`docs/decisions.md` H-96）。
 //!
 //! データ取得: `imserver --install-data --data-dir <dir> [--model small|xsmall|none]`。辞書とモデルを
 //! 取得して終了する（JSON-RPC は起動しない）。進捗は標準出力に 1 行 1 JSON。
@@ -72,6 +74,25 @@ fn main() -> ExitCode {
         built.runtime.profile().as_str(),
         built.runtime.profile_reason()
     );
+    // 親（フロントのホストプロセス）が終了したら、学習を書き出して終了する（Windows のみ。H-96）
+    if let Some(pid) = options.parent_pid {
+        let runtime = std::sync::Arc::clone(&built.runtime);
+        let watching = nagi_parent_watch::spawn(pid, move || {
+            nagi_server::elog!("imserver: 親プロセス（pid {pid}）が終了したので終了します");
+            // 書き出しが詰まっても残り続けないよう、猶予の後に必ず終了する
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                std::process::exit(0);
+            });
+            runtime.flush_learning(true);
+            std::process::exit(0);
+        });
+        if cfg!(windows) && !watching {
+            nagi_server::elog!(
+                "imserver: 親プロセス（pid {pid}）を監視できません（stdin の EOF のみで終了します）"
+            );
+        }
+    }
     let mut server = Server::from_built(built);
     // `Server::run` は標準入力を読む専用スレッドに `input` を move するため、`Send + 'static` が要る。
     // `StdinLock` は（`MutexGuard` を内包するため）`Send` ではないので、ロックせずに `Stdin` を渡す

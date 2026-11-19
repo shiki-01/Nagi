@@ -17,7 +17,9 @@
     4. 展開した install.ps1 を、すでに昇格済みなので直接実行して配置・登録する
     5. 成功したら staging と、取得済みの更新（%LOCALAPPDATA%\Nagi\update の ready.json と zip）を消す
 
-  適用後は、サインアウト（または再起動）で、開いているすべてのアプリが新しい版になる。
+  配置の前に、インストール先の旧版の imserver（`.old` に退避されたものを含む。プロセス名ではなくパスで判定）を
+  止める（入力中の学習内容は保存されない）。適用後は、サインアウト（または再起動）で、開いているすべての
+  アプリが新しい版の DLL になる（エンジンは止めた時点で新しい imserver.exe に入れ替わる）。
 
 .PARAMETER UpdateDir
   取得済みの更新の置き場所。既定は %LOCALAPPDATA%\Nagi\update。昇格後は別のユーザーになりうるため、
@@ -122,6 +124,36 @@ function Remove-StagedUpdate([string]$Dir) {
         Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
+# インストール先の imserver（通常名・`.old` に退避されたもの）のプロセスを、パスで列挙する。
+# プロセス名では判定しない: 実行中の exe を `imserver.exe.old` に改名すると、Get-Process の Name は
+# `imserver.exe` のままになったり変わったりして当てにならない。Path がインストール先の
+# `imserver.exe` で始まるものだけを対象にする（別の場所の imserver、例えば開発用のビルドは止めない）
+function Get-InstalledEngines([string]$Dir) {
+    $prefix = (Join-Path $Dir 'imserver.exe')
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null
+        try { $path = $_.Path } catch { }
+        $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
+# 旧版の imserver を止める。配置（install.ps1）で imserver.exe が `.old` に改名される前に呼ぶ。
+# 入力中の学習は保存されずに失われる（imserver は終了時に学習を書き出すため）が、サインアウトまで待つより良い、
+# という判断（decisions.md H-96）。止めた imserver は、各ホストの supervisor が自動で再起動し、
+# そのとき新しい imserver.exe が使われる。注意: ホストが読み込み済みの DLL は旧版のままなので、
+# 「旧 DLL が新 exe を起動する」組み合わせが、サインアウトまでの間だけ生じる（プロトコルの互換性は保つ前提）
+function Stop-InstalledEngines([string]$Dir) {
+    $engines = Get-InstalledEngines $Dir
+    if ($engines.Count -eq 0) { return }
+    Say "動作中の旧版のエンジン（imserver）$($engines.Count) 個を止めます。入力中の学習内容は保存されません（サインアウトを待たずに更新するため）。止めたエンジンは自動で再起動し、新しい版が使われます"
+    foreach ($engine in $engines) {
+        Stop-Process -Id $engine.Id -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($engine in $engines) {
+        try { [void]$engine.WaitForExit(3000) } catch { }
+    }
+}
+
 # 管理者権限が要る適用の本体
 function Invoke-Apply([string]$Dir) {
     Assert-UpdateDirShape $Dir
@@ -174,6 +206,9 @@ function Invoke-Apply([string]$Dir) {
         if ($bundleVersion -ne $version) {
             throw "zip の版（$bundleVersion）が検証済みの版（$version）と一致しません（適用しません）"
         }
+
+        # 旧版の imserver を、配置（`.old` への退避）の前に止める
+        Stop-InstalledEngines $InstallDir
 
         # すでに昇格済みなので、install.ps1 の配置と登録の手順を直接実行する（UAC は再度出ない）
         Say "Nagi $version を配置しています（配置先: $InstallDir）"

@@ -162,6 +162,9 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
   - 確認方法: `verify.ps1 sleep` → スリープ → `verify.ps1 sleep -After`（`[engine] restart requested (resume: …)` の検出経路と二重起動なしを判定）
 - [x] ~~ライブ変換・LLM 結果の差し替えが「次のキー入力まで画面に出ない」~~ → H-41 で隠しウィンドウ + PostMessage により解消（実機の確認は 8.5b）
 - [ ] キャレット位置の設定（`ShiftEnd`）。確定後にカーソルが文末に来る
+- [ ] **右クリックメニュー（H-96）**: 入力インジケーター（「あ」）を右クリックすると、ひらがな / 英数・状態の行（グレー）・設定を開く・フォルダ・verify・（更新があれば）更新を適用 が出る。1 回の右クリックでメニューは 1 つだけ（3 重の `OnClick` で重ならない）。項目を選ぶと動作し、外側をクリック / Esc で閉じる。閉じた後、入力中のアプリのフォーカスが失われない。tsf.log に `[langbar] popup menu shown entries=N` と `selected id=N` / `dismissed`
+- [ ] **imserver の数（H-96）**: タスクマネージャー（詳細）の imserver が、Nagi に切り替えて入力したアプリの数だけに限られる（入力しないアプリ・バックグラウンドの WebView2 等では増えない）。入力したアプリを閉じると対応する imserver が消える（ホストを強制終了しても消える）。`verify.ps1 status` で孤児（親が存在しない）の WARN が出ない
+- [ ] 更新を適用した後（`apply-update.ps1`）、`imserver.exe.old` のプロセスが残らない（旧エンジンは止められ、新しい exe で自動再起動する）
 
 ### 8.4 キー割り当て
 - [ ] 半角/全角（`VK_KANJI` / `VK_OEM_AUTO` / `VK_OEM_ENLW`）でモードが切り替わる
@@ -229,6 +232,7 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] stdout に JSON 以外の行が混ざる環境では `dropped non-JSON line … len=… first=… total=…` が tsf.log に出る（内容は出ない）
 
 ### 8.6 設計の再検討事項
+- imserver の寿命管理（H-96）の実機確認: ホストプロセスごとの imserver の数がタスクマネージャーで Nagi を使ったアプリだけに限られること、ホストを閉じる・強制終了すると imserver も消えること（Job Object と `--parent-pid`。tsf.log の `[engine] job assigned pid=…` / imserver ログの親終了の行）、フォーカスが当たった時点で起動する体感（最初の 1 文字が素通しにならないか）、更新後に `.old` のプロセスが残らないこと。`verify.ps1 status` の imserver の欄（パス・親 PID・孤児）で確認する。
 - ホストプロセスごとに imserver を起動する方式のメモリ・起動時間。名前付きパイプ + 常駐ブローカーへの変更要否（H-39）。**判断に必要な実測項目と設計案は decisions.md H-43 §4**（ホスト 1/5/10 個のメモリ合計、`initialize` の所要、パイプ往復の増分、`learning.tsv` の取りこぼし、AppContainer からの接続可否、再接続の所要）
 
 ### 8.7 配布・インストーラ・SmartScreen・更新（H-42。Linux では PowerShell の構文と `SHA256SUMS` の検証までしか確認していない）

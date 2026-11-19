@@ -7,7 +7,8 @@
   までを行います。最後に報告用の「結果サマリ（コピー用）」を出力します。
   手順書: docs/windows-verification.md の「堅牢性・環境の簡単な検証（verify.ps1）」
 
-    status                  現在の状態の要約（DLL を読み込んだプロセス・imserver・VERSION・tsf.log 末尾）
+    status                  現在の状態の要約（DLL を読み込んだプロセス・imserver の数/パス/.old/親 PID と孤児の検出・
+                            VERSION・tsf.log 末尾）
     crash [-Repeat N]       imserver を強制終了し、自動再起動とセッション復元を確認する。
                             -Repeat 6 で連続 6 回終了させ、minimal プロファイルへの移行を確認する
     env <名前>              環境の擬似（debug-env.json。検証専用）: battery / saver / memory-warning /
@@ -15,7 +16,7 @@
     sleep                   スリープ前の記録（復帰後に sleep -After を実行する）
     sleep -After            復帰後の判定
     password                パスワード欄の判定（secure_input）を、ブラウザ（Edge / Chrome）の
-                            パスワード欄で確認する。-WinForms は ES_PASSWORD の参考確認（IME が無効になるのが正常）
+                            パスワード欄で確認する（Chromium は IME を無効にするので、Nagi が反応しないのが正常）。-WinForms は ES_PASSWORD の参考確認（IME が無効になるのが正常）
     all                     status・crash・env・password を順に案内する（sleep は別に実行）
 
   使い方:
@@ -163,6 +164,62 @@ function Get-ImserverByParent {
     catch { return @() }
 }
 
+# imserver のプロセス（通常名と、更新で改名された `.old` を含む）。Win32_Process の Name は
+# `imserver.exe` / `imserver.exe.old`。取得できなければ $null
+function Get-ImserverInfo {
+    try {
+        return @(Get-CimInstance -ClassName Win32_Process -Filter "Name LIKE 'imserver%'" -ErrorAction Stop)
+    }
+    catch { return $null }
+}
+
+# 親プロセスが生きているか。PID が再利用されていないかを、親の起動が子より前かで確かめる
+function Test-ParentAlive($child) {
+    $parent = Get-Process -Id $child.ParentProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $parent) { return $false }
+    try {
+        if ($parent.StartTime -gt $child.CreationDate) { return $false }
+    } catch { }
+    return $true
+}
+
+# imserver の数・パス・親 PID・親が生きているか。親がいない孤児は WARN（H-96: ホストごと 1 つ・ホスト終了で消える）
+function Show-ImserverStatus {
+    $all = Get-ImserverInfo
+    if ($null -eq $all) {
+        $procs = Get-ImserverProcesses
+        Add-Result 'imserver' 'INFO' ('詳細を取得できません（Get-CimInstance 失敗）。プロセス数: ' + $procs.Count) @()
+        return
+    }
+    if ($all.Count -eq 0) {
+        Add-Result 'imserver' 'OK' '起動していません（Nagi に切り替えて入力したホストだけで起動します）' @()
+        return
+    }
+    $orphans = 0
+    $olds = 0
+    foreach ($p in $all) {
+        $path = $p.ExecutablePath
+        if (-not $path) { $path = '(パス不明: ' + $p.Name + ')' }
+        $isOld = ($p.Name -like '*.old')
+        if ($isOld) { $olds++ }
+        $alive = Test-ParentAlive $p
+        $parentName = '?'
+        $parentProc = Get-Process -Id $p.ParentProcessId -ErrorAction SilentlyContinue
+        if ($null -ne $parentProc) { $parentName = $parentProc.ProcessName }
+        $mark = ''
+        if ($isOld) { $mark = ' [.old: 旧版]' }
+        if (-not $alive) { $mark += ' [孤児: 親が存在しない]'; $orphans++ }
+        Write-Info ('imserver: PID=' + $p.Id + ' 親PID=' + $p.ParentProcessId + '(' + $parentName + ')' + ' 親=' + $(if ($alive) { '生存' } else { '終了' }) + ' ' + $path + $mark)
+    }
+    Add-Result 'imserver' 'OK' ($all.Count.ToString() + ' プロセス（.old: ' + $olds + '）。Nagi で入力したホストの数に収まるはずです') @()
+    if ($orphans -gt 0) {
+        Add-Result 'imserver/孤児' 'WARN' ($orphans.ToString() + ' プロセスの親が存在しません（imserver が残っている）。Stop-Process で止められます') @()
+    }
+    if ($olds -gt 0) {
+        Add-Result 'imserver/.old' 'INFO' ('旧版（.old）が ' + $olds + ' プロセス動いています。更新前から動いていたホストを閉じる（またはサインアウト）と消えます') @()
+    }
+}
+
 # ---- status ----
 
 function Invoke-Status {
@@ -183,12 +240,7 @@ function Invoke-Status {
     if ($loaded.Count -gt 0) { Add-Result 'DLL の読み込み' 'OK' ($loaded.Count.ToString() + ' プロセス') @() }
     else { Add-Result 'DLL の読み込み' 'WARN' 'DLL を読み込んだプロセスがありません（Nagi に切り替えて入力すると読み込まれます）' @() }
 
-    $procs = Get-ImserverProcesses
-    if ($procs.Count -gt 0) {
-        foreach ($p in $procs) { Write-Info ('imserver: ' + (Format-Process $p)) }
-        Add-Result 'imserver' 'OK' ($procs.Count.ToString() + ' プロセス') @()
-    }
-    else { Add-Result 'imserver' 'WARN' '起動していません（Nagi で入力するとホストごとに起動します）' @() }
+    Show-ImserverStatus
 
     $log = Get-TsfLogPath
     if (Test-Path -LiteralPath $log) {
@@ -450,6 +502,7 @@ function Invoke-Password {
     }
     Write-Info ('ブラウザで ' + $html + ' が開きます。')
     Write-Info '手順: Nagi に切り替え、通常の欄とパスワード欄に 1 文字ずつ入力して、それぞれ Enter を押してください。'
+    Write-Info '（Chromium のパスワード欄では IME が無効になり、Nagi が反応しないのが正常です。反応しなくても NG ではありません）'
     Write-Info '（WinForms 等の標準 EDIT の ES_PASSWORD では Windows が IME 自体を無効にするため判定できません。それが正常です。-WinForms で確認できます）'
     [void](Read-Host '入力したら Enter')
     Start-Sleep -Seconds 2
@@ -458,9 +511,11 @@ function Invoke-Password {
     if ($browser -eq $null) { $browser = 'msedge.exe' }
     $lines = @(Read-LogSince $pos)
     $hit = @($lines | Where-Object { $_ -match '\[ctx\] secure_input=true app=(msedge|chrome)\.exe' })
+    # Chromium はパスワード欄で IME を無効にする（Nagi が反応しない）のが正常。secure_input=true が出れば
+    # 判定まで届いた場合で OK、出なければ判定の場面が来ていないだけで NG にはしない（H-96）
     if ($hit.Count -gt 0) { Add-Result 'password/パスワード欄' 'OK' 'secure_input=true がブラウザで記録された' $hit }
     else {
-        Add-Result 'password/パスワード欄' 'NG' ('[ctx] secure_input=true app=' + $browser + ' が出ていません。ブラウザが InputScope を返していない可能性があります（Nagi に切り替えて欄に入力できていたかも確認してください）') (Get-Evidence $pos)
+        Add-Result 'password/パスワード欄' 'INFO' ('Chromium はパスワード欄で IME を無効にするため判定場面が来ない。正常（パスワード欄で Nagi が反応しない・[ctx] secure_input=true app=' + $browser + ' が出ないのが期待どおり）') @()
     }
     $plainHit = @($lines | Where-Object { $_ -match '\[ctx\] secure_input=false app=(msedge|chrome)\.exe' })
     if ($plainHit.Count -gt 0) { Write-Info '（通常の欄: secure_input=false が記録されています）' }

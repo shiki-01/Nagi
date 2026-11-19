@@ -4,7 +4,7 @@
 
 use std::ffi::c_void;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI32, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
 
 use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER, HMODULE, S_FALSE, S_OK,
@@ -24,6 +24,15 @@ const DLL_PROCESS_ATTACH: u32 = 1;
 static MODULE: AtomicIsize = AtomicIsize::new(0);
 /// 生きているオブジェクト数 + `LockServer` の数。0 なら `DllCanUnloadNow` が `S_OK`
 static LIVE_OBJECTS: AtomicI32 = AtomicI32::new(0);
+
+/// エンジン（imserver の supervisor と子プロセス）を作ったか。作った後は DLL をアンロードさせない
+/// （アンロードすると `static ENGINE` と stdin のハンドルが孤児になり、再ロードで 2 つ目が起動する。H-96）
+static ENGINE_PINNED: AtomicBool = AtomicBool::new(false);
+
+/// エンジンを作った。以後 `DllCanUnloadNow` は `S_FALSE` を返す
+pub fn pin_for_engine() {
+    ENGINE_PINNED.store(true, Ordering::SeqCst);
+}
 
 /// オブジェクトを 1 つ作った
 pub fn add_object() {
@@ -126,7 +135,7 @@ pub unsafe extern "system" fn DllGetClassObject(
 /// アンロードしてよいか
 #[unsafe(no_mangle)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if LIVE_OBJECTS.load(Ordering::SeqCst) <= 0 {
+    if LIVE_OBJECTS.load(Ordering::SeqCst) <= 0 && !ENGINE_PINNED.load(Ordering::SeqCst) {
         S_OK
     } else {
         S_FALSE

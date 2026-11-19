@@ -46,6 +46,17 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+# インストール先の imserver（通常名・`.old` に退避されたもの）のプロセスを、パスで列挙する
+# （プロセス名では判定しない。apply-update.ps1 と同じ。decisions.md H-96）
+function Get-InstalledEngines([string]$Dir) {
+    $prefix = (Join-Path $Dir 'imserver.exe')
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null
+        try { $path = $_.Path } catch { }
+        $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
 function Get-Regsvr32 {
     if ([Environment]::Is64BitProcess) {
         return (Join-Path $env:SystemRoot 'System32\regsvr32.exe')
@@ -90,6 +101,8 @@ function Remove-FileOrSchedule([string]$Path) {
 function Uninstall-Privileged {
     $dll = Join-Path $InstallDir $DllName
     $pending = $false
+    # 動作中の imserver（`.old` も含む）を先に止める。使用中のままだと exe を消せず、再起動まで残る
+    Get-InstalledEngines $InstallDir | Stop-Process -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $dll) {
         $process = Start-Process -FilePath (Get-Regsvr32) -ArgumentList @('/u', '/s', ('"{0}"' -f $dll)) -Wait -PassThru
         if ($process.ExitCode -ne 0) {
@@ -160,8 +173,9 @@ try {
     }
 
     if ($RemoveUserData) {
-        # 動作中のエンジンが学習データを書き戻さないよう、このユーザーの imserver を止めてから消す
-        Get-Process -Name 'imserver' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        # 動作中のエンジンが学習データを書き戻さないよう、imserver（`.old` も含む）を止めてから消す。
+        # インストール先は uninstall の対象が消えた後でもパスの文字列で判定できる
+        Get-InstalledEngines $InstallDir | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 500
         if (Test-Path -LiteralPath $userDir) {
             Remove-Item -LiteralPath $userDir -Recurse -Force

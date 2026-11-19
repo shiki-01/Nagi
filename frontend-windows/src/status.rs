@@ -451,6 +451,37 @@ impl ToastThrottle {
     }
 }
 
+/// 同じ座標の右クリックが短時間に繰り返し届いたとき、2 回目以降を無視するための判定。
+/// 入力インジケーターを 1 回右クリックしても `OnClick` が 3 回呼ばれることがあり（実機 0.1.12）、
+/// そのたびにポップアップメニューを出さないために使う（H-96）
+#[derive(Debug, Default)]
+pub struct ClickDedup {
+    last: Option<(Instant, i32, i32)>,
+}
+
+impl ClickDedup {
+    /// 重複を無視する間隔
+    pub const WINDOW: Duration = Duration::from_millis(300);
+
+    /// 直近の記録から [`WINDOW`](Self::WINDOW) 以内で同じ座標なら `true`（無視する）。
+    /// いずれの場合も、時刻と座標を記録し直す（メニューを閉じた直後の到着も重複として扱うため、
+    /// 呼び出し側は閉じたときにも [`touch`](Self::touch) する）
+    pub fn is_duplicate(&mut self, now: Instant, x: i32, y: i32) -> bool {
+        let duplicate = self.last.is_some_and(|(at, lx, ly)| {
+            lx == x && ly == y && now.saturating_duration_since(at) < Self::WINDOW
+        });
+        self.last = Some((now, x, y));
+        duplicate
+    }
+
+    /// 最後の操作の時刻を更新する（座標は変えない）
+    pub fn touch(&mut self, now: Instant) {
+        if let Some((_, x, y)) = self.last {
+            self.last = Some((now, x, y));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,5 +880,32 @@ mod tests {
         assert!(!t.should_show("a", t0 + Duration::from_secs(10)));
         assert!(t.should_show("b", t0 + Duration::from_secs(10)));
         assert!(t.should_show("a", t0 + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn click_dedup_ignores_same_point_within_the_window() {
+        let t0 = Instant::now();
+        let mut d = ClickDedup::default();
+        assert!(!d.is_duplicate(t0, 10, 20));
+        assert!(d.is_duplicate(t0 + Duration::from_millis(100), 10, 20));
+        // 記録は更新されるので、最後の重複から 300ms 未満ならまた重複
+        assert!(d.is_duplicate(t0 + Duration::from_millis(350), 10, 20));
+        // 座標が違えば別の操作
+        assert!(!d.is_duplicate(t0 + Duration::from_millis(360), 11, 20));
+        // 間隔が空けば別の操作
+        assert!(!d.is_duplicate(t0 + Duration::from_millis(700), 11, 20));
+    }
+
+    #[test]
+    fn click_dedup_touch_extends_the_window() {
+        let t0 = Instant::now();
+        let mut d = ClickDedup::default();
+        assert!(!d.is_duplicate(t0, 1, 2));
+        d.touch(t0 + Duration::from_secs(5));
+        assert!(d.is_duplicate(
+            t0 + Duration::from_secs(5) + Duration::from_millis(50),
+            1,
+            2
+        ));
     }
 }

@@ -22,6 +22,13 @@
 //!   （モード表示・クリックで切り替え・メニュー）/ `reconversion`: `ITfFnReconversion`
 //!   （`Reconvert` と `GetReconversion`）
 //!
+//! # エンジンの寿命（H-96）
+//! - imserver は、ホストプロセスが最初にフォーカスを受けたとき（または最初のキー）に起動する（Activate では起動しない）
+//! - `job`: 起動した imserver を Job Object（KILL_ON_JOB_CLOSE）に入れ、ホストの終了・クラッシュで OS が確実に終了させる。
+//!   加えて imserver 側の `--parent-pid` 監視と、`DllCanUnloadNow` の `S_FALSE`（エンジンがある間はアンロードしない）
+//! - `popup_menu`: 入力インジケーターの右クリックメニュー（`TF_LBI_STYLE_BTN_BUTTON` では OS が `InitMenu` を呼ばないため、
+//!   `OnClick` の右クリックで自前の Win32 ポップアップを出す）
+//!
 //! # 未実装（TODO）
 //! - 複数のホストプロセスでエンジンを共有する仕組み（現状はホストプロセスごとに imserver を起動する）
 //! - 候補ウィンドウのマウス操作（v1 の非目標）
@@ -55,6 +62,8 @@ mod edit;
 #[cfg(windows)]
 mod guids;
 #[cfg(windows)]
+mod job;
+#[cfg(windows)]
 mod keys;
 #[cfg(windows)]
 mod langbar;
@@ -62,6 +71,8 @@ mod langbar;
 mod message_window;
 #[cfg(windows)]
 mod mode_comp;
+#[cfg(windows)]
+mod popup_menu;
 #[cfg(windows)]
 mod probe;
 #[cfg(windows)]

@@ -18,6 +18,7 @@ members = [
     "ffi",
     "jni",
     "datafetch",
+    "parent-watch",
     "xtask",
     "../frontend-windows",
     "../frontend-windows-tsf",
@@ -41,6 +42,7 @@ nagi-fuzzy = { path = "fuzzy" }
 nagi-glide = { path = "glide" }
 nagi-dict = { path = "dict" }
 nagi-datafetch = { path = "datafetch" }
+nagi-parent-watch = { path = "parent-watch" }
 nagi-infer = { path = "infer" }
 nagi-config = { path = "config" }
 nagi-learn = { path = "learn" }
