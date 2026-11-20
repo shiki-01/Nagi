@@ -60,11 +60,112 @@ pub fn toast_for(event: &EngineEvent) -> Option<String> {
 /// 状態を取得できなかったときの行
 pub const UNAVAILABLE: &str = "変換エンジンに接続していません";
 
-/// メニューに出す状態の行（選択不可の項目として並べる）
+/// 理由文の短い表記の最大文字数（これを超える未知の理由文は切り詰める）
+pub const SHORT_REASON_MAX_CHARS: usize = 24;
+
+/// `s` の最初の `ms` の直前にある数字列（`48ms` → `48`）。無ければ `None`
+fn ms_value(s: &str) -> Option<&str> {
+    let end = s.find("ms")?;
+    let head = &s[..end];
+    let start = head
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(i, _)| i)?;
+    Some(&head[start..])
+}
+
+/// 文字の連なりの途中で切ってはいけない文字（結合文字・異体字選択子・ZWJ）
+fn is_extender(c: char) -> bool {
+    matches!(c,
+        '\u{0300}'..='\u{036F}'
+        | '\u{3099}' | '\u{309A}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{200D}')
+}
+
+/// `s` を最大 `max` 文字（Unicode のスカラー値単位。結合文字の途中では切らない）にし、
+/// 超えたときは末尾に「…」を付ける
+fn truncate_chars(s: &str, max: usize) -> String {
+    let mut chars = s.chars();
+    let mut out: String = chars.by_ref().take(max).collect();
+    let mut rest = chars.peekable();
+    if rest.peek().is_none() {
+        return out;
+    }
+    while let Some(c) = rest.next_if(|c| is_extender(*c)) {
+        out.push(c);
+    }
+    if rest.peek().is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// 自動切替の理由（`{理由}のため {p} に切り替えました` の `{理由}`）の短い表記
+fn short_switch_cause(cause: &str) -> &str {
+    match cause {
+        "バッテリー駆動" => "バッテリー",
+        "低電力モード" => "省電力",
+        "サーマル状態の悪化" => "発熱",
+        "サーマル状態が危険" => "発熱（危険）",
+        "メモリ逼迫" => "メモリ逼迫",
+        "メモリ逼迫（危険）" => "メモリ逼迫（危険）",
+        c if c.starts_with("推論レイテンシ") => "遅延超過",
+        c => c,
+    }
+}
+
+/// コアの `profile_reason`（長い理由文）をメニュー用の短い表記にする（OS 非依存。H-103）。
+/// 例: 「キャリブレーション推論 48ms から balanced を選びました」→「推論 48ms」。
+/// 知らない文言は [`SHORT_REASON_MAX_CHARS`] 文字で切り詰めて「…」を付ける。
+/// `profile` は現状の変換に使っていない（将来、プロファイル別の表記のために受け取る）
+pub fn short_profile_reason(_profile: &str, reason: &str) -> String {
+    let reason = reason.trim();
+    let short = if reason.starts_with("設定（profile.mode") {
+        Some("設定で固定".to_owned())
+    } else if reason.starts_with("メモリ上限") {
+        Some("メモリ上限".to_owned())
+    } else if let Some(rest) = reason.strip_prefix("キャリブレーション推論") {
+        // 「… 48ms から {p} を選びました」/「…は 39ms ですが、メモリ … に制限しました」
+        ms_value(rest).map(|ms| {
+            if reason.ends_with("に制限しました") {
+                format!("推論 {ms}ms・メモリ制限")
+            } else {
+                format!("推論 {ms}ms")
+            }
+        })
+    } else if reason.starts_with("実測なし") {
+        Some("実測なし".to_owned())
+    } else if reason.ends_with("軽量プロファイルにしました") {
+        Some("低メモリ".to_owned())
+    } else if reason.contains("読み込み中") {
+        Some("モデル読込中".to_owned())
+    } else if reason.starts_with("変換モデルが使えない") {
+        Some("モデルなし".to_owned())
+    } else if reason.contains("に切り替えました") {
+        reason.find("のため").map(|end| {
+            let causes: Vec<&str> = reason[..end].split('・').map(short_switch_cause).collect();
+            let joined = causes.join("・");
+            if joined.chars().count() > SHORT_REASON_MAX_CHARS && causes.len() > 2 {
+                format!("{}ほか", causes[..2].join("・"))
+            } else {
+                joined
+            }
+        })
+    } else {
+        None
+    };
+    truncate_chars(short.as_deref().unwrap_or(reason), SHORT_REASON_MAX_CHARS)
+}
+
+/// メニューに出す状態の行（選択不可の項目として並べる。各行は短く保つ）
 pub fn menu_lines(status: &StatusResult) -> Vec<String> {
     let mut lines = vec![format!(
         "プロファイル: {}（{}）",
-        status.profile, status.profile_reason
+        status.profile,
+        short_profile_reason(&status.profile, &status.profile_reason)
     )];
     lines.push(
         if status.llm {
@@ -81,7 +182,7 @@ pub fn menu_lines(status: &StatusResult) -> Vec<String> {
     });
     lines.push(format!("ユーザー辞書: {} 語", status.user_dict_entries));
     if status.config_error {
-        lines.push("設定ファイルの読み込みに失敗しました（以前の設定で動作中）".to_owned());
+        lines.push("設定エラー（以前の設定で動作中）".to_owned());
     }
     lines
 }
@@ -121,6 +222,9 @@ pub enum MenuCommand {
     RunVerify,
     /// 取得済みの更新を適用する（`apply-update.ps1` を新しいコンソールで起動。UAC が出る）
     ApplyUpdate,
+    /// 更新を手動で確認する（`nagi-settings.exe --section update --auto-check`。設定画面の更新セクションを開き、
+    /// 確認を自動で実行する。decisions.md H-100）
+    CheckUpdate,
 }
 
 impl MenuCommand {
@@ -135,6 +239,7 @@ impl MenuCommand {
             MenuCommand::OpenLogFolder => "log_folder",
             MenuCommand::RunVerify => "verify",
             MenuCommand::ApplyUpdate => "apply_update",
+            MenuCommand::CheckUpdate => "check_update",
         }
     }
 }
@@ -168,9 +273,13 @@ const ID_LOG_FOLDER: u32 = 6;
 const ID_VERIFY: u32 = 7;
 const ID_APPLY_UPDATE: u32 = 8;
 const ID_SETTINGS_GUI: u32 = 9;
+const ID_CHECK_UPDATE: u32 = 10;
 
 /// 設定画面の実行ファイル名（DLL と同じディレクトリに置く。`install.ps1` の `$PayloadFiles`）
 pub const SETTINGS_GUI_EXE: &str = "nagi-settings.exe";
+
+/// 「更新を確認…」で設定画面に渡す引数（更新セクションを開き、確認を自動で実行する）
+pub const CHECK_UPDATE_ARGUMENTS: &str = "--section update --auto-check";
 
 /// 操作 → メニュー項目の識別子
 pub fn command_id(command: MenuCommand) -> u32 {
@@ -184,6 +293,7 @@ pub fn command_id(command: MenuCommand) -> u32 {
         MenuCommand::OpenLogFolder => ID_LOG_FOLDER,
         MenuCommand::RunVerify => ID_VERIFY,
         MenuCommand::ApplyUpdate => ID_APPLY_UPDATE,
+        MenuCommand::CheckUpdate => ID_CHECK_UPDATE,
     }
 }
 
@@ -199,6 +309,7 @@ pub fn command_from_id(id: u32) -> Option<MenuCommand> {
         ID_LOG_FOLDER => Some(MenuCommand::OpenLogFolder),
         ID_VERIFY => Some(MenuCommand::RunVerify),
         ID_APPLY_UPDATE => Some(MenuCommand::ApplyUpdate),
+        ID_CHECK_UPDATE => Some(MenuCommand::CheckUpdate),
         _ => None,
     }
 }
@@ -292,7 +403,7 @@ impl MenuTargets {
     pub fn target(&self, command: MenuCommand) -> Option<&Path> {
         match command {
             MenuCommand::SetMode(_) => None,
-            MenuCommand::OpenSettingsGui => self.settings_gui.as_deref(),
+            MenuCommand::OpenSettingsGui | MenuCommand::CheckUpdate => self.settings_gui.as_deref(),
             MenuCommand::OpenSettings => self.settings_file.as_deref(),
             MenuCommand::OpenSettingsFolder => self.settings_dir.as_deref(),
             MenuCommand::OpenUserDictFolder => self.user_dict_dir.as_deref(),
@@ -408,6 +519,7 @@ pub fn menu_entries(
     entries.push(MenuEntry::Separator);
     let open_items = [
         (MenuCommand::OpenSettingsGui, "設定…"),
+        (MenuCommand::CheckUpdate, "更新を確認…"),
         (
             MenuCommand::OpenSettings,
             "設定ファイル（config.toml）を直接開く",
@@ -579,6 +691,135 @@ mod tests {
         assert_eq!(lines[1], "変換: 辞書のみ");
         assert_eq!(lines[2], "学習: 無効");
         assert_eq!(lines.len(), 5);
+        assert_eq!(lines[4], "設定エラー（以前の設定で動作中）");
+    }
+
+    #[test]
+    fn short_reasons_for_known_phrases() {
+        let cases = [
+            (
+                "キャリブレーション推論 48ms から balanced を選びました",
+                "推論 48ms",
+            ),
+            (
+                "キャリブレーション推論は 39ms ですが、メモリ 8192MB・4 コアのため light に制限しました",
+                "推論 39ms・メモリ制限",
+            ),
+            (
+                "実測なしのためハードウェアから balanced を選びました",
+                "実測なし",
+            ),
+            (
+                "メモリ 2048MB・1 コアのため軽量プロファイルにしました",
+                "低メモリ",
+            ),
+            (
+                "変換モデルを読み込み中です（辞書のみで動作中）",
+                "モデル読込中",
+            ),
+            ("変換モデルが使えないため辞書のみで動作します", "モデルなし"),
+            ("メモリ逼迫のため light に切り替えました", "メモリ逼迫"),
+            ("バッテリー駆動のため light に切り替えました", "バッテリー"),
+            ("低電力モードのため light に切り替えました", "省電力"),
+            ("サーマル状態の悪化のため light に切り替えました", "発熱"),
+            (
+                "サーマル状態が危険のため minimal に切り替えました",
+                "発熱（危険）",
+            ),
+            (
+                "メモリ逼迫（危険）のため minimal に切り替えました",
+                "メモリ逼迫（危険）",
+            ),
+            (
+                "推論レイテンシが目標（100ms）を超過のため light に切り替えました",
+                "遅延超過",
+            ),
+            (
+                "バッテリー駆動・低電力モード・サーマル状態の悪化のため light に切り替えました",
+                "バッテリー・省電力・発熱",
+            ),
+            (
+                "バッテリー駆動・低電力モードのため light に切り替えました",
+                "バッテリー・省電力",
+            ),
+            (
+                "バッテリー駆動・低電力モード・サーマル状態が危険・メモリ逼迫（危険）のため minimal に切り替えました",
+                "バッテリー・省電力ほか",
+            ),
+            (
+                "設定（profile.mode = quality）で固定されています",
+                "設定で固定",
+            ),
+            (
+                "メモリ上限 1500MB（2048MB 未満）のため balanced に制限しました",
+                "メモリ上限",
+            ),
+            (
+                "メモリ上限 500MB（800MB 未満）のため辞書のみで動作します",
+                "メモリ上限",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(
+                short_profile_reason("balanced", reason),
+                expected,
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_reason_is_truncated_by_chars() {
+        // 24 文字以下はそのまま
+        let exact: String = "あ".repeat(SHORT_REASON_MAX_CHARS);
+        assert_eq!(short_profile_reason("light", &exact), exact);
+        // 超えると 24 文字で切って「…」
+        let long = "未知の理由がとても長く書かれていてメニューが横に伸びてしまう文言";
+        let short = short_profile_reason("light", long);
+        assert_eq!(short.chars().count(), SHORT_REASON_MAX_CHARS + 1);
+        assert!(short.ends_with('…'));
+        assert!(long.starts_with(short.trim_end_matches('…')));
+        // 結合文字（濁点）の直前では切らない
+        let combining = format!(
+            "{}か\u{3099}あいう",
+            "あ".repeat(SHORT_REASON_MAX_CHARS - 1)
+        );
+        let short = short_profile_reason("light", &combining);
+        assert!(short.contains("か\u{3099}"), "{short}");
+        assert!(short.ends_with('…'));
+        // 絵文字（サロゲートペア相当の補助平面）も 1 文字として数える
+        let emoji = "😀".repeat(30);
+        assert_eq!(
+            short_profile_reason("light", &emoji).chars().count(),
+            SHORT_REASON_MAX_CHARS + 1
+        );
+    }
+
+    #[test]
+    fn menu_lines_stay_short_for_long_reasons() {
+        let reasons = [
+            "キャリブレーション推論は 39ms ですが、メモリ 8192MB・4 コアのため light に制限しました",
+            "バッテリー駆動・低電力モード・サーマル状態の悪化・メモリ逼迫のため minimal に切り替えました",
+            "メモリ上限 1500MB（2048MB 未満）のため balanced に制限しました",
+            "これは未知でとても長い理由文であり切り詰められるべきものです。まだまだ続きます",
+        ];
+        for reason in reasons {
+            let mut s = sample_status(None);
+            s.profile_reason = reason.into();
+            s.config_error = true;
+            s.llm = true;
+            for line in menu_lines(&s) {
+                assert!(line.chars().count() <= 48, "{line}");
+            }
+            let entries = menu_entries(None, Some(&s), &MenuTargets::default());
+            assert!(entries.iter().all(|e| match e {
+                MenuEntry::Info(l) => l.chars().count() <= 48,
+                _ => true,
+            }));
+        }
+        let mut s = sample_status(None);
+        s.profile_reason = "キャリブレーション推論 48ms から balanced を選びました".into();
+        assert_eq!(menu_lines(&s)[0], "プロファイル: balanced（推論 48ms）");
     }
 
     #[test]
@@ -614,6 +855,7 @@ mod tests {
             MenuCommand::OpenLogFolder,
             MenuCommand::RunVerify,
             MenuCommand::ApplyUpdate,
+            MenuCommand::CheckUpdate,
         ];
         let mut ids: Vec<u32> = commands.iter().map(|c| command_id(*c)).collect();
         for c in commands {
@@ -673,12 +915,13 @@ mod tests {
             })
             .collect();
         assert_eq!(checked, ["英数"]);
-        // 末尾の 6 項目は開く操作（順序込み）で、対象があるので全部選べる
+        // 末尾の 7 項目は開く操作（順序込み）で、対象があるので全部選べる
         let commands = command_entries(&entries);
         assert_eq!(
             commands[2..],
             [
                 (MenuCommand::OpenSettingsGui, true),
+                (MenuCommand::CheckUpdate, true),
                 (MenuCommand::OpenSettings, true),
                 (MenuCommand::OpenSettingsFolder, true),
                 (MenuCommand::OpenUserDictFolder, true),
@@ -687,8 +930,12 @@ mod tests {
             ]
         );
         assert!(matches!(
-            entries.iter().rev().nth(5),
+            entries.iter().rev().nth(6),
             Some(MenuEntry::Command { label, .. }) if label == "設定…"
+        ));
+        assert!(matches!(
+            entries.iter().rev().nth(5),
+            Some(MenuEntry::Command { label, .. }) if label == "更新を確認…"
         ));
         assert!(matches!(
             entries.iter().rev().nth(4),

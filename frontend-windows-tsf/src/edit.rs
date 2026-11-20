@@ -10,15 +10,16 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nagi_protocol::ProcessKeyResult;
-use nagi_windows::candidates::{AnchorSource, Rect, choose_anchor};
+use nagi_windows::candidates::{AnchorSource, Rect, choose_anchor_or_previous, needs_remeasure};
 use nagi_windows::preedit_style::AttrRun;
 use nagi_windows::reconvert::{RECONVERT_READ_LIMIT, eligible_text};
 use windows::Win32::Foundation::{E_FAIL, FALSE, RECT};
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfContext, ITfContextComposition, ITfEditSession,
     ITfEditSession_Impl, ITfInsertAtSelection, ITfRange, TF_AE_NONE, TF_ANCHOR_END,
-    TF_ANCHOR_START, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE,
-    TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_IAS_QUERYONLY, TF_SELECTION, TF_SELECTIONSTYLE,
+    TF_ANCHOR_START, TF_CONTEXT_EDIT_CONTEXT_FLAGS, TF_DEFAULT_SELECTION, TF_ES_ASYNC,
+    TF_ES_ASYNCDONTCARE, TF_ES_READ, TF_ES_READWRITE, TF_ES_SYNC, TF_IAS_QUERYONLY, TF_SELECTION,
+    TF_SELECTIONSTYLE,
 };
 use windows::core::{BOOL, Interface, Result, implement};
 
@@ -41,6 +42,14 @@ pub struct Env {
     pub atoms: Option<AttrAtoms>,
     /// 直近に測った composition（なければキャレット）の矩形（スクリーン座標）。候補ウィンドウの基準
     pub caret: Rc<Cell<Option<Rect>>>,
+    /// TSF のクライアント ID（再測定の編集セッションを要求するのに使う）
+    pub client_id: u32,
+    /// 同じ composition で直前に測れた矩形。composition の開始・終了とフォーカスの変更で捨てる
+    pub last_rect: Rc<Cell<Option<Rect>>>,
+    /// 編集セッション完了後の再測定が予定されている間は true（最初の候補表示を遅らせる判定に使う）
+    pub remeasure_pending: Rc<Cell<bool>>,
+    /// 再測定で `caret` を更新した後の呼び出し（候補ウィンドウの位置の更新）
+    pub on_remeasured: Rc<dyn Fn()>,
 }
 
 /// 実行の仕方
@@ -50,6 +59,8 @@ pub enum Timing {
     Sync,
     /// 文書ロックの空き次第（即時か後で）
     Deferred,
+    /// 現在の編集セッションの完了後（`TF_ES_ASYNC`。再測定用）
+    Async,
 }
 
 type Op = Box<dyn FnOnce(u32) -> Result<()>>;
@@ -89,6 +100,7 @@ pub fn run(
             | match timing {
                 Timing::Sync => TF_ES_SYNC.0,
                 Timing::Deferred => TF_ES_ASYNCDONTCARE.0,
+                Timing::Async => TF_ES_ASYNC.0,
             },
     );
     let hr = unsafe { context.RequestEditSession(client_id, &session, flags) }?;
@@ -259,11 +271,12 @@ fn text_ext(context: &ITfContext, ec: u32, range: &ITfRange) -> Option<Rect> {
     Some(to_rect(rc))
 }
 
-/// 候補ウィンドウの基準を測って `env.caret` に入れる。composition があれば入力部分の左端
-/// （先頭の点範囲 → composition 全体）、なければ（または測れなければ）選択範囲（キャレット）。
-/// どれも測れなければ `None`（マウス位置になる）
-fn measure_caret(context: &ITfContext, ec: u32, env: &Env) {
+/// 候補ウィンドウの基準を測って `env.caret` に入れ、由来を返す。composition があれば入力部分の左端
+/// （先頭の点範囲 → composition 全体）、なければ（または測れなければ）選択範囲（キャレット）、
+/// それも測れなければ同じ composition で直前に測れた矩形。どれも無ければ `None`（マウス位置になる）
+fn measure_caret(context: &ITfContext, ec: u32, env: &Env) -> AnchorSource {
     let current = env.composition.borrow().clone();
+    let composing = current.is_some();
     let (mut start, mut range) = (None, None);
     if let Some(c) = current
         && let Ok(whole) = unsafe { c.GetRange() }
@@ -286,9 +299,48 @@ fn measure_caret(context: &ITfContext, ec: u32, env: &Env) {
             .ok()
             .and_then(|r| text_ext(context, ec, &r))
     };
-    let chosen = choose_anchor(start, range, caret);
-    log_anchor_source(chosen.map_or(AnchorSource::Mouse, |(source, _)| source));
+    // 直前の矩形は composition の間だけ有効
+    let previous = if composing { env.last_rect.get() } else { None };
+    let chosen = choose_anchor_or_previous(start, range, caret, previous);
+    match chosen {
+        Some((AnchorSource::Previous, _)) | None => {}
+        Some((_, rect)) if composing => env.last_rect.set(Some(rect)),
+        Some(_) => {}
+    }
+    if !composing {
+        env.last_rect.set(None);
+    }
     env.caret.set(chosen.map(|(_, rect)| rect));
+    chosen.map_or(AnchorSource::Mouse, |(source, _)| source)
+}
+
+/// 最初の測定がマウス位置になったとき、編集セッションの完了後（読み取り専用・非同期）に測り直す。
+/// 測り直しも `Mouse` なら上限（`MAX_REMEASURE`）まで繰り返す。
+/// 測り終えたら `caret` を更新して `on_remeasured`（候補ウィンドウの位置更新）を呼ぶ
+fn request_remeasure(context: &ITfContext, env: &Env, attempt: u32) {
+    env.remeasure_pending.set(true);
+    let (ctx, env2) = (context.clone(), env.clone());
+    let result = run(context, env.client_id, Timing::Async, false, move |ec| {
+        let source = measure_caret(&ctx, ec, &env2);
+        if attempt == 0 {
+            crate::tsf_log::log(
+                "cand",
+                &format!("anchor remeasure source={}", source.as_str()),
+            );
+        }
+        let composing = env2.composition.borrow().is_some();
+        if needs_remeasure(source, composing, attempt + 1) {
+            request_remeasure(&ctx, &env2, attempt + 1);
+        } else {
+            env2.remeasure_pending.set(false);
+            (env2.on_remeasured)();
+        }
+        Ok(())
+    });
+    if result.is_err() {
+        env.remeasure_pending.set(false);
+        (env.on_remeasured)();
+    }
 }
 
 /// 基準の由来が変わったときだけ診断ログに出す（矩形の値は書かない）
@@ -310,6 +362,7 @@ fn apply_plan(
     plan: &EditPlan,
     start_at: Option<&ITfRange>,
 ) -> Result<()> {
+    let was_composing = env.composition.borrow().is_some();
     if let Some(n) = plan.delete_before {
         delete_before_caret(context, ec, n)?;
     }
@@ -326,7 +379,18 @@ fn apply_plan(
         } => set_preedit(context, ec, env, text, *cursor, attrs, start_at)?,
     }
     record_probe(plan);
-    measure_caret(context, ec, env);
+    // 新しい composition には前の矩形を持ち越さない
+    if !was_composing {
+        env.last_rect.set(None);
+    }
+    let source = measure_caret(context, ec, env);
+    log_anchor_source(source);
+    if needs_remeasure(source, env.composition.borrow().is_some(), 0) {
+        // 開始直後などレイアウトが未反映で測れない。セッション完了後に測り直す
+        request_remeasure(context, env, 0);
+    } else {
+        env.remeasure_pending.set(false);
+    }
     Ok(())
 }
 

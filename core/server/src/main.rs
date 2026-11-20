@@ -8,11 +8,15 @@
 //! データ取得: `imserver --install-data --data-dir <dir> [--model small|xsmall|none]`。辞書とモデルを
 //! 取得して終了する（JSON-RPC は起動しない）。進捗は標準出力に 1 行 1 JSON。
 //!
+//! 手動の更新確認（`docs/decisions.md` H-100）: `imserver --check-update [--stage-updates] [--update-dir <dir>]
+//! [--user-dir <dir>] [--data-dir <dir>]`。24 時間の間引きを無視して確認し、結果を標準出力に 1 行の JSON で出して終了する。
+//!
 //! Windows の自動更新（`docs/decisions.md` H-95）: `--stage-updates`（起動フラグ。新版を取得・検証して
 //! `<user-dir>/update/` に保存）と、`imserver --apply-update-prepare --update-dir <dir> --out <dir>`
 //! （`apply-update.ps1` が昇格後に実行する再検証。成功は終了コード 0 + 標準出力に版数、失敗は非 0 + 標準エラーに理由）。
 
 use nagi_server::install_data::{self, parse_install_args};
+use nagi_server::update_manual::{parse_check_args, run_check_update};
 use nagi_server::update_stage::{parse_prepare_args, prepare_apply};
 use nagi_server::{Server, build, parse_args};
 use std::io::{BufReader, BufWriter};
@@ -49,6 +53,22 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             };
+        }
+        Ok(None) => {}
+        Err(message) => {
+            nagi_server::elog!("imserver: {message}");
+            return ExitCode::from(2);
+        }
+    }
+    // 手動の更新確認（H-100）: 間引きなしで確認し、結果を 1 行の JSON で出して終了する
+    match parse_check_args(std::env::args().skip(1)) {
+        Ok(Some(options)) => {
+            // 親（設定画面）が終了したら、確認の途中でも終了する
+            if let Some(pid) = options.parent_pid {
+                nagi_parent_watch::spawn(pid, || std::process::exit(0));
+            }
+            println!("{}", run_check_update(&options).to_json_line());
+            return ExitCode::SUCCESS;
         }
         Ok(None) => {}
         Err(message) => {

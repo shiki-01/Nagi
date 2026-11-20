@@ -7,7 +7,7 @@
   までを行います。最後に報告用の「結果サマリ（コピー用）」を出力します。
   手順書: docs/windows-verification.md の「堅牢性・環境の簡単な検証（verify.ps1）」
 
-    status                  現在の状態の要約（DLL を読み込んだプロセス・imserver の数/パス/.old/親 PID と孤児の検出・
+    status                  現在の状態の要約（DLL を読み込んだプロセスと旧版（.old）の DLL を使うホスト・imserver の数/パス/.old/親 PID と孤児の検出・
                             VERSION・tsf.log 末尾）
     crash [-Repeat N]       imserver を強制終了し、自動再起動とセッション復元を確認する。
                             -Repeat 6 で連続 6 回終了させ、minimal プロファイルへの移行を確認する
@@ -220,6 +220,57 @@ function Show-ImserverStatus {
     }
 }
 
+# DLL を読み込んでいるホストが旧版（.old・現行と別パス）を使っていないかを表示する。
+# tasklist /m はモジュール名しか出さないので、Get-Process の .Modules から FileName を読む。
+# 昇格が必要でモジュールを読めないプロセスは「確認できない」（WARN にしない）
+function Show-DllVersionStatus {
+    $currentPath = Join-Path $InstallDir 'nagi_windows_tsf.dll'
+    try { $currentPath = [System.IO.Path]::GetFullPath($currentPath) } catch { }
+    $rows = @(& tasklist.exe /m nagi_windows_tsf* /fo csv /nh 2>$null | Where-Object { $_ -like '"*' })
+    $pids = New-Object System.Collections.ArrayList
+    foreach ($row in $rows) {
+        $f = @($row -split '","')
+        if ($f.Count -ge 2) {
+            $n = 0
+            if ([int]::TryParse($f[1].Trim('"'), [ref]$n)) { [void]$pids.Add($n) }
+        }
+    }
+    if ($pids.Count -eq 0) { return }
+    $oldHosts = New-Object System.Collections.ArrayList
+    $unknownHosts = New-Object System.Collections.ArrayList
+    foreach ($id in $pids) {
+        $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+        if ($null -eq $proc) { continue }
+        $label = $proc.ProcessName + '(' + $id + ')'
+        $mods = $null
+        try { $mods = @($proc.Modules | Where-Object { $_.ModuleName -like 'nagi_windows_tsf*' }) }
+        catch { [void]$unknownHosts.Add($label); continue }
+        $isOld = $false
+        foreach ($m in $mods) {
+            $file = [string]$m.FileName
+            if ($file -like '*.old') { $isOld = $true }
+            else {
+                $full = $file
+                try { $full = [System.IO.Path]::GetFullPath($file) } catch { }
+                if ($full -ne $currentPath) { $isOld = $true }
+            }
+        }
+        if ($isOld) { [void]$oldHosts.Add($label) }
+    }
+    if ($oldHosts.Count -gt 0) {
+        foreach ($h in $oldHosts) {
+            Add-Result 'DLL の版' 'WARN' ('旧版の DLL を使用中: ' + $h + ' — このアプリを閉じて開き直すと新版になります') @()
+        }
+        Add-Result 'DLL の版/一覧' 'WARN' ('旧版の DLL を使用中のホスト ' + $oldHosts.Count + ' 件: ' + ($oldHosts -join ', ')) @()
+    }
+    else {
+        Add-Result 'DLL の版' 'OK' 'すべてのホストが新版の DLL' @()
+    }
+    if ($unknownHosts.Count -gt 0) {
+        Add-Result 'DLL の版/確認できない' 'INFO' ('確認できない（管理者権限のアプリ）: ' + ($unknownHosts -join ', ') + '。管理者として実行した PowerShell なら確認できます') @()
+    }
+}
+
 # ---- status ----
 
 function Invoke-Status {
@@ -239,6 +290,8 @@ function Invoke-Status {
     $loaded = @($listed | Where-Object { $_ -match '\.exe' -and $_ -notmatch '^\s*(Image Name|イメージ名)' })
     if ($loaded.Count -gt 0) { Add-Result 'DLL の読み込み' 'OK' ($loaded.Count.ToString() + ' プロセス') @() }
     else { Add-Result 'DLL の読み込み' 'WARN' 'DLL を読み込んだプロセスがありません（Nagi に切り替えて入力すると読み込まれます）' @() }
+
+    Show-DllVersionStatus
 
     Show-ImserverStatus
 
@@ -443,7 +496,7 @@ function Invoke-Sleep {
     }
     $dups = @($byPid.Keys | Where-Object { $byPid[$_] -gt 1 })
     if ($dups.Count -eq 0) { Add-Result 'sleep/二重検出' 'OK' '同じホストでの再起動要求は 1 回だけ' @() }
-    else { Add-Result 'sleep/二重検出' 'INFO' ('同じホスト（pid=' + ($dups -join ',') + '）で復帰の検出が複数回ある。explorer.exe のようにホスト内に複数のスレッドマネージャがあると、エンジンもその数だけ起動するため設計どおり（NG にしない）') @() }
+    else { Add-Result 'sleep/二重検出' 'INFO' ('同じホスト（pid=' + ($dups -join ',') + '）で復帰の検出が複数回ある。エンジンはプロセスに 1 つ（static ENGINE）なので、スレッドマネージャが複数あっても再起動要求は 1 回のはず。複数回出る場合は 60 秒を超えて再度スリープしていないか、tsf.log を添えて報告（NG にはしない）') @() }
 
     Start-Sleep -Seconds 5
     $now = Get-ImserverProcesses
@@ -455,7 +508,7 @@ function Invoke-Sleep {
     $multi = @($groups | Where-Object { $_.Count -gt 1 })
     if ($multi.Count -eq 0) { Add-Result 'sleep/同一ホストの複数エンジン' 'OK' 'ホスト 1 つにつき imserver は 1 つだけ' @() }
     else {
-        # explorer.exe など、ホスト内にスレッドマネージャが複数あると Activate もエンジンも複数になる（設計どおり）
+        # エンジンはプロセスに 1 つのはず。複数いるのは、更新前の旧版（.old）の混在やホストの再起動の過渡状態が考えられる
         $desc = @($multi | ForEach-Object {
             $parentName = '?'
             try { $parentName = (Get-Process -Id ([int]$_.Name) -ErrorAction Stop).ProcessName } catch { }

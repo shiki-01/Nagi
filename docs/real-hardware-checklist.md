@@ -126,7 +126,13 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - レイテンシベンチ（p95）: 設計書の目標値（キー入力→ひらがな反映 p95 < 16ms 等）を実機で計測できると良い
 - `cargo xtask fetch-model` でモデルを取得した状態で `cargo run --release -p nagi-server --features llama --bin nagi-eval -- --data-dir ../data` を実行すると、精度・レイテンシの計測結果が出る（G-11の数値は評価環境（クラウドサンドボックス）でのもので、実機での再計測が無い）
 
-## 8. Windows フロント（TSF、H-39〜H-43）— 実アプリでの実機検証は未実施（E2E 17 件は標準 EDIT ホスト上で成功）
+## 8. Windows フロント（TSF、H-39〜H-101）— 0.1.14 の実機で主要機能を確認済み（2026-11-20）。残りは下の未確認一覧
+
+> **実機確認の状況（2026-11-20、ユーザー報告・0.1.14）**: 次の項目は Windows 実機で動作を確認した（根拠はユーザー報告。ログ・計測値は未取得）:
+> 導入（`install.ps1`）、設定 GUI、候補の重複・位置、プロファイル判定、キー応答、モード切替、ライブ変換、右クリックメニュー、imserver の寿命管理、スタートメニューのショートカット。
+>
+> **未確認の一覧（実機）**: 自動更新（H-95。取得・署名検証・UAC 1 回での適用・トースト）、更新時の旧エンジン停止（`imserver.exe.old` が残らないこと）、`uninstall.ps1`、標準ユーザーでの動作、VC++ 再頒布可能パッケージなしの環境、ARM64、SmartScreen の出方、曖昧入力の Windows 実機（§9）。
+> 加えて、下の個別項目のうち `[ ]` のものは個別には未確認（上の「確認した」項目に含まれる範囲は個別の `[x]` に反映した）。
 
 > **E2E による自動検証（2026-11）**: `windows-e2e` ワークフロー（windows-latest）で、SendInput → TSF → IME → 入力欄の経路を通した
 > E2E 17 件が成功している（[`docs/ui-testing.md`](ui-testing.md)）。この E2E は標準の EDIT コントロールをホストにした CI 上の検証で、
@@ -135,7 +141,7 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 
 `frontend-windows/`（`nagi-windows`）と `frontend-windows-tsf/`（`nagi-windows-tsf`）は Linux 上で fmt / clippy / test と
 `x86_64-pc-windows-gnu` の `cargo check` / `clippy` が通り、CI の E2E（標準 EDIT ホスト上、上記）でも動いたが、
-実アプリ（メモ帳・ブラウザ・Office 等）を使った Windows 実機での検証は未実施。
+実アプリでの Windows 実機検証は 0.1.14 で主要機能のみ実施した（上記。ブラウザ・Office・UWP などの個別確認は未了）。
 以下は Windows 10 22H2 以降 / 11 (x64) の実機で確認する項目。確認したら結果と日付を書き込むこと。
 検証の進め方・コマンド・記録方法は [`docs/windows-verification.md`](windows-verification.md)。
 
@@ -146,10 +152,10 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] 子プロセス起動時に `CREATE_NO_WINDOW` でコンソールウィンドウが出ない
 
 ### 8.2 登録・読み込み
-- [ ] 管理者権限の `regsvr32 nagi_windows_tsf.dll` が成功し、設定の「言語と地域」に入力方式として出る
+- [x] 管理者権限の `regsvr32 nagi_windows_tsf.dll` が成功し、設定の「言語と地域」に入力方式として出る（E2E 済: 登録・Activate。実機: 0.1.14 の導入で入力方式として使えた。ユーザー報告 2026-11-20）
 - [ ] `regsvr32 /u` で登録が消える（レジストリに残骸がない）
-- [ ] ホストアプリ（メモ帳・ブラウザ・VS Code・Office）で DLL が読み込まれ、アンロード（`DllCanUnloadNow`）でホストが落ちない
-- [ ] DLL と同じディレクトリの imserver が起動する（配置は `%ProgramFiles%\Nagi`、H-42）。データは `%APPDATA%\Nagi\data`
+- [ ] ホストアプリ（メモ帳・ブラウザ・VS Code・Office）で DLL が読み込まれ、アンロード（`DllCanUnloadNow`）でホストが落ちない（E2E 済: 標準 EDIT ホスト。実アプリのうち入力できたものは 0.1.14 で動作したが、アプリごとの確認は未記録）
+- [x] DLL と同じディレクトリの imserver が起動する（配置は `%ProgramFiles%\Nagi`、H-42）。データは `%APPDATA%\Nagi\data`（E2E 済: imserver の自動起動。実機: 0.1.14 で確認、ユーザー報告 2026-11-20）
 
 ### 8.3 キー入力・composition
 - [ ] ローマ字入力でひらがなが composition として表示され、Enter で確定、Esc で取り消せる（E2E 済: 標準 EDIT ホスト上。実アプリでは未確認）
@@ -162,8 +168,8 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
   - 確認方法: `verify.ps1 sleep` → スリープ → `verify.ps1 sleep -After`（`[engine] restart requested (resume: …)` の検出経路と二重起動なしを判定）
 - [x] ~~ライブ変換・LLM 結果の差し替えが「次のキー入力まで画面に出ない」~~ → H-41 で隠しウィンドウ + PostMessage により解消（実機の確認は 8.5b）
 - [ ] キャレット位置の設定（`ShiftEnd`）。確定後にカーソルが文末に来る
-- [ ] **右クリックメニュー（H-96）**: 入力インジケーター（「あ」）を右クリックすると、ひらがな / 英数・状態の行（グレー）・設定を開く・フォルダ・verify・（更新があれば）更新を適用 が出る。1 回の右クリックでメニューは 1 つだけ（3 重の `OnClick` で重ならない）。項目を選ぶと動作し、外側をクリック / Esc で閉じる。閉じた後、入力中のアプリのフォーカスが失われない。tsf.log に `[langbar] popup menu shown entries=N` と `selected id=N` / `dismissed`
-- [ ] **imserver の数（H-96）**: タスクマネージャー（詳細）の imserver が、Nagi に切り替えて入力したアプリの数だけに限られる（入力しないアプリ・バックグラウンドの WebView2 等では増えない）。入力したアプリを閉じると対応する imserver が消える（ホストを強制終了しても消える）。`verify.ps1 status` で孤児（親が存在しない）の WARN が出ない
+- [x] **右クリックメニュー（H-96。0.1.14 の実機で確認、ユーザー報告 2026-11-20）**: 入力インジケーター（「あ」）を右クリックすると、ひらがな / 英数・状態の行（グレー）・設定を開く・フォルダ・verify・（更新があれば）更新を適用 が出る。1 回の右クリックでメニューは 1 つだけ（3 重の `OnClick` で重ならない）。項目を選ぶと動作し、外側をクリック / Esc で閉じる。閉じた後、入力中のアプリのフォーカスが失われない。tsf.log に `[langbar] popup menu shown entries=N` と `selected id=N` / `dismissed`
+- [x] **imserver の数（H-96。0.1.14 の実機で確認、ユーザー報告 2026-11-20）**: タスクマネージャー（詳細）の imserver が、Nagi に切り替えて入力したアプリの数だけに限られる（入力しないアプリ・バックグラウンドの WebView2 等では増えない）。入力したアプリを閉じると対応する imserver が消える（ホストを強制終了しても消える）。`verify.ps1 status` で孤児（親が存在しない）の WARN が出ない
 - [ ] 更新を適用した後（`apply-update.ps1`）、`imserver.exe.old` のプロセスが残らない（旧エンジンは止められ、新しい exe で自動再起動する）
 
 ### 8.4 キー割り当て
@@ -215,6 +221,7 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] ボタンの表示とトレイ・英数キー・半角/全角キーでの切り替えの同期（往復して反転し続けない）。エンジン停止中（接続前）のメニュー（「変換エンジンに接続していません」）と、開いたときの待ち（`get_status` の同期呼び出し、最大 250ms）が気にならないか
 - [ ] `GetIcon` の `HICON` を言語バーが破棄するか（長時間・多数回のモード切り替えで GDI オブジェクトが増え続けないか。タスクマネージャーの GDI オブジェクト数）。DPI 150/200% でアイコンが滲まない
 - [ ] 「設定ファイル（config.toml）を直接開く」（旧「設定を開く（config.toml）…」）: `config.toml`（`get_status` の `config_path`）がメモ帳で開く。ファイルが無いときの作成の確認。`config_path` が無いとき項目が灰色
+- [ ] 右クリックメニューの状態行が短い（H-103）: 「プロファイル: balanced（推論 48ms）」のように理由が短い表記で、メニュー幅が横に長すぎない。メモリ逼迫などで切り替わった後も「（メモリ逼迫）」等の短い表記。詳細な理由は `tsf.log` の `[engine] notify … profile_changed` で確認できる
 - [ ] 右クリックメニューの開く項目（H-93。`ITfMenu` の平坦な項目 5 行）: 「設定フォルダを開く」でエクスプローラーが `%APPDATA%\Nagi` を開く。「ユーザー辞書フォルダを開く」が `user_dict` があればそれ、無ければ `%APPDATA%\Nagi` を開く。「ログフォルダを開く」が `%LOCALAPPDATA%\Nagi\logs` を開く。「状態を確認（verify.ps1）」が新しいコンソールで `verify.ps1 status` を実行し、終了後もコンソールが閉じない（`-NoExit`。ExecutionPolicy で止まらない）。対象のフォルダ・`verify.ps1` が無い環境では該当項目が灰色（フォルダは作られない）。開けなかったときは `tsf.log` に `[menu] open failed kind=… code=…` が出る。開く操作の前後で入力中の文字列・モードが変わらない
 - [ ] **設定画面（H-97。`nagi-settings.exe`。Linux では HTTP ハンドラ・実 imserver との統合テストのみ。Windows 実機で一度も動かしていない）**:
   - 右クリック → 「設定…」で既定のブラウザに設定ページが開く（黒いコンソール窓が出ない。タスクマネージャーに `nagi-settings.exe` と、その子の `imserver.exe` が 1 つずつ）。`nagi-settings.exe` が DLL と同じディレクトリに無いと「設定…」が灰色。起動に失敗したら `tsf.log` に `[menu] open failed kind=settings_gui code=…`。スタートメニューの「Nagi 設定」でも同じ画面が開く

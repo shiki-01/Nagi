@@ -373,6 +373,8 @@ pub enum AnchorSource {
     Range,
     /// 選択範囲（キャレット）
     Caret,
+    /// 今回は測れず、同じ composition で直前に測れた矩形
+    Previous,
     /// いずれも測れず、マウス位置
     Mouse,
 }
@@ -384,9 +386,41 @@ impl AnchorSource {
             AnchorSource::Start => "start",
             AnchorSource::Range => "range",
             AnchorSource::Caret => "caret",
+            AnchorSource::Previous => "previous",
             AnchorSource::Mouse => "mouse",
         }
     }
+}
+
+/// 再測定（編集セッション完了後の読み取り）の最大回数。1 回の入力あたり
+pub const MAX_REMEASURE: u32 = 2;
+
+/// 測定の結果、編集セッション完了後に測り直すべきか。マウス位置にフォールバックしていて、
+/// composition が続いており、再測定が上限（`MAX_REMEASURE`）に達していないとき。
+/// `attempt` はこれまでの再測定の回数（最初の測定の直後は 0）
+pub fn needs_remeasure(source: AnchorSource, composing: bool, attempt: u32) -> bool {
+    source == AnchorSource::Mouse && composing && attempt < MAX_REMEASURE
+}
+
+/// 最初の候補表示を、再測定が済むまで遅らせるか。位置が未確定（測れていない）で
+/// 再測定が予定されているときだけ遅らせる（一瞬マウス位置に出てから動くのを避ける）
+pub fn should_defer_show(anchor_known: bool, remeasure_pending: bool) -> bool {
+    !anchor_known && remeasure_pending
+}
+
+/// `choose_anchor` に、直前に測れた矩形（同じ composition のもの。呼び出し側が composition の終了・
+/// フォーカス変更で捨てる）のフォールバックを足したもの。使えなければ `None`（マウス位置）
+pub fn choose_anchor_or_previous(
+    start: Option<Rect>,
+    range: Option<Rect>,
+    caret: Option<Rect>,
+    previous: Option<Rect>,
+) -> Option<(AnchorSource, Rect)> {
+    choose_anchor(start, range, caret).or_else(|| {
+        previous
+            .filter(usable_rect)
+            .map(|r| (AnchorSource::Previous, r))
+    })
 }
 
 /// 測った矩形として使えるか（ゼロ矩形や高さのない矩形は測定失敗とみなす。
@@ -700,6 +734,64 @@ mod tests {
     fn no_work_area_means_no_clamping() {
         let p = place_window(caret(5000, 5000), SIZE, &[]);
         assert_eq!(p.origin, Point { x: 5000, y: 5022 });
+    }
+
+    #[test]
+    fn previous_rect_is_used_only_when_nothing_was_measured() {
+        let prev = Rect {
+            left: 10,
+            top: 20,
+            right: 10,
+            bottom: 40,
+        };
+        let now = Rect {
+            left: 50,
+            top: 20,
+            right: 50,
+            bottom: 40,
+        };
+        assert_eq!(
+            choose_anchor_or_previous(Some(now), None, None, Some(prev)),
+            Some((AnchorSource::Start, now))
+        );
+        assert_eq!(
+            choose_anchor_or_previous(None, Some(Rect::default()), None, Some(prev)),
+            Some((AnchorSource::Previous, prev))
+        );
+        // 前回も使えない（無い・ゼロ矩形）ならマウス位置
+        assert_eq!(choose_anchor_or_previous(None, None, None, None), None);
+        assert_eq!(
+            choose_anchor_or_previous(None, None, None, Some(Rect::default())),
+            None
+        );
+        assert_eq!(AnchorSource::Previous.as_str(), "previous");
+    }
+
+    #[test]
+    fn remeasure_only_when_mouse_composing_and_under_limit() {
+        assert!(needs_remeasure(AnchorSource::Mouse, true, 0));
+        assert!(needs_remeasure(
+            AnchorSource::Mouse,
+            true,
+            MAX_REMEASURE - 1
+        ));
+        assert!(!needs_remeasure(AnchorSource::Mouse, true, MAX_REMEASURE));
+        assert!(!needs_remeasure(AnchorSource::Mouse, false, 0));
+        for s in [
+            AnchorSource::Start,
+            AnchorSource::Range,
+            AnchorSource::Caret,
+            AnchorSource::Previous,
+        ] {
+            assert!(!needs_remeasure(s, true, 0));
+        }
+    }
+
+    #[test]
+    fn defer_first_show_only_while_remeasure_pending_without_anchor() {
+        assert!(should_defer_show(false, true));
+        assert!(!should_defer_show(true, true));
+        assert!(!should_defer_show(false, false));
     }
 
     #[test]

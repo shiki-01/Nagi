@@ -87,7 +87,7 @@ fn should_check(state_path: &Path) -> bool {
 }
 
 /// 確認した時刻を記録する（一時ファイル経由で原子的に）。失敗しても致命的ではないので無視する
-fn record_checked(state_path: &Path) {
+pub(crate) fn record_checked(state_path: &Path) {
     let state = CheckState {
         last_checked_unix: unix_now(),
     };
@@ -114,13 +114,13 @@ pub(crate) fn parse_version(v: &str) -> (u64, u64, u64) {
 /// マニフェストを実際に HTTP で取得する（既定のタイムアウト 5 秒）。
 /// feature `update-check` が無効なビルド（iOS の XCFramework 等）では常にエラー（= 確認しない）
 #[cfg(not(feature = "update-check"))]
-fn fetch_manifest(_url: &str) -> Result<Manifest, String> {
+pub(crate) fn fetch_manifest(_url: &str) -> Result<Manifest, String> {
     Err("update-check feature が無効です".to_string())
 }
 
 /// マニフェストを実際に HTTP で取得する（既定のタイムアウト 5 秒）
 #[cfg(feature = "update-check")]
-fn fetch_manifest(url: &str) -> Result<Manifest, String> {
+pub(crate) fn fetch_manifest(url: &str) -> Result<Manifest, String> {
     use std::time::Duration;
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(5))

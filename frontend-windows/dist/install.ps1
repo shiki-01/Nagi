@@ -147,6 +147,8 @@ function New-StartMenuShortcuts([string]$TargetInstallDir) {
         # メモ帳を開く。無いファイルはメモ帳が作成を尋ねる
         $items = @(
             @{ Name = 'Nagi 設定'; Target = $settingsGui; Arguments = ''; Minimized = $false },
+            # 更新を手動で確認する（設定画面の更新セクションを開き、確認を自動で実行する。H-100）
+            @{ Name = 'Nagi 更新の確認'; Target = $settingsGui; Arguments = '--section update --auto-check'; Minimized = $false },
             @{ Name = 'Nagi 設定ファイル（config.toml）'; Target = $cmd; Arguments = '/c start "" notepad.exe "%APPDATA%\Nagi\config.toml"'; Minimized = $true },
             @{ Name = 'Nagi 設定フォルダ'; Target = '%APPDATA%\Nagi'; Arguments = ''; Minimized = $false },
             @{ Name = 'Nagi ログフォルダ'; Target = '%LOCALAPPDATA%\Nagi\logs'; Arguments = ''; Minimized = $false },

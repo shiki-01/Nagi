@@ -8,6 +8,7 @@ use nagi_protocol::settings::{
     SettingChange, SettingsSnapshot, UpdateSettingsParams, UpdateSettingsResult,
 };
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -47,6 +48,35 @@ impl BackendError {
     }
 }
 
+/// 更新確認の結果の種別（`imserver --check-update` の `status`。`docs/decisions.md` H-100）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateStatus {
+    /// 最新版を使っている
+    UpToDate,
+    /// 新しい版がある（取得していない）
+    Available,
+    /// 新しい版を取得・検証して保存済み（適用できる）
+    Staged,
+    /// 確認または取得に失敗した
+    Error,
+}
+
+/// 更新確認の結果（`imserver --check-update` が標準出力に出す 1 行の JSON と同じ形）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateCheck {
+    /// 現在の版
+    pub current: String,
+    /// マニフェストの最新版（取得できなければ `None`）
+    pub latest: Option<String>,
+    /// 結果の種別
+    pub status: UpdateStatus,
+    /// リリースノートの URL
+    pub notes_url: Option<String>,
+    /// 失敗の理由（日本語）
+    pub error: Option<String>,
+}
+
 /// 設定画面が使うコアの操作
 pub trait SettingsBackend {
     /// 設定項目と現在値
@@ -60,6 +90,11 @@ pub trait SettingsBackend {
     fn clear_learning(&mut self) -> Result<(), BackendError>;
     /// 設定ファイル（`config.toml`）の場所。決まっていなければ `None`
     fn config_path(&mut self) -> Result<Option<String>, BackendError>;
+    /// 更新を確認する（間引きなしの一回限りの動作。新版があれば取得・署名検証まで行う）
+    fn check_update(&mut self) -> Result<UpdateCheck, BackendError>;
+    /// 取得済みの更新を適用する（`apply-update.ps1` を新しいコンソールで起動する固定の動作。
+    /// 引数・パスは呼び出し側から受け取らない。昇格（UAC）はスクリプトが行う）
+    fn apply_update(&mut self) -> Result<(), BackendError>;
 }
 
 impl SettingsBackend for Box<dyn SettingsBackend> {
@@ -80,6 +115,14 @@ impl SettingsBackend for Box<dyn SettingsBackend> {
 
     fn config_path(&mut self) -> Result<Option<String>, BackendError> {
         (**self).config_path()
+    }
+
+    fn check_update(&mut self) -> Result<UpdateCheck, BackendError> {
+        (**self).check_update()
+    }
+
+    fn apply_update(&mut self) -> Result<(), BackendError> {
+        (**self).apply_update()
     }
 }
 
@@ -184,6 +227,10 @@ pub struct ImserverSpec {
     pub user_dir: Option<PathBuf>,
     /// 親（この設定画面）の PID。落ちたら imserver も終了する（Windows のみ有効）
     pub parent_pid: u32,
+    /// 更新の保存先（`--update-dir`。Windows は `%LOCALAPPDATA%\Nagi\update`。`None` なら imserver の既定）
+    pub update_dir: Option<PathBuf>,
+    /// `apply-update.ps1` の場所（この設定画面の exe と同じディレクトリ）。`None` なら適用できない
+    pub apply_script: Option<PathBuf>,
 }
 
 impl ImserverSpec {
@@ -203,12 +250,148 @@ impl ImserverSpec {
         args.push(self.parent_pid.to_string());
         args
     }
+
+    /// 更新確認（`imserver --check-update`）の起動引数。新版があれば取得・検証・保存まで行う
+    /// （`--stage-updates`。`--no-llm` は不要: JSON-RPC を起動しない一回限りの動作）
+    pub fn check_update_arguments(&self) -> Vec<String> {
+        let mut args = vec!["--check-update".to_owned(), "--stage-updates".to_owned()];
+        if let Some(dir) = &self.update_dir {
+            args.push("--update-dir".to_owned());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+        if let Some(dir) = &self.user_dir {
+            args.push("--user-dir".to_owned());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+        if let Some(dir) = &self.data_dir {
+            args.push("--data-dir".to_owned());
+            args.push(dir.to_string_lossy().into_owned());
+        }
+        args.push("--parent-pid".to_owned());
+        args.push(self.parent_pid.to_string());
+        args
+    }
+}
+
+/// 更新確認の最長時間（マニフェストの取得 + 配布物の取得・検証）
+const CHECK_UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// 標準出力の最後の空でない行を [`UpdateCheck`] として読む
+pub fn parse_update_output(stdout: &str) -> Result<UpdateCheck, BackendError> {
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .ok_or_else(|| BackendError::transport("更新の確認結果を取得できませんでした"))?;
+    serde_json::from_str(line)
+        .map_err(|_| BackendError::transport("更新の確認結果を解釈できませんでした"))
+}
+
+/// `imserver --check-update` を子プロセスとして実行し、結果を読む（タイムアウトなら強制終了）
+fn run_check_update(spec: &ImserverSpec, timeout: Duration) -> Result<UpdateCheck, BackendError> {
+    let mut command = Command::new(&spec.exe);
+    command
+        .args(spec.check_update_arguments())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_window(&mut command);
+    let mut child = command.spawn().map_err(|e| {
+        BackendError::transport(format!(
+            "更新の確認を起動できません（{}）: {}",
+            e.kind(),
+            spec.exe.display()
+        ))
+    })?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        return Err(BackendError::transport("更新の確認の出力を開けません"));
+    };
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        let _ = tx.send(text);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(text) => {
+            let _ = child.wait();
+            parse_update_output(&text)
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(BackendError::transport(
+                "更新の確認が時間内に終わりませんでした。ネットワークの状態を確認して、もう一度お試しください",
+            ))
+        }
+    }
+}
+
+/// コンソールアプリの子プロセスの黒い窓を出さない（Windows のみ）
+fn no_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+/// `apply-update.ps1` を起動する PowerShell の引数（実行後もコンソールを閉じない。
+/// `frontend-windows` の `apply_update_arguments` と同じ。昇格はスクリプトが行う）
+pub fn apply_update_arguments(script: &std::path::Path) -> Vec<String> {
+    vec![
+        "-NoProfile".to_owned(),
+        "-ExecutionPolicy".to_owned(),
+        "Bypass".to_owned(),
+        "-NoExit".to_owned(),
+        "-File".to_owned(),
+        script.to_string_lossy().into_owned(),
+    ]
+}
+
+/// `apply-update.ps1` を新しいコンソールで起動する（待たない）。Windows 以外では使えない
+fn launch_apply_script(script: &std::path::Path) -> Result<(), BackendError> {
+    if !cfg!(windows) {
+        return Err(BackendError::transport(
+            "更新の適用は Windows でのみ行えます",
+        ));
+    }
+    if !script.is_file() {
+        return Err(BackendError::transport(
+            "apply-update.ps1 が見つかりません（Nagi を入れ直してください）",
+        ));
+    }
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(apply_update_arguments(script))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // 新しいコンソールで起動する（スクリプトの進捗・UAC の結果をそこで見せる）
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        command.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    let mut child = command.spawn().map_err(|e| {
+        BackendError::transport(format!("更新の適用を起動できません（{}）", e.kind()))
+    })?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// 子プロセスの `imserver` を相手にするバックエンド
 pub struct ImserverBackend {
     client: RpcClient,
     child: Child,
+    spec: ImserverSpec,
 }
 
 impl ImserverBackend {
@@ -220,13 +403,8 @@ impl ImserverBackend {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // GUI アプリから起動するので、imserver（コンソールアプリ）の黒い窓を出さない
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
+        // GUI アプリから起動するので、imserver（コンソールアプリ）の黒い窓を出さない
+        no_window(&mut command);
         let mut child = command.spawn().map_err(|e| {
             BackendError::transport(format!(
                 "設定エンジン（imserver）を起動できません（{}）: {}",
@@ -250,6 +428,7 @@ impl ImserverBackend {
         let mut backend = Self {
             client: RpcClient::new(Box::new(stdin), rx),
             child,
+            spec: spec.clone(),
         };
         let params = InitializeParams {
             protocol_version: nagi_protocol::PROTOCOL_VERSION,
@@ -317,6 +496,19 @@ impl SettingsBackend for ImserverBackend {
                 .call(method::GET_STATUS, json!({}), REQUEST_TIMEOUT)?;
         Ok(status.config_path.filter(|p| !p.is_empty()))
     }
+
+    fn check_update(&mut self) -> Result<UpdateCheck, BackendError> {
+        run_check_update(&self.spec, CHECK_UPDATE_TIMEOUT)
+    }
+
+    fn apply_update(&mut self) -> Result<(), BackendError> {
+        let script = self
+            .spec
+            .apply_script
+            .as_deref()
+            .ok_or_else(|| BackendError::transport("apply-update.ps1 の場所が分かりません"))?;
+        launch_apply_script(script)
+    }
 }
 
 /// 起動に失敗したときのバックエンド。画面は開き、失敗の理由を表示する
@@ -342,6 +534,14 @@ impl SettingsBackend for FailedBackend {
     }
 
     fn config_path(&mut self) -> Result<Option<String>, BackendError> {
+        Err(self.error.clone())
+    }
+
+    fn check_update(&mut self) -> Result<UpdateCheck, BackendError> {
+        Err(self.error.clone())
+    }
+
+    fn apply_update(&mut self) -> Result<(), BackendError> {
         Err(self.error.clone())
     }
 }
@@ -421,10 +621,57 @@ mod tests {
             data_dir: Some(PathBuf::from("/d")),
             user_dir: None,
             parent_pid: 42,
+            update_dir: Some(PathBuf::from("/up")),
+            apply_script: None,
         };
         assert_eq!(
             spec.arguments(),
             ["--data-dir", "/d", "--no-llm", "--parent-pid", "42"]
+        );
+        assert_eq!(
+            spec.check_update_arguments(),
+            [
+                "--check-update",
+                "--stage-updates",
+                "--update-dir",
+                "/up",
+                "--data-dir",
+                "/d",
+                "--parent-pid",
+                "42"
+            ]
+        );
+    }
+
+    #[test]
+    fn update_output_uses_the_last_json_line() {
+        let ok = r#"{"current":"0.1.14","latest":"0.1.15","status":"staged","notes_url":null,"error":null}"#;
+        let r = parse_update_output(&format!("noise\n{ok}\n\n")).unwrap();
+        assert_eq!(r.status, UpdateStatus::Staged);
+        assert_eq!(r.latest.as_deref(), Some("0.1.15"));
+        assert!(parse_update_output("").is_err());
+        assert!(parse_update_output("not json").is_err());
+        // 未知の status は受け付けない
+        assert!(
+            parse_update_output(
+                r#"{"current":"1","latest":null,"status":"weird","notes_url":null,"error":null}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn apply_arguments_are_fixed_and_keep_the_console() {
+        assert_eq!(
+            apply_update_arguments(std::path::Path::new("C:/p/apply-update.ps1")),
+            [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-NoExit",
+                "-File",
+                "C:/p/apply-update.ps1"
+            ]
         );
     }
 }

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use nagi_protocol::{CandidatesView, InputMode, KeyKind, ProcessKeyResult, StatusResult};
-use nagi_windows::candidates::{CandidatePage, Rect};
+use nagi_windows::candidates::{CandidatePage, Rect, should_defer_show};
 use nagi_windows::context::{build_context, should_report_before_key};
 use nagi_windows::environment::{
     EnvironmentReporter, OverridingProbe, ResumeDetector, ResumeSource,
@@ -218,6 +218,10 @@ pub(crate) struct Core {
     atoms: Cell<Option<AttrAtoms>>,
     /// 直近に測ったキャレット（composition）の矩形。候補ウィンドウの基準
     caret: Rc<Cell<Option<Rect>>>,
+    /// 同じ composition で直前に測れた矩形（`edit::Env::last_rect`）
+    last_rect: Rc<Cell<Option<Rect>>>,
+    /// 編集セッション完了後の再測定待ち（`edit::Env::remeasure_pending`）
+    remeasure_pending: Rc<Cell<bool>>,
     handoff: RefCell<HandoffCache<KeyOutcome>>,
     candidate_window: CandidateWindow,
     toast: ToastWindow,
@@ -248,6 +252,8 @@ impl Core {
             composition_sink: RefCell::new(None),
             atoms: Cell::new(None),
             caret: Rc::new(Cell::new(None)),
+            last_rect: Rc::new(Cell::new(None)),
+            remeasure_pending: Rc::new(Cell::new(false)),
             handoff: RefCell::new(HandoffCache::new()),
             candidate_window: CandidateWindow::new(),
             toast: ToastWindow::new(),
@@ -269,11 +275,20 @@ impl Core {
     }
 
     fn env(&self) -> Option<Env> {
+        let me = Weak::clone(&self.me);
         Some(Env {
             composition: Rc::clone(&self.composition),
             sink: self.composition_sink.borrow().clone()?,
             atoms: self.atoms.get(),
             caret: Rc::clone(&self.caret),
+            client_id: self.client_id.get(),
+            last_rect: Rc::clone(&self.last_rect),
+            remeasure_pending: Rc::clone(&self.remeasure_pending),
+            on_remeasured: Rc::new(move || {
+                if let Some(core) = me.upgrade() {
+                    core.candidate_window.reposition(core.caret.get());
+                }
+            }),
         })
     }
 
@@ -579,6 +594,7 @@ impl Core {
             | MenuCommand::OpenLogFolder => langbar::open_folder(kind, path),
             MenuCommand::RunVerify => langbar::run_verify(kind, path),
             MenuCommand::ApplyUpdate => langbar::run_apply_update(kind, path),
+            MenuCommand::CheckUpdate => langbar::run_check_update(kind, path),
         }
     }
 
@@ -586,7 +602,15 @@ impl Core {
 
     fn show_candidates(&self, view: Option<&CandidatesView>) {
         match view.and_then(CandidatePage::from_view) {
-            Some(page) => self.candidate_window.show(&page, self.caret.get()),
+            Some(page) => {
+                let caret = self.caret.get();
+                // 位置が未確定で再測定待ちなら、マウス位置に出してから動くのを避けて保留する
+                if should_defer_show(caret.is_some(), self.remeasure_pending.get()) {
+                    self.candidate_window.defer(&page);
+                } else {
+                    self.candidate_window.show(&page, caret);
+                }
+            }
             None => self.candidate_window.hide(),
         }
     }
@@ -930,6 +954,9 @@ impl Core {
         }
         self.handoff.borrow_mut().clear();
         self.candidate_window.hide();
+        // 前の矩形・再測定待ちを持ち越さない
+        self.last_rect.set(None);
+        self.remeasure_pending.set(false);
         if let Ok(result) = self.engine.focus_out(&self.session_id) {
             let plan = render::plan_from_result(&result);
             if let Some(ctx) = self.focused_context() {

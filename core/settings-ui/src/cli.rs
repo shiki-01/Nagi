@@ -15,6 +15,24 @@ pub struct Args {
     pub no_browser: bool,
     /// `--url-file <path>`: 画面の URL（トークンつき）をこのファイルに書く（検証用。既定では出力しない）
     pub url_file: Option<PathBuf>,
+    /// `--update-dir <dir>`: 取得した更新の保存先（既定は Windows の `%LOCALAPPDATA%\Nagi\update`）
+    pub update_dir: Option<PathBuf>,
+    /// `--section <name>`: 開いたときに表示する節（`update` のみ）
+    pub section: Option<String>,
+    /// `--auto-check`: 開いたら更新の確認を自動で実行する（`--section update` と併用）
+    pub auto_check: bool,
+}
+
+impl Args {
+    /// ブラウザで開く URL に付ける断片（`update` = 更新セクションへスクロール、
+    /// `update-check` = さらに確認を自動実行）。`--auto-check` だけでも更新セクションを開く
+    pub fn start_fragment(&self) -> Option<&'static str> {
+        match (self.section.as_deref(), self.auto_check) {
+            (Some("update"), true) | (None, true) => Some("update-check"),
+            (Some("update"), false) => Some("update"),
+            _ => None,
+        }
+    }
 }
 
 /// 引数を解析する
@@ -31,6 +49,15 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Args, Strin
             "--data-dir" => out.data_dir = Some(value("--data-dir")?),
             "--user-dir" => out.user_dir = Some(value("--user-dir")?),
             "--url-file" => out.url_file = Some(value("--url-file")?),
+            "--update-dir" => out.update_dir = Some(value("--update-dir")?),
+            "--section" => {
+                let name = value("--section")?.to_string_lossy().into_owned();
+                if name != "update" {
+                    return Err(format!("--section は update だけです: {name}"));
+                }
+                out.section = Some(name);
+            }
+            "--auto-check" => out.auto_check = true,
             "--no-browser" => out.no_browser = true,
             other => return Err(format!("不明な引数: {other}")),
         }
@@ -73,6 +100,25 @@ pub fn default_data_dir(os: &str, env: &dyn Fn(&str) -> Option<String>) -> Optio
     None
 }
 
+/// 取得した更新の既定の保存先。Windows は `%LOCALAPPDATA%\Nagi\update`
+/// （TSF 側が imserver に渡す `--update-dir` と同じ場所。`frontend-windows-tsf` の `engine_location`）。
+/// それ以外・決まらなければ `None`（imserver の既定 = `<user-dir>/update`）
+pub fn default_update_dir(os: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    if os != "windows" {
+        return None;
+    }
+    let local = env("LOCALAPPDATA")?;
+    Some(PathBuf::from(format!(
+        "{}\\Nagi\\update",
+        local.trim_end_matches(['\\', '/'])
+    )))
+}
+
+/// `apply-update.ps1` の場所（自身の exe と同じディレクトリ）
+pub fn default_apply_script(current_exe: &Path) -> Option<PathBuf> {
+    Some(current_exe.parent()?.join("apply-update.ps1"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,8 +147,45 @@ mod tests {
         assert!(a.no_browser);
         assert_eq!(a.url_file, Some(PathBuf::from("/f")));
         assert_eq!(parse(&[]).unwrap(), Args::default());
+        let b = parse(&["--section", "update", "--auto-check", "--update-dir", "/up"]).unwrap();
+        assert_eq!(b.section.as_deref(), Some("update"));
+        assert!(b.auto_check);
+        assert_eq!(b.update_dir, Some(PathBuf::from("/up")));
+        assert!(parse(&["--section", "other"]).is_err());
         assert!(parse(&["--data-dir"]).is_err());
         assert!(parse(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn start_fragment_follows_section_and_auto_check() {
+        let f = |a: &[&str]| parse(a).unwrap().start_fragment();
+        assert_eq!(f(&[]), None);
+        assert_eq!(f(&["--section", "update"]), Some("update"));
+        assert_eq!(
+            f(&["--section", "update", "--auto-check"]),
+            Some("update-check")
+        );
+        assert_eq!(f(&["--auto-check"]), Some("update-check"));
+    }
+
+    #[test]
+    fn default_update_dir_is_local_app_data_on_windows_only() {
+        let env =
+            |k: &str| (k == "LOCALAPPDATA").then(|| "C:\\Users\\x\\AppData\\Local\\".to_owned());
+        assert_eq!(
+            default_update_dir("windows", &env),
+            Some(PathBuf::from("C:\\Users\\x\\AppData\\Local\\Nagi\\update"))
+        );
+        assert_eq!(default_update_dir("linux", &env), None);
+        assert_eq!(default_update_dir("windows", &|_| None), None);
+    }
+
+    #[test]
+    fn default_apply_script_is_next_to_the_exe() {
+        assert_eq!(
+            default_apply_script(Path::new("/pf/Nagi/nagi-settings.exe")),
+            Some(Path::new("/pf/Nagi").join("apply-update.ps1"))
+        );
     }
 
     #[test]

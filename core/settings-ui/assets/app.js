@@ -134,6 +134,7 @@
     groupsEl.textContent = "";
     var n = 0;
     if (!screen) return;
+    if (screen.app_version) document.getElementById("update-current").textContent = screen.app_version;
     document.getElementById("config-path").textContent = screen.config_path || "（設定ファイルの場所は未定です）";
     document.getElementById("open-config").disabled = !screen.config_path;
     document.getElementById("open-user-dict").disabled = !screen.config_path;
@@ -150,6 +151,71 @@
       var again = groupsEl.querySelector('[data-key="' + (window.CSS && CSS.escape ? CSS.escape(activeKey) : activeKey) + '"]');
       if (again) again.focus();
     }
+  }
+
+  // ---- 更新 ----
+  var updateCheckBtn = document.getElementById("update-check");
+  var updateApplyBtn = document.getElementById("update-apply");
+  var updateSpinner = document.getElementById("update-spinner");
+  var updateResult = document.getElementById("update-result");
+  var updateBusy = false;
+
+  function setUpdateBusy(busy) {
+    updateBusy = busy;
+    updateCheckBtn.disabled = busy;
+    updateApplyBtn.disabled = busy;
+    updateSpinner.hidden = !busy;
+  }
+
+  function showUpdateResult(r) {
+    updateResult.textContent = "";
+    updateApplyBtn.hidden = r.status !== "staged";
+    var text;
+    if (r.status === "up_to_date") text = "最新です（" + r.current + "）。";
+    else if (r.status === "available") text = "新しい版 " + r.latest + " があります。";
+    else if (r.status === "staged") text = "新しい版 " + r.latest + " を取得しました。「更新を適用」で入れ替えられます（管理者の確認が出ます）。";
+    else text = "更新を確認できませんでした: " + (r.error || "原因不明のエラーです");
+    updateResult.appendChild(document.createTextNode(text));
+    // リンクにするのは https の URL だけ（サーバー側でも絞っている）。外部ページは別タブで、参照元なしで開く
+    if (r.notes_url && r.notes_url.indexOf("https:") === 0 && r.status !== "up_to_date" && r.status !== "error") {
+      updateResult.appendChild(document.createTextNode(" "));
+      var link = el("a", { rel: "noopener noreferrer", target: "_blank", text: "リリースノート" });
+      link.setAttribute("href", r.notes_url);
+      updateResult.appendChild(link);
+    }
+  }
+
+  function checkUpdate() {
+    if (updateBusy) return Promise.resolve();
+    setUpdateBusy(true);
+    updateApplyBtn.hidden = true;
+    updateResult.textContent = "確認しています…";
+    return api("/api/update/check").then(showUpdateResult, function (e) {
+      updateResult.textContent = "更新を確認できませんでした: " + e.message;
+    }).then(function () { setUpdateBusy(false); });
+  }
+
+  function applyUpdate() {
+    if (updateBusy) return;
+    setUpdateBusy(true);
+    api("/api/update/apply").then(function () {
+      updateResult.textContent = "更新の適用を開始しました。新しく開いたコンソールの案内に従ってください（管理者の確認が出ます）。";
+    }, function (e) {
+      updateResult.textContent = "更新を適用できませんでした: " + e.message;
+    }).then(function () { setUpdateBusy(false); });
+  }
+
+  updateCheckBtn.addEventListener("click", checkUpdate);
+  updateApplyBtn.addEventListener("click", applyUpdate);
+
+  // 起動引数 --section update [--auto-check]（URL の断片）: 更新セクションへスクロールし、必要なら確認を自動実行する
+  function startAction() {
+    var hash = window.location.hash;
+    if (hash !== "#update" && hash !== "#update-check") return;
+    document.getElementById("update").scrollIntoView();
+    // 再読み込みで何度も確認しないよう断片を消す
+    if (window.history && history.replaceState) history.replaceState(null, "", window.location.pathname + window.location.search);
+    if (hash === "#update-check") checkUpdate();
   }
 
   function load() {
@@ -196,5 +262,5 @@
   });
   window.addEventListener("pageshow", function (e) { if (e.persisted) load(); });
 
-  load();
+  load().then(startAction);
 })();

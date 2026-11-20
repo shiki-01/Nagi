@@ -51,6 +51,8 @@ pub struct CandidateWindow {
     /// ウィンドウのユーザーデータとして渡したポインタ（`WM_NCDESTROY` で解放される）
     paint: Cell<isize>,
     visible: Cell<bool>,
+    /// 位置の確定待ちで出していない最初の表示
+    deferred: RefCell<Option<CandidatePage>>,
 }
 
 impl Default for CandidateWindow {
@@ -66,6 +68,7 @@ impl CandidateWindow {
             hwnd: Cell::new(HWND::default()),
             paint: Cell::new(0),
             visible: Cell::new(false),
+            deferred: RefCell::new(None),
         }
     }
 
@@ -112,6 +115,7 @@ impl CandidateWindow {
         let Some(hwnd) = self.ensure_window() else {
             return;
         };
+        self.deferred.borrow_mut().take();
         let anchor = anchor_rect(caret, cursor_position());
         // 先に基準位置へ動かして、そこのモニターの DPI を得る（Per-Monitor 対応のホスト向け）
         let _ = unsafe {
@@ -162,8 +166,30 @@ impl CandidateWindow {
         self.visible.set(true);
     }
 
+    /// 位置が未確定の最初の表示を保留する（再測定の完了後に `reposition` で出す）
+    pub fn defer(&self, page: &CandidatePage) {
+        *self.deferred.borrow_mut() = Some(page.clone());
+    }
+
+    /// 再測定で基準が更新された後に位置を合わせる。保留中の表示があればそれを出し、
+    /// 表示中ならその位置だけ更新する。どちらでもなければ何もしない
+    pub fn reposition(&self, caret: Option<Rect>) {
+        let deferred = self.deferred.borrow_mut().take();
+        let page = deferred.or_else(|| {
+            if !self.visible.get() {
+                return None;
+            }
+            let cell = unsafe { user_data_ref::<PaintCell>(self.paint.get()) }?;
+            cell.borrow().as_ref().map(|p| p.page.clone())
+        });
+        if let Some(page) = page {
+            self.show(&page, caret);
+        }
+    }
+
     /// 隠す
     pub fn hide(&self) {
+        self.deferred.borrow_mut().take();
         let hwnd = self.hwnd.get();
         if !hwnd.is_invalid() && self.visible.replace(false) {
             let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };

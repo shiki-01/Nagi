@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::{UpdateCheck, UpdateStatus};
 use nagi_protocol::jsonrpc::error_code;
 use nagi_protocol::settings::{
     IntRange, SettingError, SettingItem, SettingKind, SettingLevel, SettingPlatforms, SettingValue,
@@ -17,6 +18,8 @@ struct Calls {
     cleared: u32,
     opened_files: Vec<PathBuf>,
     opened_folders: Vec<PathBuf>,
+    checks: u32,
+    applies: u32,
 }
 
 type Shared = Rc<RefCell<Calls>>;
@@ -45,6 +48,7 @@ struct Fake {
     value: i32,
     calls: Shared,
     fail: Option<BackendError>,
+    notes_url: Option<String>,
 }
 
 impl Fake {
@@ -104,6 +108,28 @@ impl SettingsBackend for Fake {
     fn config_path(&mut self) -> Result<Option<String>, BackendError> {
         Ok(Some("/u/Nagi/config.toml".into()))
     }
+
+    fn check_update(&mut self) -> Result<UpdateCheck, BackendError> {
+        if let Some(e) = &self.fail {
+            return Err(e.clone());
+        }
+        self.calls.borrow_mut().checks += 1;
+        Ok(UpdateCheck {
+            current: "0.1.14".into(),
+            latest: Some("0.1.15".into()),
+            status: UpdateStatus::Staged,
+            notes_url: self.notes_url.clone(),
+            error: None,
+        })
+    }
+
+    fn apply_update(&mut self) -> Result<(), BackendError> {
+        if let Some(e) = &self.fail {
+            return Err(e.clone());
+        }
+        self.calls.borrow_mut().applies += 1;
+        Ok(())
+    }
 }
 
 struct FakeOpener(Shared);
@@ -129,6 +155,7 @@ fn app_with(fail: Option<BackendError>) -> (App<Fake>, Shared, Instant) {
         value: 5,
         calls: calls.clone(),
         fail,
+        notes_url: Some("https://example.com/notes".into()),
     };
     let mut app = App::new(
         backend,
@@ -542,4 +569,98 @@ fn only_authenticated_requests_reset_the_idle_timer() {
         !app.lifecycle
             .should_exit(now + Duration::from_secs(15 * 60))
     );
+}
+
+#[test]
+fn update_check_round_trips_json_and_filters_the_notes_url() {
+    let (mut app, calls, now) = app();
+    let r = app.handle(&api_request("/api/update/check", "{}"), now);
+    assert_eq!(r.status, 200);
+    let v = json_of(&r);
+    assert_eq!(v["current"], "0.1.14");
+    assert_eq!(v["latest"], "0.1.15");
+    assert_eq!(v["status"], "staged");
+    assert_eq!(v["notes_url"], "https://example.com/notes");
+    assert!(v["error"].is_null());
+    assert_eq!(calls.borrow().checks, 1);
+    assert_eq!(calls.borrow().applies, 0);
+
+    // https 以外・引用符や空白を含む URL は画面に渡さない
+    for bad in [
+        "javascript:alert(1)",
+        "http://example.com/",
+        "https://",
+        "https://e.com/\"x",
+        "https://e.com/a b",
+    ] {
+        let (mut other, _, now) = app_with(None);
+        other.backend.notes_url = Some(bad.into());
+        let v = json_of(&other.handle(&api_request("/api/update/check", "{}"), now));
+        assert!(v["notes_url"].is_null(), "{bad}");
+    }
+}
+
+#[test]
+fn update_apis_require_token_origin_post_and_json() {
+    let (mut app, calls, now) = app();
+    for path in ["/api/update/check", "/api/update/apply"] {
+        let mut no_token = api_request(path, "{}");
+        no_token.token_header = None;
+        assert_eq!(app.handle(&no_token, now).status, 403, "{path}");
+        let mut wrong = api_request(path, "{}");
+        wrong.token_header = Some("x".repeat(64));
+        assert_eq!(app.handle(&wrong, now).status, 403, "{path}");
+        let mut foreign = api_request(path, "{}");
+        foreign.origin = Some("http://evil.example".into());
+        assert_eq!(app.handle(&foreign, now).status, 403, "{path}");
+        let mut bad_host = api_request(path, "{}");
+        bad_host.host = Some("evil.example".into());
+        assert_eq!(app.handle(&bad_host, now).status, 403, "{path}");
+        let mut get = api_request(path, "{}");
+        get.method = "GET".into();
+        assert_eq!(app.handle(&get, now).status, 405, "{path}");
+        let mut text = api_request(path, "{}");
+        text.content_type = Some("text/plain".into());
+        assert_eq!(app.handle(&text, now).status, 415, "{path}");
+    }
+    assert_eq!(calls.borrow().checks, 0);
+    assert_eq!(calls.borrow().applies, 0);
+}
+
+#[test]
+fn apply_is_a_fixed_action_that_ignores_the_body() {
+    let (mut app, calls, now) = app();
+    // 本文に何を入れても、パス・引数としては使われない（バックエンドは引数を取らない）
+    for body in [
+        "{}",
+        r#"{"script":"C:/evil.ps1","args":["-x"]}"#,
+        "not json",
+    ] {
+        let r = app.handle(&api_request("/api/update/apply", body), now);
+        assert_eq!(r.status, 200, "{body}");
+    }
+    assert_eq!(calls.borrow().applies, 3);
+}
+
+#[test]
+fn update_backend_errors_map_to_status_and_keep_the_message() {
+    let (mut app, _, now) = app_with(Some(BackendError::transport("起動できません")));
+    for path in ["/api/update/check", "/api/update/apply"] {
+        let r = app.handle(&api_request(path, "{}"), now);
+        assert_eq!(r.status, 503, "{path}");
+        assert_eq!(json_of(&r)["error"], "起動できません");
+    }
+}
+
+#[test]
+fn start_fragment_is_appended_to_the_page_url_and_version_is_in_the_screen() {
+    let (mut app, _, now) = app();
+    assert!(!app.page_url().contains('#'));
+    app.set_start_fragment(Some("update-check"));
+    assert_eq!(
+        app.page_url(),
+        format!("http://127.0.0.1:{PORT}/?t={TOKEN}#update-check")
+    );
+    let v = json_of(&app.handle(&api_request("/api/settings", "{}"), now));
+    assert_eq!(v["app_version"], env!("CARGO_PKG_VERSION"));
 }

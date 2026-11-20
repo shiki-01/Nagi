@@ -183,10 +183,11 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 | --- | --- |
 | `frontend-windows/`（`nagi-windows`、unsafe 禁止・OS 非依存） | 実装済み・Linux でテスト済み（H-43 で `status` のメニュー・`reconvert` の候補を追加）: キー正規化（VK_IME_ON/OFF・VK_OEM_BACKTAB を含む）、JSON-RPC クライアント、子プロセス通信路、EngineSupervisor（指数バックオフ再起動・`restore_session`）、revision ゲート、SessionStore、H-40: `candidates` / `environment` / `context` / `preedit_style` / `status`、**H-41 で追加**: `mode`（OS のモードとの同期。同じモードなら送らない）、`reconvert`（再変換の対象判定）、`toast`（通知の配置）、`icon`（.ico の生成）、`Metrics::scaled`・`primary_first`・`ResumeDetector`・`DISPLAY_ATTRS`・`range_shifts` |
 | `frontend-windows-tsf/`（`nagi-windows-tsf`、cdylib、unsafe はここに隔離） | **H-41 で OS 層を実装**（実機未確認）: 候補ウィンドウ（GDI・非アクティブ・DPI・モニター作業領域・`GetTextExt`）、通知トースト、隠しメッセージウィンドウ（非同期通知の即時反映・30 秒タイマー・電源/スリープ復帰通知）、`EnvironmentProbe` の Win32 実装、`set_context`（周辺テキスト・`InputScope`・アプリ ID）、表示属性（`ITfDisplayAttributeProvider` + `GUID_PROP_ATTRIBUTE`）、入力モード（コンパートメント。タスクトレイの「あ / A」）、再変換（`ITfFunctionProvider` / `ITfFnReconversion` とコアの `reconvert_selection`）、入力方式アイコン（.ico をコードで生成）。OS 非依存の `render` / `engine`（セッションごとのイベント購読を含む）は Linux でテスト済み（16 件） |
-| 検証 | Linux で `cargo check` / `cargo clippy -D warnings --target x86_64-pc-windows-gnu --all-targets` が通る（型・シグネチャのみ。リンクと実行は未確認）。**Windows 実機では未確認**（登録・キー入力・composition・エンジン起動・上記 OS 層すべて） |
+| 検証 | Linux で `cargo check` / `cargo clippy -D warnings --target x86_64-pc-windows-gnu --all-targets` が通る（型・シグネチャのみ。リンクと実行は未確認）。**Windows 実機での確認は下の「実機（0.1.14）」行を参照**（H-41 時点の記述。現在は主要機能が実機で動作） |
+| 実機（0.1.14、2026-11-20） | **TSF フロントは Windows 実機で動作確認済み**（ユーザー報告）: 導入、設定 GUI（H-97）、候補の重複・位置の修正（H-98）、プロファイル判定（メモリ判定の見直し H-99）、キー応答、モード切替、ライブ変換、右クリックメニュー（自前ポップアップ、H-96）、imserver の寿命管理（親プロセス監視、H-96）、スタートメニュー。自動更新（H-95）は実装済み・**実機未確認**。`verify.ps1 status` で旧版 DLL を使うホストを表示（H-101）。**未確認**: 自動更新、更新時の旧エンジン停止、uninstall、標準ユーザー、VC++ なしの環境、ARM64、SmartScreen、曖昧入力の Windows 実機（`docs/real-hardware-checklist.md` §8 冒頭）。未実装は下の「未実装」行 |
 | H-43 で追加 | 実装済み（実機未確認）: `ITfFnReconversion::GetReconversion`（範囲を読み → コア `reconvert` → 範囲全体を置き換える候補の `ITfCandidateList`。候補の組み立ては `nagi_windows::reconvert::range_candidates`、テスト済み）、言語バーのボタン `langbar.rs`（あ / A の表示・左クリックでひらがな ⇄ 英数・メニューにモード / 状態 / 設定ファイルを開く。ロジックは `nagi_windows::status` の `menu_entries` ほか、テスト済み。モードの変更はコンパートメント経由）、`cargo xtask gen-licenses --platform windows\|ios\|all`（Windows は `THIRD_PARTY_LICENSES_WINDOWS.md` 104 crates。`bundle-windows` が zip に `THIRD_PARTY_LICENSES.md` として同梱）。複数ホストでのエンジン共有は**設計メモのみ**（責務・パイプ名・ACL・寿命・移行手順・実測項目。decisions.md H-43 §4） |
 | 設定 GUI（H-97） | 実装済み・Linux でテスト済み・**Windows 実機未確認**: `core/settings-ui/`（`nagi-settings.exe`。127.0.0.1 の HTTP サーバー + 既定ブラウザ。画面は `get_settings` / `update_settings` の記述子から自動生成。トークン・Host/Origin 検証・CSP・自動終了。imserver は `--no-llm` の子プロセス）。右クリックメニュー「設定…」・スタートメニュー「Nagi 設定」・`bundle-windows`・CI に追加。単体 36 件 + 実 imserver との統合 2 件。未実装: ユーザー辞書の管理 UI・キーマップ編集 |
-| 未実装 | 複数ホストプロセスでのエンジン共有（名前付きパイプ + 常駐ブローカー。実測が先、H-43 §4）、候補ウィンドウのマウス操作（v1 非目標）、アプリ内の自動更新（置き換え。通知のみ）、再変換候補の選択結果の学習、ARM64 / 32bit ホスト、辞書・モデルのアプリ内ダウンロード導線、Authenticode 署名の実施、winget / MSI（H-42）、設定 GUI のうちユーザー辞書の管理 UI・キーマップ編集（設定画面本体は H-97 で実装。実機未確認） |
+| 未実装 | 複数ホストプロセスでのエンジン共有（名前付きパイプ + 常駐ブローカー。実測が先、H-43 §4）、候補ウィンドウのマウス操作（v1 非目標）、再変換候補の選択結果の学習、ARM64 / 32bit ホスト、辞書・モデルのアプリ内ダウンロード導線、Authenticode 署名の実施、winget / MSI（H-42）、設定 GUI のうちユーザー辞書の管理 UI・キーマップ編集（設定画面本体は H-97 で実装。実機未確認） |
 | 配布（H-42） | 実装済み・Actions と実機では未実行: `cargo xtask bundle-windows`（DLL・imserver・スクリプト・ライセンス・`SHA256SUMS` を zip 化。Linux で単体テスト 10 件）、`frontend-windows/dist/install.ps1` / `uninstall.ps1`（`%ProgramFiles%\Nagi`、`regsvr32`、辞書・モデルは配布元から取得、`-RemoveUserData`）、`web/static/install.ps1`（`irm \| iex`）、`windows-release.yml`（MSVC ビルド・ed25519 署名・prerelease 既定・Authenticode は Secrets があれば）、`ci.yml` の PowerShell 構文検査。SmartScreen は署名なし + 手順書（`docs/windows-install.md`）。PowerShell の構文は Linux の pwsh 7.5 で検査済み |
 | CI | `ci.yml`（手動実行のみ）の `core` ジョブで 3 OS の build/test、`windows-tsf` ジョブ（ubuntu、`x86_64-pc-windows-gnu` の check/clippy）を追加（H-40）。Actions 上では未実行。H-42 で `windows-scripts` ジョブ（PowerShell 構文）を追加 |
 
@@ -198,7 +199,7 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 - `Preedit` の Composing 表示では、非 ASCII 文字（絵文字など）も japanese 種別の 1 セグメントにまとまる
 - `nn` は G-48 で Mozc 準拠（保留なしで「ん」）に変更済み。Mozc 実機との照合は未実施（`konnichiha` → こんにちは、`kanna` → かんな は通る。`nnn` は「んん」）
 - ゴールデンテストの期待値は、テスト担当のサブエージェントが仕様から書いた後、実装の挙動と食い違う箇所を「仕様に照らして」修正したもの。仕様の根拠は `docs/decisions.md` G-7。追加のレビュー（標準 IME との挙動照合）は未実施
-- macOS 実機でのフロント接続は確認済み（2026-11-19。pending-checks.md macOS 表 No.1〜7、ユーザーの実機確認で問題なし）。Windows 実機でのフロント接続、標準 IME との挙動照合、レイテンシベンチ（p95）は未実施
+- macOS 実機でのフロント接続は確認済み（2026-11-19。pending-checks.md macOS 表 No.1〜7、ユーザーの実機確認で問題なし）。Windows 実機でのフロント接続は 0.1.14 で確認済み（2026-11-20、ユーザー報告）。標準 IME との挙動照合、レイテンシベンチ（p95）は未実施
 - `infer` の `LlamaModel` はコンテキストを 1 つ使い回す（KV キャッシュ再利用・実LLMビームサーチとも server/engine まで接続済み。G-32、G-33、G-34）が、GPU オフロードは未対応
 
 ## CI
@@ -330,5 +331,5 @@ bundle id は `com.shiki.inputmethod.Nagi`（G-37）。CI の artifact `Nagi.app
 - macOS **0.1.10**: Release `macos-v0.1.10` を公開済み（`macos-release` run 13、コミット d424d6a）
 - iOS: TestFlight に**ビルド番号 82**（表示バージョン 1.0.0、llama あり、コミット b75ce5b）を送信済み。最初の 2 回（run 80・81）は H-87 の `didReceiveMemoryWarning()` 二重 override でアーカイブが失敗（H-87 の追記参照）
 - Android **0.1.7**: APK は `android-apk` run 17 で作成済み（Actions の成果物 `nagi-android-apk`）。**GitHub Release とタグ `android-v0.1.7` は未作成**: この環境からはタグの push ができないため。公開するには手元で `git tag android-v0.1.7 b75ce5b` ではなく、APK のビルドに使ったコミット `d424d6a` に対して `git tag android-v0.1.7 d424d6a && git push origin android-v0.1.7`（タグ push で Release と web の `latest.json` 更新まで自動）
-- Windows: 未リリース（TSF フロントが実機未検証のため。手動実行の `windows-release` は既定 prerelease）
+- Windows: prerelease で配布（`windows-release` は手動実行・既定 prerelease。0.1.14 を実機で確認、2026-11-20）
 - 実機確認の項目: iOS は `docs/ios-device-checklist.md` §5.8、macOS/Windows は `docs/real-hardware-checklist.md` §9

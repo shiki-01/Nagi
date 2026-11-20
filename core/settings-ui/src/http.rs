@@ -122,6 +122,8 @@ pub struct App<B: SettingsBackend> {
     /// 自動終了のタイマー
     pub lifecycle: Lifecycle,
     config_path: Option<PathBuf>,
+    /// ブラウザで開く URL に付ける断片（`update` / `update-check`。`--section update [--auto-check]`）
+    start_fragment: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -158,12 +160,22 @@ impl<B: SettingsBackend> App<B> {
             port,
             lifecycle: Lifecycle::new(now),
             config_path: None,
+            start_fragment: None,
         }
+    }
+
+    /// 開いたときの動作の断片（`update` = 更新セクションへスクロール、`update-check` = さらに確認を自動実行）
+    pub fn set_start_fragment(&mut self, fragment: Option<&'static str>) {
+        self.start_fragment = fragment;
     }
 
     /// ブラウザに開かせる URL（トークンはここにだけ載る）
     pub fn page_url(&self) -> String {
-        format!("http://127.0.0.1:{}/?t={}", self.port, self.token)
+        let fragment = self
+            .start_fragment
+            .map(|f| format!("#{f}"))
+            .unwrap_or_default();
+        format!("http://127.0.0.1:{}/?t={}{fragment}", self.port, self.token)
     }
 
     /// 起動直後に設定ファイルの場所を取得しておく（取れなくても画面は出す）
@@ -248,6 +260,12 @@ impl<B: SettingsBackend> App<B> {
             "/api/settings" => self.api_settings(),
             "/api/update" => self.api_update(&req.body),
             "/api/open" => self.api_open(&req.body),
+            "/api/update/check" => self.api_update_check(),
+            // 固定のアクション: 本文は読まない（パス・引数はクライアントから受け取らない）
+            "/api/update/apply" => match self.backend.apply_update() {
+                Ok(()) => Response::json(200, &json!({"ok": true})),
+                Err(e) => backend_error(&e),
+            },
             "/api/clear_learning" => match self.backend.clear_learning() {
                 Ok(()) => Response::json(200, &json!({"ok": true})),
                 Err(e) => backend_error(&e),
@@ -261,7 +279,23 @@ impl<B: SettingsBackend> App<B> {
             .config_path
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
-        serde_json::to_value(build_screen(snapshot, path)).unwrap_or(Value::Null)
+        let mut screen = serde_json::to_value(build_screen(snapshot, path)).unwrap_or(Value::Null);
+        // 現在の版（更新セクションの表示用。この画面と imserver は同じワークスペースの版）
+        if let Some(object) = screen.as_object_mut() {
+            object.insert("app_version".to_owned(), json!(env!("CARGO_PKG_VERSION")));
+        }
+        screen
+    }
+
+    fn api_update_check(&mut self) -> Response {
+        match self.backend.check_update() {
+            Ok(mut check) => {
+                // リンクにするのは https の URL だけ（マニフェストは配布元の JSON なので、画面に出す前に絞る）
+                check.notes_url = check.notes_url.take().filter(|u| is_safe_notes_url(u));
+                Response::json(200, &serde_json::to_value(check).unwrap_or(Value::Null))
+            }
+            Err(e) => backend_error(&e),
+        }
     }
 
     fn api_settings(&mut self) -> Response {
@@ -322,6 +356,16 @@ impl<B: SettingsBackend> App<B> {
             Err(message) => Response::error(500, &message),
         }
     }
+}
+
+/// リリースノートの URL として画面に出してよいか（`https:` の絶対 URL。空白・制御文字・引用符を含まない）
+pub fn is_safe_notes_url(url: &str) -> bool {
+    url.len() <= 2048
+        && url.starts_with("https://")
+        && url.len() > "https://".len()
+        && url
+            .chars()
+            .all(|c| c.is_ascii() && !c.is_ascii_control() && !matches!(c, ' ' | '"' | '<' | '>'))
 }
 
 /// ユーザー辞書フォルダ（`<user-dir>/user_dict`、無ければ user-dir。どちらも無ければ `None`）

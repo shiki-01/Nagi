@@ -316,6 +316,13 @@ pub fn run_settings_gui(kind: &str, exe: &Path) {
     shell_open(kind, PCWSTR(file.as_ptr()), PCWSTR::null());
 }
 
+/// 設定画面を更新セクションで開き、更新の確認を自動で実行する（`--section update --auto-check`）
+pub fn run_check_update(kind: &str, exe: &Path) {
+    let file = wide(&exe.display().to_string());
+    let arguments = wide(status::CHECK_UPDATE_ARGUMENTS);
+    shell_open(kind, PCWSTR(file.as_ptr()), PCWSTR(arguments.as_ptr()));
+}
+
 /// フォルダをエクスプローラーで開く
 pub fn open_folder(kind: &str, path: &Path) {
     let folder = wide(&path.display().to_string());

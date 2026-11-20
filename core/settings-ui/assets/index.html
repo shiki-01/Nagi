@@ -20,6 +20,16 @@
   </div>
 </header>
 <main>
+  <section class="update" id="update" aria-labelledby="update-title">
+    <h2 id="update-title">更新</h2>
+    <p class="note">現在の版: <span id="update-current">（取得しています）</span></p>
+    <div class="buttons">
+      <button type="button" id="update-check">更新を確認</button>
+      <span id="update-spinner" class="spinner" role="progressbar" aria-label="確認中" hidden></span>
+      <button type="button" id="update-apply" hidden>更新を適用…</button>
+    </div>
+    <p class="note" id="update-result" role="status" aria-live="polite"></p>
+  </section>
   <section class="file" aria-labelledby="file-title">
     <h2 id="file-title">設定ファイル</h2>
     <p class="path" id="config-path">（場所を取得しています）</p>
