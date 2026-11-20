@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<meta name="nagi-token" content="{{TOKEN}}">
+<title>Nagi 設定</title>
+<style nonce="{{NONCE}}">
+{{CSS}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Nagi 設定</h1>
+  <div class="level" role="radiogroup" aria-label="表示する項目">
+    <label><input type="radio" name="level" value="simple" checked> シンプル</label>
+    <label><input type="radio" name="level" value="detail"> 詳細</label>
+  </div>
+</header>
+<main>
+  <section class="file" aria-labelledby="file-title">
+    <h2 id="file-title">設定ファイル</h2>
+    <p class="path" id="config-path">（場所を取得しています）</p>
+    <div class="buttons">
+      <button type="button" id="open-config">config.toml を直接開く</button>
+      <button type="button" id="open-user-dict">ユーザー辞書フォルダを開く</button>
+      <button type="button" id="clear-learning" class="danger">学習データを全削除…</button>
+    </div>
+    <p class="note" id="action-result" role="status"></p>
+  </section>
+  <div id="banner" class="banner" role="alert" hidden></div>
+  <div id="groups"></div>
+</main>
+<dialog id="confirm" aria-labelledby="confirm-title">
+  <div>
+    <h2 id="confirm-title">学習データを全削除しますか？</h2>
+    <p>これまでの変換の学習（よく使う変換・次語予測）がすべて消えます。この操作は取り消せません。ユーザー辞書は消えません。</p>
+    <div class="buttons">
+      <button type="button" id="confirm-cancel" autofocus>キャンセル</button>
+      <button type="button" id="confirm-ok" class="danger">削除する</button>
+    </div>
+  </div>
+</dialog>
+<script nonce="{{NONCE}}">
+{{JS}}
+</script>
+</body>
+</html>

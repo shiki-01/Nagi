@@ -46,17 +46,19 @@ jobs:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --release --target "$TARGET" -p nagi-windows-tsf
 
-      - name: imserver と E2E ドライバーをビルド（LLM なし）
+      - name: imserver・設定画面と E2E ドライバーをビルド（LLM なし）
         working-directory: core
         run: |
           cargo build --release --target "$TARGET" -p nagi-server --bin imserver
+          cargo build --release --target "$TARGET" -p nagi-settings-ui
           cargo build --release --target "$TARGET" -p nagi-windows-e2e
 
-      - name: 配置（DLL と imserver.exe を同じディレクトリへ）
+      - name: 配置（DLL と imserver.exe・nagi-settings.exe を同じディレクトリへ）
         run: |
           mkdir -p "$RUNNER_TEMP/NagiE2E"
           cp "core/target/$TARGET/release/nagi_windows_tsf.dll" "$RUNNER_TEMP/NagiE2E/"
           cp "core/target/$TARGET/release/imserver.exe" "$RUNNER_TEMP/NagiE2E/"
+          cp "core/target/$TARGET/release/nagi-settings.exe" "$RUNNER_TEMP/NagiE2E/"
 
       - name: fixture data（語彙なしの最小辞書）
         working-directory: core

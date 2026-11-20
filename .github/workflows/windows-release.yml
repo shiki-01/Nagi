@@ -1,6 +1,6 @@
 name: windows-release
 
-# Windows 版（TSF の DLL + imserver.exe、LLM 有効）を MSVC でビルドし、zip にまとめて GitHub Releases に公開する。
+# Windows 版（TSF の DLL + imserver.exe + nagi-settings.exe、LLM 有効）を MSVC でビルドし、zip にまとめて GitHub Releases に公開する。
 # あわせて ed25519 署名つきの latest.json を作り、サイト（nagi.shiki-01.com/updates/windows/latest.json）に載せる
 # ため web ワークフローを起動する（web が最新の windows-v* リリースから latest.json を取り込む）。
 # 方針は docs/decisions.md H-42。
@@ -118,6 +118,15 @@ jobs:
           features=()
           if [ "${{ inputs.llama }}" = "true" ]; then features=(--features llama); fi
           cargo build --release --target "$TARGET" -p nagi-server --bin imserver "${features[@]}"
+
+      # 設定画面（nagi-settings.exe。ローカルの Web 画面。H-97）。LLM（llama）は不要なので imserver とは別に
+      # ビルドする（`--features llama` を -p の複数指定に付けると settings-ui に feature が無くて失敗する）。
+      # 純 Rust なので CRT は静的リンクにして、再頒布可能パッケージなしでも起動できるようにする
+      - name: 設定画面（nagi-settings）をビルド
+        working-directory: core
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo build --release --target "$TARGET" -p nagi-settings-ui
 
       - name: Authenticode 署名の準備（証明書があるときだけ）
         id: codesign

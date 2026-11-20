@@ -3919,6 +3919,12 @@ impl Engine {
                 })
                 .collect();
             let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
+            // 同じ表記が既にあれば、行を増やさず出所だけを既存行へ併記する
+            // （`items` と `alternatives` の添字対応を保つため、どちらにも追加しない）
+            if items.iter().any(|i| i.surface == surface) {
+                push_candidate_with(&mut items, &surface, &sources, None);
+                continue;
+            }
             items.push(Candidate {
                 surface,
                 sources,

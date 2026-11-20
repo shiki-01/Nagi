@@ -209,7 +209,7 @@ function Show-ImserverStatus {
         $mark = ''
         if ($isOld) { $mark = ' [.old: 旧版]' }
         if (-not $alive) { $mark += ' [孤児: 親が存在しない]'; $orphans++ }
-        Write-Info ('imserver: PID=' + $p.Id + ' 親PID=' + $p.ParentProcessId + '(' + $parentName + ')' + ' 親=' + $(if ($alive) { '生存' } else { '終了' }) + ' ' + $path + $mark)
+        Write-Info ('imserver: PID=' + $p.ProcessId + ' 親PID=' + $p.ParentProcessId + '(' + $parentName + ')' + ' 親=' + $(if ($alive) { '生存' } else { '終了' }) + ' ' + $path + $mark)
     }
     Add-Result 'imserver' 'OK' ($all.Count.ToString() + ' プロセス（.old: ' + $olds + '）。Nagi で入力したホストの数に収まるはずです') @()
     if ($orphans -gt 0) {

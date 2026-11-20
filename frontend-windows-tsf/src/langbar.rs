@@ -310,6 +310,12 @@ pub fn open_in_notepad(kind: &str, path: &Path) {
     shell_open(kind, w!("notepad.exe"), PCWSTR(argument.as_ptr()));
 }
 
+/// 設定画面（`nagi-settings.exe`）を起動する。画面はローカルの Web ページで、実行ファイルが既定のブラウザで開く
+pub fn run_settings_gui(kind: &str, exe: &Path) {
+    let file = wide(&exe.display().to_string());
+    shell_open(kind, PCWSTR(file.as_ptr()), PCWSTR::null());
+}
+
 /// フォルダをエクスプローラーで開く
 pub fn open_folder(kind: &str, path: &Path) {
     let folder = wide(&path.display().to_string());

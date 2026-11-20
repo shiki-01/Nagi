@@ -1621,7 +1621,6 @@ impl ConversionBackend for Pipeline {
                 if out.len() >= limit || seen.contains(&surface) {
                     continue;
                 }
-                seen.push(surface.clone());
                 let mut segments = match dict.align_with(reading, &surface, Some(&overlay)) {
                     Some(segs) => segs
                         .into_iter()
@@ -1641,7 +1640,8 @@ impl ConversionBackend for Pipeline {
                 if self.sentence_has_suppressed(&segments) {
                     continue;
                 }
-                out.push(BackendSentence { segments });
+                // 学習・ユーザー辞書の置換後の最終表記で重複を除く
+                push_if_new(&mut out, &mut seen, segments);
             }
         }
 
@@ -1654,7 +1654,6 @@ impl ConversionBackend for Pipeline {
                 if seen.contains(&surface) {
                     continue;
                 }
-                seen.push(surface.clone());
                 let segments: Vec<BackendSegment> = c
                     .segments
                     .into_iter()
@@ -1667,12 +1666,28 @@ impl ConversionBackend for Pipeline {
                 if self.sentence_has_suppressed(&segments) {
                     continue;
                 }
-                out.push(BackendSentence { segments });
+                push_if_new(&mut out, &mut seen, segments);
             }
         }
 
         out
     }
+}
+
+/// 文全体の候補を、最終表記（文節の表記の連結）が未出のときだけ `out` に足す。
+/// 学習などによる置換は表記を書き換えるため、重複の判定は置換後の表記で行う
+fn push_if_new(
+    out: &mut Vec<BackendSentence>,
+    seen: &mut Vec<String>,
+    segments: Vec<BackendSegment>,
+) -> bool {
+    let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
+    if seen.contains(&surface) {
+        return false;
+    }
+    seen.push(surface);
+    out.push(BackendSentence { segments });
+    true
 }
 
 /// 使い方の確認用に、設定なしの既定の待ち時間を返す
@@ -1688,6 +1703,30 @@ fn qwerty_substitute(typed: u8, intended: u8) -> f32 {
         0.6
     } else {
         1.0
+    }
+}
+
+#[cfg(test)]
+mod push_if_new_tests {
+    use super::*;
+
+    fn seg(surface: &str) -> Vec<BackendSegment> {
+        vec![BackendSegment {
+            reading: "だいたい".into(),
+            surface: surface.into(),
+            sources: vec![CandidateSource::Llm],
+        }]
+    }
+
+    #[test]
+    fn skips_sentences_whose_final_surface_is_already_seen() {
+        let mut out = Vec::new();
+        let mut seen = Vec::new();
+        assert!(push_if_new(&mut out, &mut seen, seg("代替")));
+        // 学習の置換で同じ表記になった候補は足さない
+        assert!(!push_if_new(&mut out, &mut seen, seg("代替")));
+        assert!(push_if_new(&mut out, &mut seen, seg("大体")));
+        assert_eq!(out.len(), 2);
     }
 }
 

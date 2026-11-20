@@ -107,6 +107,8 @@ pub fn mode_name(mode: InputMode) -> &'static str {
 pub enum MenuCommand {
     /// 入力モードを切り替える
     SetMode(InputMode),
+    /// 設定画面（`nagi-settings.exe`。ローカルの Web 画面を既定のブラウザで開く）を起動する
+    OpenSettingsGui,
     /// 設定ファイル（`config.toml`）をメモ帳で開く
     OpenSettings,
     /// 設定フォルダをエクスプローラーで開く
@@ -126,6 +128,7 @@ impl MenuCommand {
     pub fn kind(self) -> &'static str {
         match self {
             MenuCommand::SetMode(_) => "mode",
+            MenuCommand::OpenSettingsGui => "settings_gui",
             MenuCommand::OpenSettings => "settings",
             MenuCommand::OpenSettingsFolder => "settings_folder",
             MenuCommand::OpenUserDictFolder => "user_dict_folder",
@@ -164,12 +167,17 @@ const ID_USER_DICT_FOLDER: u32 = 5;
 const ID_LOG_FOLDER: u32 = 6;
 const ID_VERIFY: u32 = 7;
 const ID_APPLY_UPDATE: u32 = 8;
+const ID_SETTINGS_GUI: u32 = 9;
+
+/// 設定画面の実行ファイル名（DLL と同じディレクトリに置く。`install.ps1` の `$PayloadFiles`）
+pub const SETTINGS_GUI_EXE: &str = "nagi-settings.exe";
 
 /// 操作 → メニュー項目の識別子
 pub fn command_id(command: MenuCommand) -> u32 {
     match command {
         MenuCommand::SetMode(InputMode::Hiragana) => ID_HIRAGANA,
         MenuCommand::SetMode(InputMode::Alphanumeric) => ID_ALPHANUMERIC,
+        MenuCommand::OpenSettingsGui => ID_SETTINGS_GUI,
         MenuCommand::OpenSettings => ID_SETTINGS,
         MenuCommand::OpenSettingsFolder => ID_SETTINGS_FOLDER,
         MenuCommand::OpenUserDictFolder => ID_USER_DICT_FOLDER,
@@ -184,6 +192,7 @@ pub fn command_from_id(id: u32) -> Option<MenuCommand> {
     match id {
         ID_HIRAGANA => Some(MenuCommand::SetMode(InputMode::Hiragana)),
         ID_ALPHANUMERIC => Some(MenuCommand::SetMode(InputMode::Alphanumeric)),
+        ID_SETTINGS_GUI => Some(MenuCommand::OpenSettingsGui),
         ID_SETTINGS => Some(MenuCommand::OpenSettings),
         ID_SETTINGS_FOLDER => Some(MenuCommand::OpenSettingsFolder),
         ID_USER_DICT_FOLDER => Some(MenuCommand::OpenUserDictFolder),
@@ -238,6 +247,8 @@ pub struct PathEnv {
 /// メニューの各「開く」項目の対象。`None` は開けない（項目を灰色にする）
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MenuTargets {
+    /// 設定画面の実行ファイル（DLL と同じディレクトリの `nagi-settings.exe`。存在するときだけ）
+    pub settings_gui: Option<PathBuf>,
     /// 設定ファイル（`config.toml`）。ファイル自体が無くてもメモ帳が作成を尋ねるので存在は問わない
     pub settings_file: Option<PathBuf>,
     /// 設定フォルダ（存在するときだけ）
@@ -281,6 +292,7 @@ impl MenuTargets {
     pub fn target(&self, command: MenuCommand) -> Option<&Path> {
         match command {
             MenuCommand::SetMode(_) => None,
+            MenuCommand::OpenSettingsGui => self.settings_gui.as_deref(),
             MenuCommand::OpenSettings => self.settings_file.as_deref(),
             MenuCommand::OpenSettingsFolder => self.settings_dir.as_deref(),
             MenuCommand::OpenUserDictFolder => self.user_dict_dir.as_deref(),
@@ -316,6 +328,11 @@ pub fn resolve_targets(
         .as_ref()
         .map(|d| d.join("Nagi").join("logs"))
         .filter(|p| exists(p));
+    let settings_gui = env
+        .module_dir
+        .as_ref()
+        .map(|d| d.join(SETTINGS_GUI_EXE))
+        .filter(|p| exists(p));
     let verify_script = env
         .module_dir
         .as_ref()
@@ -338,6 +355,7 @@ pub fn resolve_targets(
     });
     let staged_version = apply_update_script.as_ref().and(staged);
     MenuTargets {
+        settings_gui,
         settings_file,
         settings_dir: user_dir,
         user_dict_dir,
@@ -389,7 +407,11 @@ pub fn menu_entries(
     }
     entries.push(MenuEntry::Separator);
     let open_items = [
-        (MenuCommand::OpenSettings, "設定を開く（config.toml）…"),
+        (MenuCommand::OpenSettingsGui, "設定…"),
+        (
+            MenuCommand::OpenSettings,
+            "設定ファイル（config.toml）を直接開く",
+        ),
         (MenuCommand::OpenSettingsFolder, "設定フォルダを開く"),
         (
             MenuCommand::OpenUserDictFolder,
@@ -585,6 +607,7 @@ mod tests {
         let commands = [
             MenuCommand::SetMode(InputMode::Hiragana),
             MenuCommand::SetMode(InputMode::Alphanumeric),
+            MenuCommand::OpenSettingsGui,
             MenuCommand::OpenSettings,
             MenuCommand::OpenSettingsFolder,
             MenuCommand::OpenUserDictFolder,
@@ -616,6 +639,7 @@ mod tests {
     fn all_targets() -> MenuTargets {
         let p = |s: &str| Some(PathBuf::from(s));
         MenuTargets {
+            settings_gui: p("C:/p/nagi-settings.exe"),
             settings_file: p("C:/n/config.toml"),
             settings_dir: p("C:/n"),
             user_dict_dir: p("C:/n/user_dict"),
@@ -649,11 +673,12 @@ mod tests {
             })
             .collect();
         assert_eq!(checked, ["英数"]);
-        // 末尾の 5 項目は開く操作（順序込み）で、対象があるので全部選べる
+        // 末尾の 6 項目は開く操作（順序込み）で、対象があるので全部選べる
         let commands = command_entries(&entries);
         assert_eq!(
             commands[2..],
             [
+                (MenuCommand::OpenSettingsGui, true),
                 (MenuCommand::OpenSettings, true),
                 (MenuCommand::OpenSettingsFolder, true),
                 (MenuCommand::OpenUserDictFolder, true),
@@ -662,8 +687,12 @@ mod tests {
             ]
         );
         assert!(matches!(
+            entries.iter().rev().nth(5),
+            Some(MenuEntry::Command { label, .. }) if label == "設定…"
+        ));
+        assert!(matches!(
             entries.iter().rev().nth(4),
-            Some(MenuEntry::Command { label, .. }) if label == "設定を開く（config.toml）…"
+            Some(MenuEntry::Command { label, .. }) if label == "設定ファイル（config.toml）を直接開く"
         ));
         // 状態の行（menu_lines）が入る
         assert!(entries.contains(&MenuEntry::Info("変換: 辞書のみ".into())));
@@ -716,7 +745,16 @@ mod tests {
                 "/u/Nagi/user_dict",
                 "/lad/Nagi/logs",
                 "/pf/Nagi/verify.ps1",
+                "/pf/Nagi/nagi-settings.exe",
             ]),
+        );
+        assert_eq!(
+            t.settings_gui.as_deref(),
+            Some(Path::new("/pf/Nagi/nagi-settings.exe"))
+        );
+        assert_eq!(
+            t.target(MenuCommand::OpenSettingsGui),
+            Some(Path::new("/pf/Nagi/nagi-settings.exe"))
         );
         assert_eq!(
             t.settings_file.as_deref(),
@@ -748,6 +786,7 @@ mod tests {
         assert_eq!(t.user_dict_dir.as_deref(), Some(Path::new("/ad/Nagi")));
         assert_eq!(t.log_dir, None);
         assert_eq!(t.verify_script, None);
+        assert_eq!(t.settings_gui, None);
 
         // config_path の親が無ければ %APPDATA%\Nagi へ。空の config_path は無いものとして扱う
         let t = resolve_targets(Some("/gone/config.toml"), &env(), existing(&["/ad/Nagi"]));

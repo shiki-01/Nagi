@@ -1296,6 +1296,65 @@ fn sentence_nbest_backend() -> Arc<SentenceNBestBackend> {
     ))
 }
 
+/// 同じ表記の文全体候補（出所だけが異なる）を返すバックエンド
+struct DuplicateSentenceBackend;
+
+impl ConversionBackend for DuplicateSentenceBackend {
+    fn name(&self) -> &str {
+        "duplicate-sentence-test"
+    }
+
+    fn convert_sentence(&self, reading: &str, _: &str) -> Vec<BackendSegment> {
+        vec![BackendSegment {
+            reading: reading.to_string(),
+            surface: "代替".to_string(),
+            sources: vec![CandidateSource::Learned],
+        }]
+    }
+
+    fn segment_candidates(&self, _: &str, _: &str, _: usize) -> Vec<BackendCandidate> {
+        Vec::new()
+    }
+
+    fn sentence_candidates(&self, reading: &str, _: &str, _: usize) -> Vec<BackendSentence> {
+        let one = |surface: &str, source: CandidateSource| BackendSentence {
+            segments: vec![BackendSegment {
+                reading: reading.to_string(),
+                surface: surface.to_string(),
+                sources: vec![source],
+            }],
+        };
+        vec![
+            one("代替", CandidateSource::Learned),
+            one("代替", CandidateSource::Llm),
+            one("代替", CandidateSource::Learned),
+            one("大体", CandidateSource::SystemDict),
+        ]
+    }
+}
+
+#[test]
+fn sentence_view_merges_duplicate_surfaces_and_unions_sources() {
+    let mut e = Engine::new(Arc::new(DuplicateSentenceBackend), EngineConfig::default());
+    type_str(&mut e, "s", "daitai");
+    let r = press(&mut e, "s", "Space");
+    let candidates = r.candidates.expect("候補ウィンドウが開くはず");
+    let count = candidates
+        .items
+        .iter()
+        .filter(|c| c.surface == "代替")
+        .count();
+    assert_eq!(count, 1, "同じ表記は 1 行にまとまる");
+    let first = &candidates.items[0];
+    assert_eq!(first.surface, "代替");
+    assert!(first.sources.contains(&CandidateSource::Learned));
+    assert!(first.sources.contains(&CandidateSource::Llm));
+    // 行と文節構成の添字対応が崩れていない: 2 つ目の行を選ぶと「大体」になる
+    assert_eq!(candidates.items[1].surface, "大体");
+    let r = press(&mut e, "s", "Space");
+    assert_eq!(r.preedit.expect("preedit").text, "大体");
+}
+
 #[test]
 fn sentence_view_shows_multiple_whole_sentence_candidates() {
     let mut e = Engine::new(sentence_nbest_backend(), EngineConfig::default());

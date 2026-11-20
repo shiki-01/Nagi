@@ -9,6 +9,7 @@
 //! ```text
 //! nagi_windows_tsf.dll   TSF の入力方式（COM の InprocServer32）
 //! imserver.exe           変換エンジン
+//! nagi-settings.exe      設定画面（ローカルの Web 画面を既定のブラウザで開く。decisions.md H-97）
 //! install.ps1 / uninstall.ps1 / verify.ps1（実機の検証用。docs/windows-verification.md）
 //! apply-update.ps1       取得済みの更新の適用（UAC 1 回。decisions.md H-95）
 //! README.md              docs/windows-install.md（SmartScreen の手順を含む）
@@ -28,6 +29,8 @@ use sha2::{Digest, Sha256};
 pub const DLL_FILE: &str = "nagi_windows_tsf.dll";
 /// エンジンの実行ファイル名。
 pub const IMSERVER_FILE: &str = "imserver.exe";
+/// 設定画面の実行ファイル名（`core/settings-ui` の bin。`nagi_windows::status::SETTINGS_GUI_EXE` と同じ）。
+pub const SETTINGS_FILE: &str = "nagi-settings.exe";
 /// リポジトリ上の Windows 用ライセンス一覧（`gen-licenses` の出力。iOS 用の
 /// `THIRD_PARTY_LICENSES.md` とは別。decisions.md H-43）。
 pub const WINDOWS_LICENSES_FILE: &str = "THIRD_PARTY_LICENSES_WINDOWS.md";
@@ -44,6 +47,8 @@ pub struct Options {
     pub dll: Option<PathBuf>,
     /// imserver.exe のパス。未指定なら `<target>[/<triple>]/release/imserver.exe`。
     pub imserver: Option<PathBuf>,
+    /// nagi-settings.exe のパス。未指定なら `<target>[/<triple>]/release/nagi-settings.exe`。
+    pub settings: Option<PathBuf>,
     /// 既定パスを探すときのターゲットトリプル（例: `x86_64-pc-windows-msvc`）。
     pub target: Option<String>,
     /// 出力先ディレクトリ。未指定は `<target>/windows-bundle`。
@@ -78,6 +83,7 @@ pub enum Source {
 pub struct Inputs {
     pub dll: PathBuf,
     pub imserver: PathBuf,
+    pub settings: PathBuf,
     pub repo: PathBuf,
     pub version: String,
 }
@@ -107,6 +113,7 @@ pub fn plan(inputs: &Inputs) -> Result<Vec<Entry>, String> {
     let entries = vec![
         file(DLL_FILE, inputs.dll.clone()),
         file(IMSERVER_FILE, inputs.imserver.clone()),
+        file(SETTINGS_FILE, inputs.settings.clone()),
         file(
             "install.ps1",
             repo.join("frontend-windows/dist/install.ps1"),
@@ -262,7 +269,9 @@ fn stage(stage_dir: &Path, entries: &[Entry]) -> Result<(), String> {
                 .map_err(|err| format!("{} の読み込みに失敗しました: {err}", p.display()))?,
             Source::Bytes(b) => b.clone(),
         };
-        if (e.name == DLL_FILE || e.name == IMSERVER_FILE) && !looks_like_pe(&bytes) {
+        if (e.name == DLL_FILE || e.name == IMSERVER_FILE || e.name == SETTINGS_FILE)
+            && !looks_like_pe(&bytes)
+        {
             return Err(format!(
                 "{} が Windows の実行形式（PE）ではありません。MSVC ターゲットでビルドした成果物を指定してください",
                 e.name
@@ -306,7 +315,7 @@ pub fn assemble(
 
     if let Some((signtool, pfx, timestamp_url)) = sign {
         let password = std::env::var(PFX_PASSWORD_ENV).ok();
-        for file in [DLL_FILE, IMSERVER_FILE] {
+        for file in [DLL_FILE, IMSERVER_FILE, SETTINGS_FILE] {
             let target = stage_dir.join(file);
             run_signtool(
                 signtool,
@@ -353,6 +362,9 @@ pub fn run(opts: Options) -> Result<(), String> {
         imserver: opts
             .imserver
             .unwrap_or_else(|| default_artifact(&target_dir, triple, IMSERVER_FILE)),
+        settings: opts
+            .settings
+            .unwrap_or_else(|| default_artifact(&target_dir, triple, SETTINGS_FILE)),
         repo,
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
@@ -427,9 +439,12 @@ mod tests {
         let exe = root.join("b.exe");
         fs::write(&dll, b"MZ-dll").unwrap();
         fs::write(&exe, b"MZ-exe").unwrap();
+        let settings = root.join("c.exe");
+        fs::write(&settings, b"MZ-settings").unwrap();
         Inputs {
             dll,
             imserver: exe,
+            settings,
             repo,
             version: "1.2.3".to_string(),
         }
@@ -463,6 +478,7 @@ mod tests {
             [
                 "nagi_windows_tsf.dll",
                 "imserver.exe",
+                "nagi-settings.exe",
                 "install.ps1",
                 "uninstall.ps1",
                 "verify.ps1",
@@ -512,8 +528,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} が zip に無い"))
                 .1
         };
-        // すべて最上位ディレクトリの下にあり、SHA256SUMS を含めて 13 個
-        assert_eq!(files.len(), 13);
+        // すべて最上位ディレクトリの下にあり、SHA256SUMS を含めて 14 個
+        assert_eq!(files.len(), 14);
         assert!(
             files
                 .iter()
@@ -521,6 +537,7 @@ mod tests {
         );
         assert_eq!(get("VERSION"), b"1.2.3\n");
         assert_eq!(get("nagi_windows_tsf.dll"), b"MZ-dll");
+        assert_eq!(get("nagi-settings.exe"), b"MZ-settings");
         // ライセンス一覧は Windows 用（iOS 用ではない）が THIRD_PARTY_LICENSES.md の名前で入る
         assert_eq!(get("THIRD_PARTY_LICENSES.md"), b"third\n");
 
@@ -533,7 +550,7 @@ mod tests {
 
         // SHA256SUMS は SHA256SUMS 以外のすべてを、zip の中身どおりに列挙する
         let sums = String::from_utf8(get(CHECKSUM_FILE).clone()).unwrap();
-        assert_eq!(sums.lines().count(), 12);
+        assert_eq!(sums.lines().count(), 13);
         for (name, data) in files.iter().filter(|(n, _)| !n.ends_with(CHECKSUM_FILE)) {
             let short = name.strip_prefix("Nagi-windows-1.2.3/").unwrap();
             let expected = format!("{}  {short}", crate::update_sign::sha256_hex(data));

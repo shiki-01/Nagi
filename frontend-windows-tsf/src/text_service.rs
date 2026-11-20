@@ -572,6 +572,7 @@ impl Core {
         };
         match command {
             MenuCommand::SetMode(_) => {}
+            MenuCommand::OpenSettingsGui => langbar::run_settings_gui(kind, path),
             MenuCommand::OpenSettings => langbar::open_in_notepad(kind, path),
             MenuCommand::OpenSettingsFolder
             | MenuCommand::OpenUserDictFolder
@@ -767,6 +768,7 @@ impl Core {
         {
             self.report_context(ctx);
         }
+        let started = std::time::Instant::now();
         match self.engine.process_key(&self.session_id, &key) {
             Ok(result) => {
                 crate::e2e_probe::record_event(
@@ -783,6 +785,7 @@ impl Core {
             }
             Err(e) => {
                 crate::e2e_probe::record_event("engine_error", &format!("{e:?}"));
+                log_key_error(&e, self.is_composing(), started.elapsed());
                 KeyOutcome {
                     eaten: self.is_composing(),
                     ..passthrough
@@ -1127,5 +1130,25 @@ impl ITfCompartmentEventSink_Impl for CompartmentSink_Impl {
                 Ok(())
             },
         )
+    }
+}
+
+/// キー応答の失敗を診断ログに出す。1 秒あたり最大 1 行（入力内容・キーの種類は書かない）
+fn log_key_error(
+    error: &nagi_windows::client::ClientError,
+    composing: bool,
+    elapsed: std::time::Duration,
+) {
+    thread_local! {
+        static THROTTLE: RefCell<nagi_windows::diag::LogThrottle> = RefCell::default();
+        static START: std::time::Instant = std::time::Instant::now();
+    }
+    let now = START.with(|s| s.elapsed());
+    let allowed = THROTTLE.with(|t| t.borrow_mut().allow(now, std::time::Duration::from_secs(1)));
+    if allowed {
+        crate::tsf_log::log(
+            "key",
+            &nagi_windows::diag::format_key_error(error, composing, elapsed),
+        );
     }
 }

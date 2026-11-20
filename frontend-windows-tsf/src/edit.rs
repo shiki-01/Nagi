@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nagi_protocol::ProcessKeyResult;
-use nagi_windows::candidates::Rect;
+use nagi_windows::candidates::{AnchorSource, Rect, choose_anchor};
 use nagi_windows::preedit_style::AttrRun;
 use nagi_windows::reconvert::{RECONVERT_READ_LIMIT, eligible_text};
 use windows::Win32::Foundation::{E_FAIL, FALSE, RECT};
@@ -250,21 +250,55 @@ pub fn selection_range(context: &ITfContext, ec: u32) -> Result<ITfRange> {
         .ok_or_else(|| windows::core::Error::from(E_FAIL))
 }
 
-/// composition（なければ選択）の画面上の矩形を測って `env.caret` に入れる。失敗したら `None`
+/// 範囲の画面上の矩形（`GetTextExt`）。失敗したら `None`
+fn text_ext(context: &ITfContext, ec: u32, range: &ITfRange) -> Option<Rect> {
+    let view = unsafe { context.GetActiveView() }.ok()?;
+    let mut rc = RECT::default();
+    let mut clipped = BOOL::default();
+    unsafe { view.GetTextExt(ec, range, &mut rc, &mut clipped) }.ok()?;
+    Some(to_rect(rc))
+}
+
+/// 候補ウィンドウの基準を測って `env.caret` に入れる。composition があれば入力部分の左端
+/// （先頭の点範囲 → composition 全体）、なければ（または測れなければ）選択範囲（キャレット）。
+/// どれも測れなければ `None`（マウス位置になる）
 fn measure_caret(context: &ITfContext, ec: u32, env: &Env) {
-    let measure = || -> Result<Rect> {
-        let current = env.composition.borrow().clone();
-        let range = match current {
-            Some(c) => unsafe { c.GetRange() }?,
-            None => selection_range(context, ec)?,
-        };
-        let view = unsafe { context.GetActiveView() }?;
-        let mut rc = RECT::default();
-        let mut clipped = BOOL::default();
-        unsafe { view.GetTextExt(ec, &range, &mut rc, &mut clipped) }?;
-        Ok(to_rect(rc))
+    let current = env.composition.borrow().clone();
+    let (mut start, mut range) = (None, None);
+    if let Some(c) = current
+        && let Ok(whole) = unsafe { c.GetRange() }
+    {
+        // 先頭の点範囲: 複数行でも先頭が含まれる行の下端が取れる
+        start = unsafe { whole.Clone() }
+            .and_then(|p| {
+                unsafe { p.Collapse(ec, TF_ANCHOR_START) }?;
+                Ok(p)
+            })
+            .ok()
+            .and_then(|p| text_ext(context, ec, &p));
+        range = text_ext(context, ec, &whole);
+    }
+    let caret = if start.is_some() || range.is_some() {
+        // 先頭か全体が測れていれば、選択範囲は後回し（測定を省く）
+        None
+    } else {
+        selection_range(context, ec)
+            .ok()
+            .and_then(|r| text_ext(context, ec, &r))
     };
-    env.caret.set(measure().ok());
+    let chosen = choose_anchor(start, range, caret);
+    log_anchor_source(chosen.map_or(AnchorSource::Mouse, |(source, _)| source));
+    env.caret.set(chosen.map(|(_, rect)| rect));
+}
+
+/// 基準の由来が変わったときだけ診断ログに出す（矩形の値は書かない）
+fn log_anchor_source(source: AnchorSource) {
+    thread_local! {
+        static LAST: Cell<Option<AnchorSource>> = const { Cell::new(None) };
+    }
+    if LAST.with(|l| l.replace(Some(source))) != Some(source) {
+        crate::tsf_log::log("cand", &format!("anchor source={}", source.as_str()));
+    }
 }
 
 /// 編集計画を反映する。順序は「直前の確定の削除 → 確定 → preedit の更新」。

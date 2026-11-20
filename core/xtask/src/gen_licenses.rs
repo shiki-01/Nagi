@@ -77,9 +77,14 @@ const PLATFORMS: [Platform; 2] = [
                 package: "nagi-server",
                 features: "llama",
             },
+            Root {
+                package: "nagi-settings-ui",
+                features: "",
+            },
         ],
         scope: "Windows 向けビルド（TSF の DLL `nagi-windows-tsf` と、エンジン `imserver` = `nagi-server`\n\
-                feature `llama` 有効、ターゲット `x86_64-pc-windows-msvc`）の Rust 依存クレートの一覧である。\n\
+                feature `llama` 有効、設定画面 `nagi-settings` = `nagi-settings-ui`、\n\
+                ターゲット `x86_64-pc-windows-msvc`）の Rust 依存クレートの一覧である。\n\
                 配布 zip（`bundle-windows`）には `THIRD_PARTY_LICENSES.md` の名前で同梱される。",
         notes: &[
             COMMON_NOTES[0],
@@ -326,9 +331,12 @@ not-a-version
         // iOS の同梱ファイル名は project.yml が参照しているので変えない
         assert_eq!(select("ios").unwrap()[0].output, "THIRD_PARTY_LICENSES.md");
         assert!(select("android").is_err());
-        // Windows の起点は DLL とエンジンの両方
+        // Windows の起点は DLL・エンジン・設定画面
         let packages: Vec<_> = win[0].roots.iter().map(|r| r.package).collect();
-        assert_eq!(packages, ["nagi-windows-tsf", "nagi-server"]);
+        assert_eq!(
+            packages,
+            ["nagi-windows-tsf", "nagi-server", "nagi-settings-ui"]
+        );
     }
 
     #[test]

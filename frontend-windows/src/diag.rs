@@ -6,6 +6,7 @@
 //! （レベルとコードだけ）。
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use nagi_protocol::{MemoryPressureState, SetEnvironmentParams, ThermalState};
 
@@ -92,6 +93,53 @@ pub fn describe_error(error: &ClientError) -> String {
         ClientError::InvalidResponse(_) => "invalid response".into(),
         // 起動時は `spawn: <OS のエラー>` / パイプの取得失敗。パスと OS のエラーだけで入力は含まない
         ClientError::SendFailed(reason) => format!("send failed: {reason}"),
+    }
+}
+
+/// キー応答の失敗の種類（ログの `kind=`。メッセージ本文は書かない）
+pub fn key_error_kind(error: &ClientError) -> &'static str {
+    match error {
+        ClientError::Timeout => "timeout",
+        ClientError::NotConnected => "not_connected",
+        ClientError::ConnectionClosed => "disconnected",
+        ClientError::Rpc { .. } => "rpc",
+        ClientError::InvalidResponse(_) => "invalid_response",
+        ClientError::SendFailed(_) => "send_failed",
+    }
+}
+
+/// キー応答の失敗 1 件のログ本文。入力内容・キーの種類は含めない
+pub fn format_key_error(error: &ClientError, composing: bool, elapsed: Duration) -> String {
+    let detail = match error {
+        // 種類だけでは足りないものに限り、`describe_error`（本文は含まない）の理由を足す
+        ClientError::Rpc { .. } | ClientError::SendFailed(_) => {
+            format!(" reason={}", describe_error(error))
+        }
+        _ => String::new(),
+    };
+    format!(
+        "engine error kind={} composing={composing} elapsed_ms={}{detail}",
+        key_error_kind(error),
+        elapsed.as_millis()
+    )
+}
+
+/// 一定間隔あたり最大 1 件に間引く（キー応答の失敗が続いてもログを埋めない）
+#[derive(Debug, Default)]
+pub struct LogThrottle {
+    last: Option<Duration>,
+}
+
+impl LogThrottle {
+    /// `now`（任意の起点からの経過時間）で出してよければ true にして記録する
+    pub fn allow(&mut self, now: Duration, interval: Duration) -> bool {
+        match self.last {
+            Some(last) if now.saturating_sub(last) < interval => false,
+            _ => {
+                self.last = Some(now);
+                true
+            }
+        }
     }
 }
 
@@ -282,6 +330,46 @@ mod tests {
         assert_eq!(format_timestamp(1_761_221_696), "2025-10-23T12:14:56Z");
         // 閏年でない年の 3/1
         assert_eq!(format_timestamp(1_677_628_800), "2023-03-01T00:00:00Z");
+    }
+
+    #[test]
+    fn key_error_line_has_kind_state_and_elapsed_only() {
+        let text = format_key_error(&ClientError::Timeout, true, Duration::from_millis(251));
+        assert_eq!(
+            text,
+            "engine error kind=timeout composing=true elapsed_ms=251"
+        );
+        let text = format_key_error(
+            &ClientError::ConnectionClosed,
+            false,
+            Duration::from_millis(3),
+        );
+        assert_eq!(
+            text,
+            "engine error kind=disconnected composing=false elapsed_ms=3"
+        );
+        // サーバーのメッセージ（入力を含みうる）は書かない
+        let text = format_key_error(
+            &ClientError::Rpc {
+                code: -32000,
+                message: "secret".into(),
+            },
+            true,
+            Duration::ZERO,
+        );
+        assert!(text.contains("kind=rpc") && text.contains("code=-32000"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn log_throttle_allows_one_per_interval() {
+        let sec = Duration::from_secs(1);
+        let mut t = LogThrottle::default();
+        assert!(t.allow(Duration::from_millis(10), sec));
+        assert!(!t.allow(Duration::from_millis(500), sec));
+        assert!(!t.allow(Duration::from_millis(1009), sec));
+        assert!(t.allow(Duration::from_millis(1010), sec));
+        assert!(!t.allow(Duration::from_millis(1500), sec));
     }
 
     #[test]

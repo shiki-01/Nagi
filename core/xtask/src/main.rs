@@ -110,7 +110,7 @@ enum Task {
         #[arg(long)]
         sign_identity: Option<String>,
     },
-    /// Windows 版の配布物（TSF の DLL・imserver.exe・インストーラスクリプト・ライセンス）を収集し、
+    /// Windows 版の配布物（TSF の DLL・imserver.exe・nagi-settings.exe・インストーラスクリプト・ライセンス）を収集し、
     /// チェックサムをつけて zip 化する（target/windows-bundle/Nagi-windows-<version>.zip）。
     /// ビルドは行わない（MSVC ターゲットでビルド済みの成果物を集める。`windows-release.yml` を参照）
     BundleWindows {
@@ -120,6 +120,9 @@ enum Task {
         /// imserver.exe のパス（既定は target[/<triple>]/release/）
         #[arg(long)]
         imserver: Option<std::path::PathBuf>,
+        /// nagi-settings.exe のパス（既定は target[/<triple>]/release/）
+        #[arg(long)]
+        settings: Option<std::path::PathBuf>,
         /// 既定パスを探すターゲットトリプル（例: x86_64-pc-windows-msvc）
         #[arg(long)]
         target: Option<String>,
@@ -231,6 +234,7 @@ fn main() -> ExitCode {
         Task::BundleWindows {
             dll,
             imserver,
+            settings,
             target,
             out_dir,
             sign_pfx,
@@ -239,6 +243,7 @@ fn main() -> ExitCode {
         } => bundle_windows::run(bundle_windows::Options {
             dll,
             imserver,
+            settings,
             target,
             out_dir,
             sign_pfx,

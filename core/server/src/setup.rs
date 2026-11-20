@@ -829,7 +829,7 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
     runtime.set_model_control(Arc::downgrade(&control));
     pipeline.warm_up();
     if let Some(loader) = pending_loader {
-        spawn_model_loader(loader, pipeline.clone());
+        spawn_model_loader(loader, pipeline.clone(), runtime.clone());
     }
     let mut reload = Reloadable {
         config_path,
@@ -854,10 +854,20 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
 
 /// モデルをバックグラウンドで読み込み、完了したらパイプラインに取り付ける。
 /// 失敗（`Err`・パニック）しても辞書のみで動き続ける（理由は stderr。入力内容は含まない）
-fn spawn_model_loader(loader: ModelLoader, pipeline: Arc<Pipeline>) {
+fn spawn_model_loader(loader: ModelLoader, pipeline: Arc<Pipeline>, runtime: Arc<Runtime>) {
+    // 読み込み中の表示（プロファイルの理由）を、完了・失敗・パニックのいずれでも解除する
+    struct LoadingGuard(Arc<Runtime>);
+    impl Drop for LoadingGuard {
+        fn drop(&mut self) {
+            self.0.set_model_loading(false);
+        }
+    }
+    runtime.set_model_loading(true);
+    let guard_runtime = runtime.clone();
     let spawned = std::thread::Builder::new()
         .name("nagi-model-load".into())
         .spawn(move || {
+            let _guard = LoadingGuard(guard_runtime);
             let started = Instant::now();
             match loader() {
                 Ok(model) => {
@@ -871,6 +881,7 @@ fn spawn_model_loader(loader: ModelLoader, pipeline: Arc<Pipeline>) {
             }
         });
     if let Err(e) = spawned {
+        runtime.set_model_loading(false);
         crate::elog!(
             "imserver: モデル読み込みスレッドを開始できませんでした: {e}（辞書のみで動作します）"
         );

@@ -255,6 +255,8 @@ pub struct Runtime {
     system: SystemInfo,
     controller: Mutex<Controller>,
     llm_loaded: AtomicBool,
+    /// 変換モデルを非同期に読み込み中か（起動直後。プロファイルの理由を故障と区別するため）
+    llm_loading: AtomicBool,
     calibration_ms: Mutex<Option<f64>>,
     tunables: RwLock<Tunables>,
     learner: Mutex<Learner>,
@@ -345,6 +347,7 @@ impl Runtime {
             system,
             controller: Mutex::new(controller),
             llm_loaded: AtomicBool::new(has_llm),
+            llm_loading: AtomicBool::new(false),
             calibration_ms: Mutex::new(None),
             tunables: RwLock::new(tunables),
             learner: Mutex::new(learner),
@@ -430,6 +433,13 @@ impl Runtime {
 
     fn announce(&self, change: Option<Change>) {
         if let Some(c) = change {
+            // 診断用（imserver の stderr。入力内容は含まない）
+            crate::elog!(
+                "imserver: プロファイル {} → {}（{}）",
+                c.from.as_str(),
+                c.to.as_str(),
+                c.reason
+            );
             self.push_event(Event {
                 level: NotifyLevel::Info,
                 code: "profile_changed",
@@ -572,6 +582,14 @@ impl Runtime {
         self.recompute_profile(true);
     }
 
+    /// 変換モデルの非同期読み込み中かどうかを設定する（起動直後に `true`、完了・失敗で `false`）。
+    /// 読み込み中でモデルが無いあいだは、プロファイルの理由を「読み込み中」にする
+    /// （モデルが見つからない・読み込み失敗の「使えない」と区別する。プロファイル自体は変わらない）
+    pub fn set_model_loading(&self, loading: bool) {
+        self.llm_loading.store(loading, Ordering::Relaxed);
+        self.recompute_profile(true);
+    }
+
     /// キャリブレーション推論の実測（中央値、ミリ秒）で、初回判定をやり直す
     pub fn finish_calibration(&self, median_ms: f64) {
         if let Ok(mut c) = self.calibration_ms.lock() {
@@ -615,7 +633,13 @@ impl Runtime {
             return;
         };
         let has_llm = self.llm_loaded.load(Ordering::Relaxed);
-        let decision = Self::decide(&t, &self.system, has_llm, *cal, self.memory_budget_mb());
+        let mut decision = Self::decide(&t, &self.system, has_llm, *cal, self.memory_budget_mb());
+        if !has_llm
+            && self.llm_loading.load(Ordering::Relaxed)
+            && decision.reason == nagi_profile::REASON_NO_LLM
+        {
+            decision.reason = nagi_profile::REASON_LLM_LOADING.to_string();
+        }
         let now = self.now_ms();
         let change = self.controller.lock().ok().and_then(|mut c| {
             let _ = force;
@@ -801,6 +825,7 @@ impl Runtime {
             .is_some_and(|mb| mb < MIN_MEMORY_BUDGET_FOR_LLM_MB);
         let delay = self.reload_delay.lock().map_or(MODEL_RELOAD_DELAY, |d| *d);
         let now = self.now_ms();
+        let mut unload_reason = "";
         let action = {
             let Ok(mut st) = self.model.lock() else {
                 return;
@@ -814,6 +839,13 @@ impl Runtime {
                     None
                 } else {
                     st.unloaded = true;
+                    unload_reason = if st.manual {
+                        "明示の解放要求"
+                    } else if budget_low {
+                        "メモリ上限が LLM の最小値未満"
+                    } else {
+                        "メモリ逼迫（危険）"
+                    };
                     Some(Action::Unload)
                 }
             } else if !st.unloaded || (st.gave_up && !immediate) {
@@ -837,6 +869,11 @@ impl Runtime {
                 }
             }
         };
+        match &action {
+            Some(Action::Unload) => crate::elog!("imserver: モデル解放（{unload_reason}）"),
+            Some(Action::Reload) => crate::elog!("imserver: モデル再読み込み"),
+            None => {}
+        }
         match (action, self.control()) {
             (Some(Action::Unload), Some(c)) => c.unload_model(),
             (Some(Action::Reload), Some(c)) => c.reload_model(),
@@ -1342,5 +1379,17 @@ mod tests {
         let record = crate::calibration::load(&path).expect("読み込める");
         assert_eq!(record.median_ms, 42.0);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loading_reason_is_distinct_from_unavailable() {
+        let rt = Runtime::detached(false);
+        assert_eq!(rt.profile_reason(), nagi_profile::REASON_NO_LLM);
+        rt.set_model_loading(true);
+        assert_eq!(rt.profile_reason(), nagi_profile::REASON_LLM_LOADING);
+        assert_eq!(rt.profile(), Profile::Minimal);
+        // 読み込みに失敗（完了せず解除）したら「使えない」に戻る
+        rt.set_model_loading(false);
+        assert_eq!(rt.profile_reason(), nagi_profile::REASON_NO_LLM);
     }
 }

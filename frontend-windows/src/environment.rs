@@ -77,6 +77,11 @@ pub trait EnvironmentProbe {
     fn thermal_override(&self) -> Option<ThermalState> {
         None
     }
+    /// メモリ逼迫の状態の直接指定（検証用の上書き専用。既定は `None` = 物理メモリから判定する）。
+    /// 指定があればヒステリシスを通さず、そのまま使う
+    fn memory_pressure_override(&self) -> Option<MemoryPressureState> {
+        None
+    }
     /// 検出値が検証用ファイルで上書きされているか（ログの `source=` 用）
     fn is_overridden(&self) -> bool {
         false
@@ -95,21 +100,116 @@ pub fn on_battery(power: &PowerSample) -> Option<bool> {
     }
 }
 
-/// メモリ逼迫の判定。Windows には OS のイベントが無いので、利用可能量から推定する。
-/// 利用可能が 5% 未満または 300MB 未満で `Critical`、10% 未満または 800MB 未満で `Warning`
-/// （閾値は実測なし。要調整）
+/// `Warning` の絶対量の下限（MB）。利用可能がこれ未満なら総メモリによらず `Warning`
+const WARNING_MB: u64 = 600;
+/// `Warning` の割合（%）。大きな総メモリでは [`WARNING_PCT_CAP_MB`] で頭打ちにする
+const WARNING_PCT: u64 = 4;
+/// `Warning` の割合から求める閾値の上限（MB）
+const WARNING_PCT_CAP_MB: u64 = 1000;
+/// `Critical` の絶対量の下限（MB）
+const CRITICAL_MB: u64 = 250;
+/// `Critical` の割合（%）
+const CRITICAL_PCT: u64 = 2;
+/// `Critical` の割合から求める閾値の上限（MB）
+const CRITICAL_PCT_CAP_MB: u64 = 500;
+/// 改善（逼迫が軽くなる向きの遷移）に要る余裕。閾値の 125%（`5 / 4`）を上回ること
+const RECOVERY_MARGIN: (u64, u64) = (5, 4);
+
+/// 総メモリ `total_mb` での、`Warning` と `Critical` になる利用可能量の閾値（MB。未満で該当）。
+///
+/// 閾値は `max(絶対量, min(総メモリ × 割合, 上限))`。小さな総メモリでは絶対量が、大きな総メモリでは
+/// 割合（上限で頭打ち）が効く。割合だけだと総メモリが大きいほど閾値が際限なく大きくなり、
+/// 十分な空きがあっても逼迫と判定してしまうため、割合から求める値に上限を置く
+fn pressure_thresholds_mb(total_mb: u64) -> (u64, u64) {
+    let warning = WARNING_MB.max((total_mb * WARNING_PCT / 100).min(WARNING_PCT_CAP_MB));
+    let critical = CRITICAL_MB.max((total_mb * CRITICAL_PCT / 100).min(CRITICAL_PCT_CAP_MB));
+    (warning, critical)
+}
+
+/// 閾値を `scale`（分子, 分母）倍して分類する本体
+fn classify(mem: &MemorySample, scale: (u64, u64)) -> MemoryPressureState {
+    let (warning, critical) = pressure_thresholds_mb(mem.total_mb);
+    // 利用可能 × 分母 < 閾値 × 分子 の整数比較（小数を避ける）
+    let below = |threshold: u64| mem.available_mb.saturating_mul(scale.1) < threshold * scale.0;
+    if below(critical) {
+        MemoryPressureState::Critical
+    } else if below(warning) {
+        MemoryPressureState::Warning
+    } else {
+        MemoryPressureState::Normal
+    }
+}
+
+/// メモリ逼迫の判定（その時点の値だけで決める。状態を持つ判定は [`MemoryHysteresis`]）。
+/// Windows には OS のイベントが無いので、利用可能量から推定する。
+///
+/// 利用可能が `Critical`: 250MB 未満、または総メモリの 2%（上限 500MB）未満 /
+/// `Warning`: 600MB 未満、または総メモリの 4%（上限 1000MB）未満。
+///
+/// **閾値は実測に基づく値ではない暫定値**。根拠は 2 点: (1) LLM（zenz small）の読み込みに要るのは
+/// 数百 MB で、1GB 超の空きがあれば `balanced` で動かせる、(2) 実機（搭載 16GB・使用中 92%・
+/// 利用可能 1.3GB〈約 8%〉・うちキャッシュ済み 1.1GB）で従来の閾値（10% または 800MB 未満で `Warning`）だと
+/// `balanced` が `light` に落ちた。`ullAvailPhys` はスタンバイ（回収可能なキャッシュ）を含むので、
+/// 割合だけで逼迫とみなさないよう上限を置いた。要調整
 pub fn memory_pressure(mem: &MemorySample) -> MemoryPressureState {
     if mem.total_mb == 0 {
         return MemoryPressureState::Normal;
     }
-    // available * 100 / total の整数比較（小数を避ける）
-    let pct_x100 = mem.available_mb.saturating_mul(100);
-    if pct_x100 < mem.total_mb * 5 || mem.available_mb < 300 {
-        MemoryPressureState::Critical
-    } else if pct_x100 < mem.total_mb * 10 || mem.available_mb < 800 {
-        MemoryPressureState::Warning
-    } else {
-        MemoryPressureState::Normal
+    classify(mem, (1, 1))
+}
+
+fn pressure_rank(state: MemoryPressureState) -> u8 {
+    match state {
+        MemoryPressureState::Normal => 0,
+        MemoryPressureState::Warning => 1,
+        MemoryPressureState::Critical => 2,
+    }
+}
+
+/// メモリ逼迫の判定にヒステリシスを付ける（境目で `Normal` と `Warning` を行き来しないため）。
+///
+/// 悪化は即時。改善は、閾値の 125% を上回ってから 1 段ずつではなく「125% の閾値で分類した状態」まで
+/// 戻す（例: `Warning` から `Normal` へは利用可能が 600MB × 1.25 = 750MB 以上かつ
+/// 割合の閾値 × 1.25 以上のとき）
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MemoryHysteresis {
+    state: Option<MemoryPressureState>,
+}
+
+impl MemoryHysteresis {
+    /// 新しい判定（初回は現在値をそのまま採用する）
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 現在の標本から状態を更新して返す
+    pub fn update(&mut self, mem: &MemorySample) -> MemoryPressureState {
+        let raw = memory_pressure(mem);
+        let next = match self.state {
+            Some(prev) if pressure_rank(raw) < pressure_rank(prev) && mem.total_mb > 0 => {
+                // 改善: 閾値を 125% にした分類まで（それより悪い側に留まる）。悪化はしない
+                let strict = classify(mem, RECOVERY_MARGIN);
+                let held = if pressure_rank(strict) < pressure_rank(prev) {
+                    strict
+                } else {
+                    prev
+                };
+                if pressure_rank(raw) > pressure_rank(held) {
+                    raw
+                } else {
+                    held
+                }
+            }
+            _ => raw,
+        };
+        self.state = Some(next);
+        next
+    }
+
+    /// 検証用の上書きなど、外から状態を決めた（ヒステリシスを通さずその値を採用する）
+    pub fn force(&mut self, state: MemoryPressureState) -> MemoryPressureState {
+        self.state = Some(state);
+        state
     }
 }
 
@@ -134,6 +234,19 @@ pub fn thermal(cpu: &ProcessorSample, battery_saver: Option<bool>) -> Option<The
 /// （macOS と同じ。上限を課されるのは iOS 拡張のようなプロセス）。UTC からのずれ（日付・時刻の候補用）は
 /// 夏時間の切り替えやタイムゾーンの変更で変わるので、他の項目と同じく変化したときに再送される
 pub fn snapshot(probe: &dyn EnvironmentProbe) -> SetEnvironmentParams {
+    snapshot_with(probe, &mut MemoryHysteresis::new())
+}
+
+/// [`snapshot`] に、メモリ逼迫のヒステリシス状態を渡す版（[`EnvironmentReporter`] が使う）。
+/// 検証用の上書きがあるときはヒステリシスを通さず指定値を使う
+pub fn snapshot_with(
+    probe: &dyn EnvironmentProbe,
+    memory: &mut MemoryHysteresis,
+) -> SetEnvironmentParams {
+    let memory_pressure = match probe.memory_pressure_override() {
+        Some(state) => Some(memory.force(state)),
+        None => probe.memory().map(|m| memory.update(&m)),
+    };
     let power = probe.power();
     let battery_saver = power.and_then(|p| p.battery_saver);
     SetEnvironmentParams {
@@ -144,7 +257,7 @@ pub fn snapshot(probe: &dyn EnvironmentProbe) -> SetEnvironmentParams {
                 .processor()
                 .and_then(|cpu| thermal(&cpu, battery_saver))
         }),
-        memory_pressure: probe.memory().as_ref().map(memory_pressure),
+        memory_pressure,
         memory_budget_mb: None,
         utc_offset_minutes: probe.utc_offset_minutes(),
     }
@@ -157,6 +270,7 @@ pub fn snapshot(probe: &dyn EnvironmentProbe) -> SetEnvironmentParams {
 pub struct EnvironmentReporter<P: EnvironmentProbe> {
     probe: P,
     last_sent: Option<SetEnvironmentParams>,
+    memory: MemoryHysteresis,
 }
 
 impl<P: EnvironmentProbe> EnvironmentReporter<P> {
@@ -165,6 +279,7 @@ impl<P: EnvironmentProbe> EnvironmentReporter<P> {
         Self {
             probe,
             last_sent: None,
+            memory: MemoryHysteresis::new(),
         }
     }
 
@@ -177,7 +292,7 @@ impl<P: EnvironmentProbe> EnvironmentReporter<P> {
     /// [`poll`](Self::poll) に加えて、その値が検証用の上書きによるものか（`true`）を返す（診断ログ用）
     pub fn poll_with_source(&mut self) -> Option<(SetEnvironmentParams, bool)> {
         let overridden = self.probe.is_overridden();
-        let current = snapshot(&self.probe);
+        let current = snapshot_with(&self.probe, &mut self.memory);
         if current == SetEnvironmentParams::default() || self.last_sent.as_ref() == Some(&current) {
             return None;
         }
@@ -229,11 +344,12 @@ pub fn parse_debug_env(text: &str) -> Result<DebugEnvOverride, String> {
     })
 }
 
-/// 上書き用に偽装するメモリ量（総量 16GB。`memory_pressure` の閾値で Normal / Warning / Critical になる値）
+/// 上書き用に偽装するメモリ量（総量 16GB。`memory_pressure` の閾値で Normal / Warning / Critical になる値。
+/// 判定は [`EnvironmentProbe::memory_pressure_override`] で直接指定されるので、これは表示・互換用）
 fn memory_sample_for(state: MemoryPressureState) -> MemorySample {
     let available_mb = match state {
         MemoryPressureState::Normal => 8000,
-        MemoryPressureState::Warning => 1000,
+        MemoryPressureState::Warning => 500,
         MemoryPressureState::Critical => 200,
     };
     MemorySample {
@@ -317,6 +433,10 @@ impl<P: EnvironmentProbe> EnvironmentProbe for OverridingProbe<P> {
             power.battery_saver = Some(saver);
         }
         Some(power)
+    }
+
+    fn memory_pressure_override(&self) -> Option<MemoryPressureState> {
+        self.active().and_then(|o| o.memory)
     }
 
     fn memory(&self) -> Option<MemorySample> {
@@ -453,33 +573,146 @@ mod tests {
         assert_eq!(on_battery(&desktop), Some(false));
     }
 
-    #[test]
-    fn memory_pressure_thresholds() {
-        let m = |total, available| MemorySample {
+    fn mem(total: u64, available: u64) -> MemorySample {
+        MemorySample {
             total_mb: total,
             available_mb: available,
-        };
+        }
+    }
+
+    #[test]
+    fn memory_pressure_thresholds() {
+        use MemoryPressureState::{Critical, Normal, Warning};
+        assert_eq!(memory_pressure(&mem(16000, 8000)), Normal);
+        // 実機の観測: 搭載 16GB・利用可能 1.3GB（約 8%）は Normal
+        assert_eq!(memory_pressure(&mem(15600, 1300)), Normal);
+        assert_eq!(memory_pressure(&mem(16000, 1300)), Normal);
+        // 500MB は Warning、200MB は Critical
+        assert_eq!(memory_pressure(&mem(16000, 500)), Warning);
+        assert_eq!(memory_pressure(&mem(16000, 200)), Critical);
+        // 割合（16GB の 4% = 640MB / 2% = 320MB）
+        assert_eq!(memory_pressure(&mem(16000, 639)), Warning);
+        assert_eq!(memory_pressure(&mem(16000, 640)), Normal);
+        assert_eq!(memory_pressure(&mem(16000, 319)), Critical);
+        assert_eq!(memory_pressure(&mem(16000, 320)), Warning);
+        // 絶対量: 小さな総メモリでは 250MB 未満が Critical、600MB 未満が Warning
+        assert_eq!(memory_pressure(&mem(2000, 249)), Critical);
+        assert_eq!(memory_pressure(&mem(2000, 250)), Warning);
+        assert_eq!(memory_pressure(&mem(4000, 599)), Warning);
+        assert_eq!(memory_pressure(&mem(4000, 600)), Normal);
+        assert_eq!(memory_pressure(&mem(0, 0)), Normal);
+    }
+
+    #[test]
+    fn memory_pressure_percentage_is_capped_for_large_totals() {
+        use MemoryPressureState::{Critical, Normal, Warning};
+        // 64GB: 4% は 2.5GB だが上限 1000MB で頭打ち。2GB の空きは Normal
+        assert_eq!(pressure_thresholds_mb(64000), (1000, 500));
+        assert_eq!(memory_pressure(&mem(64000, 2000)), Normal);
+        assert_eq!(memory_pressure(&mem(64000, 999)), Warning);
+        assert_eq!(memory_pressure(&mem(64000, 499)), Critical);
+        assert_eq!(pressure_thresholds_mb(4000), (600, 250));
+        assert_eq!(pressure_thresholds_mb(16000), (640, 320));
+    }
+
+    #[test]
+    fn hysteresis_worsens_immediately_and_recovers_with_margin() {
+        use MemoryPressureState::{Critical, Normal, Warning};
+        let mut h = MemoryHysteresis::new();
+        assert_eq!(h.update(&mem(8000, 4000)), Normal);
+        // 悪化は即時
+        assert_eq!(h.update(&mem(8000, 500)), Warning);
+        // 8GB の閾値は Warning 600MB / Critical 250MB。Warning から Normal へは 750MB 以上
+        assert_eq!(h.update(&mem(8000, 620)), Warning);
+        assert_eq!(h.update(&mem(8000, 749)), Warning);
+        assert_eq!(h.update(&mem(8000, 750)), Normal);
+        // Critical は即時
+        assert_eq!(h.update(&mem(8000, 200)), Critical);
+        // Critical から Warning へは 250 × 1.25 = 312.5 を上回ってから
+        assert_eq!(h.update(&mem(8000, 300)), Critical);
+        assert_eq!(h.update(&mem(8000, 313)), Warning);
+        // Critical から一気に回復したら Normal まで
+        assert_eq!(h.update(&mem(8000, 200)), Critical);
+        assert_eq!(h.update(&mem(8000, 4000)), Normal);
+    }
+
+    #[test]
+    fn hysteresis_uses_percentage_margin_for_large_totals() {
+        use MemoryPressureState::{Normal, Warning};
+        let mut h = MemoryHysteresis::new();
+        assert_eq!(h.update(&mem(16000, 500)), Warning);
+        // 16GB の Warning 閾値は 640MB。戻るには 800MB 以上
+        assert_eq!(h.update(&mem(16000, 790)), Warning);
+        assert_eq!(h.update(&mem(16000, 800)), Normal);
+    }
+
+    #[test]
+    fn hysteresis_reduces_flapping_around_the_threshold() {
+        let samples: Vec<u64> = [590, 610, 590, 610, 595, 615, 580, 620, 590, 610]
+            .into_iter()
+            .collect();
+        let count =
+            |states: Vec<MemoryPressureState>| states.windows(2).filter(|w| w[0] != w[1]).count();
+        let raw: Vec<_> = samples
+            .iter()
+            .map(|&a| memory_pressure(&mem(8000, a)))
+            .collect();
+        let mut h = MemoryHysteresis::new();
+        let smoothed: Vec<_> = samples.iter().map(|&a| h.update(&mem(8000, a))).collect();
+        assert!(count(raw.clone()) >= 8, "素の判定は境目で揺れる");
+        assert_eq!(count(smoothed), 0, "ヒステリシスなら Warning に留まる");
+    }
+
+    #[test]
+    fn reporter_applies_hysteresis_but_not_to_overrides() {
+        let probe = FakeProbe::default();
+        probe.memory.set(Some(mem(8000, 4000)));
+        let mut r = EnvironmentReporter::new(probe);
         assert_eq!(
-            memory_pressure(&m(16000, 8000)),
-            MemoryPressureState::Normal
+            r.poll().unwrap().memory_pressure,
+            Some(MemoryPressureState::Normal)
         );
-        // 割合で Warning（16GB の 9%）
+        r.probe.memory.set(Some(mem(8000, 500)));
         assert_eq!(
-            memory_pressure(&m(16000, 1440)),
-            MemoryPressureState::Warning
+            r.poll().unwrap().memory_pressure,
+            Some(MemoryPressureState::Warning)
         );
-        // 割合で Critical（16GB の 4%）
+        // 610MB は素の判定では Normal だが、ヒステリシスで Warning のまま（送り直さない）
+        r.probe.memory.set(Some(mem(8000, 610)));
+        assert!(r.poll().is_none());
+        r.probe.memory.set(Some(mem(8000, 800)));
         assert_eq!(
-            memory_pressure(&m(16000, 640)),
-            MemoryPressureState::Critical
+            r.poll().unwrap().memory_pressure,
+            Some(MemoryPressureState::Normal)
         );
-        // 絶対量: 小さな総量でも 300MB 未満は Critical、800MB 未満は Warning
+    }
+
+    #[test]
+    fn override_memory_bypasses_hysteresis() {
+        let f = TempFile::new("hyst");
+        let (probe, _) = overriding(&f);
+        let mut h = MemoryHysteresis::new();
+        f.write(r#"{"memory":"warning"}"#);
         assert_eq!(
-            memory_pressure(&m(2000, 299)),
-            MemoryPressureState::Critical
+            snapshot_with(&probe, &mut h).memory_pressure,
+            Some(MemoryPressureState::Warning)
         );
-        assert_eq!(memory_pressure(&m(4000, 700)), MemoryPressureState::Warning);
-        assert_eq!(memory_pressure(&m(0, 0)), MemoryPressureState::Normal);
+        // Warning から normal の上書きは、閾値の 125% を待たず即座に反映される
+        f.write(r#"{"memory":"normal"}"#);
+        assert_eq!(
+            snapshot_with(&probe, &mut h).memory_pressure,
+            Some(MemoryPressureState::Normal)
+        );
+        f.write(r#"{"memory":"critical"}"#);
+        assert_eq!(
+            snapshot_with(&probe, &mut h).memory_pressure,
+            Some(MemoryPressureState::Critical)
+        );
+        f.write(r#"{"memory":"warning"}"#);
+        assert_eq!(
+            snapshot_with(&probe, &mut h).memory_pressure,
+            Some(MemoryPressureState::Warning)
+        );
     }
 
     #[test]

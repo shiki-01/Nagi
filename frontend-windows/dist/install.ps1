@@ -45,7 +45,7 @@ $DllName = 'nagi_windows_tsf.dll'
 $ExeName = 'imserver.exe'
 # 配置するファイル（SHA256SUMS に載っているもの + SHA256SUMS 自身）
 $PayloadFiles = @(
-    'nagi_windows_tsf.dll', 'imserver.exe', 'uninstall.ps1', 'verify.ps1', 'apply-update.ps1', 'README.md',
+    'nagi_windows_tsf.dll', 'imserver.exe', 'nagi-settings.exe', 'uninstall.ps1', 'verify.ps1', 'apply-update.ps1', 'README.md',
     'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD_PARTY_LICENSES.md',
     'VERSION', 'SHA256SUMS'
 )
@@ -139,10 +139,15 @@ function New-StartMenuShortcuts([string]$TargetInstallDir) {
         $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         $verify = Join-Path $TargetInstallDir 'verify.ps1'
         $applyUpdate = Join-Path $TargetInstallDir 'apply-update.ps1'
+        $settingsGui = Join-Path $TargetInstallDir 'nagi-settings.exe'
+        # 旧版が作った名前（「Nagi 設定（config.toml）」）は、新しい名前に置き換わるので消す
+        Remove-Item -LiteralPath (Join-Path $folder 'Nagi 設定（config.toml）.lnk') -Force -ErrorAction SilentlyContinue
+        # 「Nagi 設定」は設定画面（nagi-settings.exe。ローカルの Web 画面を既定のブラウザで開く。H-97）。
         # Arguments の環境変数はシェルが展開しないので、config.toml だけ cmd 経由（cmd が %APPDATA% を展開する）で
         # メモ帳を開く。無いファイルはメモ帳が作成を尋ねる
         $items = @(
-            @{ Name = 'Nagi 設定（config.toml）'; Target = $cmd; Arguments = '/c start "" notepad.exe "%APPDATA%\Nagi\config.toml"'; Minimized = $true },
+            @{ Name = 'Nagi 設定'; Target = $settingsGui; Arguments = ''; Minimized = $false },
+            @{ Name = 'Nagi 設定ファイル（config.toml）'; Target = $cmd; Arguments = '/c start "" notepad.exe "%APPDATA%\Nagi\config.toml"'; Minimized = $true },
             @{ Name = 'Nagi 設定フォルダ'; Target = '%APPDATA%\Nagi'; Arguments = ''; Minimized = $false },
             @{ Name = 'Nagi ログフォルダ'; Target = '%LOCALAPPDATA%\Nagi\logs'; Arguments = ''; Minimized = $false },
             @{ Name = 'Nagi 状態確認（verify）'; Target = $powershell; Arguments = ('-NoProfile -ExecutionPolicy Bypass -NoExit -File "{0}" status' -f $verify); Minimized = $false },

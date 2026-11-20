@@ -189,15 +189,18 @@ pub struct Decision {
     pub reason: String,
 }
 
+/// 変換モデルを使えないときの理由（読み込みに失敗した・見つからない）
+pub const REASON_NO_LLM: &str = "変換モデルが使えないため辞書のみで動作します";
+
+/// 変換モデルの読み込み中の理由（起動直後。故障と区別するため [`REASON_NO_LLM`] とは別にする）
+pub const REASON_LLM_LOADING: &str = "変換モデルを読み込み中です（辞書のみで動作中）";
+
 /// 初回起動時の判定。`calibration_ms` はキャリブレーション推論（短い変換の中央値）の実測、
 /// `has_llm` は変換モデルを読み込めたか
 pub fn initial_profile(sys: &SystemInfo, calibration_ms: Option<f64>, has_llm: bool) -> Decision {
     let decide = |profile: Profile, reason: String| Decision { profile, reason };
     if !has_llm {
-        return decide(
-            Profile::Minimal,
-            "変換モデルが使えないため辞書のみで動作します".to_string(),
-        );
+        return decide(Profile::Minimal, REASON_NO_LLM.to_string());
     }
     if sys.total_memory_mb < 4096 || sys.cpu_cores < 2 {
         return decide(
@@ -349,7 +352,10 @@ pub struct Environment {
 
 impl Environment {
     /// この環境が要求する「軽くする段数」と理由
-    fn penalty(&self) -> (u32, Option<&'static str>) {
+    ///
+    /// `base` は環境による減点の前のプロファイル。メモリ `Warning` は LLM を保てる `Light` を下限とし、
+    /// `base` が `Light` 以下なら減点しない（`Warning` だけで `Minimal` に落とさない。`Critical` は従来どおり）
+    fn penalty(&self, base: Profile) -> (u32, Option<&'static str>) {
         let mut steps = 0;
         let mut why = None;
         let mut bump = |s: u32, reason: &'static str| {
@@ -372,7 +378,8 @@ impl Environment {
         }
         match self.memory_pressure {
             MemoryPressure::Normal => {}
-            MemoryPressure::Warning => bump(1, "メモリ逼迫"),
+            MemoryPressure::Warning if base > Profile::Light => bump(1, "メモリ逼迫"),
+            MemoryPressure::Warning => {}
             MemoryPressure::Critical => bump(3, "メモリ逼迫（危険）"),
         }
         (steps, why)
@@ -533,7 +540,7 @@ impl Controller {
         let (target, reason) = if self.fixed || !self.config.enabled {
             (self.base, self.base_reason.clone())
         } else {
-            let (env_steps, env_reason) = self.env.penalty();
+            let (env_steps, env_reason) = self.env.penalty(self.base);
             let steps = env_steps + self.latency_steps;
             let target = self.base.lighter(steps);
             let reason = if steps == 0 {
@@ -803,6 +810,34 @@ mod tests {
             .unwrap();
         assert_eq!(ch.to, Profile::Minimal);
         assert!(ch.reason.contains("メモリ"));
+    }
+
+    #[test]
+    fn memory_warning_never_drops_below_light() {
+        let warn = Environment {
+            memory_pressure: MemoryPressure::Warning,
+            ..Default::default()
+        };
+        // balanced は 1 段下げて light
+        let mut c = controller(Profile::Balanced);
+        assert_eq!(c.set_environment(warn, 0).unwrap().to, Profile::Light);
+        // light / minimal の base は Warning だけでは変わらない
+        let mut c = controller(Profile::Light);
+        assert_eq!(c.set_environment(warn, 0), None);
+        assert_eq!(c.current(), Profile::Light);
+        // 他の減点（バッテリー）は従来どおり light から minimal に落とす
+        let both = Environment {
+            on_battery: Some(true),
+            ..warn
+        };
+        assert_eq!(c.set_environment(both, 1).unwrap().to, Profile::Minimal);
+        // Critical は従来どおり
+        let mut c = controller(Profile::Light);
+        let crit = Environment {
+            memory_pressure: MemoryPressure::Critical,
+            ..Default::default()
+        };
+        assert_eq!(c.set_environment(crit, 0).unwrap().to, Profile::Minimal);
     }
 
     #[test]

@@ -15,6 +15,7 @@ members = [
     "protocol",
     "rewriter",
     "server",
+    "settings-ui",
     "ffi",
     "jni",
     "datafetch",

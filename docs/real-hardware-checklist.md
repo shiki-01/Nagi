@@ -180,9 +180,13 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] ページング: 候補が `page_size` を超えたとき、選択に追従してページが替わる。数字キーで選べる（キーの解釈はコア）
 - [ ] 出所ラベル（学習・AI・辞書・もしかして等）の表示
 - [ ] キャレット矩形が取れないアプリでマウス位置に出る（`anchor_rect`）
+- [ ] 候補ウィンドウが入力中の文字列（composition）の**左端**に出る（キャレット位置ではない）。複数行にまたがる長い入力でも、最初の行の下に出る（H-98）。メモ帳・ブラウザ・Office で確認
+  - 確認方法: `tsf.log` の `[cand] anchor source=start|range|caret|mouse`（由来が変わったときだけ出る）。`start` が出ていれば先頭の点範囲で測れている。アプリによって `range` / `caret` / `mouse` に落ちる場合は、そのアプリ名と見え方を記録する
+- [ ] 学習した語が候補に重複して並ばない（読み「だいたい」など、学習・AI・辞書の出所が 1 行に併記される）（H-98）
+- [ ] キー応答のタイムアウトが実機で起きるか: `tsf.log` の `[key] engine error kind=timeout composing=… elapsed_ms=…` を確認する（1 秒あたり最大 1 行。起きるなら頻度と状況を記録し、`KEY_TIMEOUT` 250ms の要否を判断する）
 - [ ] `set_environment`: AC/電池の切替、バッテリー節約の切替で `get_status` のプロファイルが変わる。電池の無いデスクトップ PC で電池駆動と誤判定されない
   - 確認方法: `verify.ps1 env battery` / `saver`（検証専用の `debug-env.json` で擬似。`tsf.log` の `[env] sent … source=override` と言語バーの「プロファイル: …」を見る。終了時に `env clear`）。実際の電源切替は従来どおり実機で
-- [ ] メモリ逼迫の推定閾値（利用可能 5%/10%・300MB/800MB）が妥当か（実測なし）。メモリを圧迫したときだけ light/minimal に落ちる
+- [ ] メモリ逼迫の推定閾値（Warning: 利用可能 <600MB または総メモリの 4%〈上限 1000MB〉、Critical: <250MB または 2%〈上限 500MB〉。改善は閾値の 125% を上回ってから。H-99）が妥当か（実測なし）。搭載 16GB・利用可能 1.3GB で light に落ちない。メモリを圧迫したときだけ light/minimal に落ち、境目で解放と再読み込みを繰り返さない（imserver ログの `プロファイル A → B（理由）`・`モデル解放`・`モデル再読み込み` で確認）
   - 確認方法: 擬似は `verify.ps1 env memory-warning` / `memory-critical`（閾値そのものの妥当性は実メモリで別途確認）
 - [ ] サーマルの推定（周波数 / 上限の比 85%/60%/40%）。バッテリー節約中や省電力プランで誤って軽いプロファイルに落ちない（節約が有効または不明なら推定しない仕様）
   - 確認方法: 擬似は `verify.ps1 env thermal-serious`（推定の閾値そのものは検証できない）
@@ -207,13 +211,24 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 ### 8.5c H-43 で追加した OS 層（型検査のみ。実機で一度も動かしていない）
 - [ ] 言語バーのボタン: 従来の言語バー（設定の「言語バー」を有効にした環境、またはデスクトップ言語バー）に「あ / A」のボタンが出る。`ITfLangBarItemMgr` を `ITfThreadMgr` の `QueryInterface` で得られる（`LangBar::new` が失敗しない）。ホスト切り替え・Deactivate でボタンが残らない（`RemoveItem`）。トレイの「あ / A」と二重に出ないか
 - [ ] **0.1.11 実機の結果**: 左クリックのモード切替は動作。**右クリックでメニューは表示されなかった**（`tsf.log` に InitMenu の記録なし）。H-94 で `[langbar] InitMenu called entries=N` / `OnClick called click=…` / `OnMenuSelect` / `GetInfo` / `GetStatus` / `Show` を記録するようにした。次の確認: 右クリック後の tsf.log に `InitMenu called` が出るか（出ない = OS が呼んでいない。dwStyle は根拠が無いので未変更）。メニューが無くてもスタートメニューの「Nagi」フォルダのショートカットで設定・ログ・verify を開ける
-- [ ] ボタンの操作: 左クリックでひらがな ⇄ 英数が切り替わり、表示（アイコン・文字・ツールチップ）が更新される。右クリックでメニュー（ひらがな / 英数・現在にチェック・状態の行・「設定を開く（config.toml）…」ほか開く項目 5 行）が出る（`BTN_BUTTON` で `InitMenu` が呼ばれるか）。メニューの選択でモードが変わる。入力中の文字列が意図せず確定されるのは `SetMode` の仕様どおりか
+- [ ] ボタンの操作: 左クリックでひらがな ⇄ 英数が切り替わり、表示（アイコン・文字・ツールチップ）が更新される。右クリックでメニュー（ひらがな / 英数・現在にチェック・状態の行・「設定…」「設定ファイル（config.toml）を直接開く」ほか開く項目 6 行）が出る（`BTN_BUTTON` で `InitMenu` が呼ばれるか）。メニューの選択でモードが変わる。入力中の文字列が意図せず確定されるのは `SetMode` の仕様どおりか
 - [ ] ボタンの表示とトレイ・英数キー・半角/全角キーでの切り替えの同期（往復して反転し続けない）。エンジン停止中（接続前）のメニュー（「変換エンジンに接続していません」）と、開いたときの待ち（`get_status` の同期呼び出し、最大 250ms）が気にならないか
 - [ ] `GetIcon` の `HICON` を言語バーが破棄するか（長時間・多数回のモード切り替えで GDI オブジェクトが増え続けないか。タスクマネージャーの GDI オブジェクト数）。DPI 150/200% でアイコンが滲まない
-- [ ] 「設定を開く（config.toml）…」: `config.toml`（`get_status` の `config_path`）がメモ帳で開く。ファイルが無いときの作成の確認。`config_path` が無いとき項目が灰色
+- [ ] 「設定ファイル（config.toml）を直接開く」（旧「設定を開く（config.toml）…」）: `config.toml`（`get_status` の `config_path`）がメモ帳で開く。ファイルが無いときの作成の確認。`config_path` が無いとき項目が灰色
 - [ ] 右クリックメニューの開く項目（H-93。`ITfMenu` の平坦な項目 5 行）: 「設定フォルダを開く」でエクスプローラーが `%APPDATA%\Nagi` を開く。「ユーザー辞書フォルダを開く」が `user_dict` があればそれ、無ければ `%APPDATA%\Nagi` を開く。「ログフォルダを開く」が `%LOCALAPPDATA%\Nagi\logs` を開く。「状態を確認（verify.ps1）」が新しいコンソールで `verify.ps1 status` を実行し、終了後もコンソールが閉じない（`-NoExit`。ExecutionPolicy で止まらない）。対象のフォルダ・`verify.ps1` が無い環境では該当項目が灰色（フォルダは作られない）。開けなかったときは `tsf.log` に `[menu] open failed kind=… code=…` が出る。開く操作の前後で入力中の文字列・モードが変わらない
+- [ ] **設定画面（H-97。`nagi-settings.exe`。Linux では HTTP ハンドラ・実 imserver との統合テストのみ。Windows 実機で一度も動かしていない）**:
+  - 右クリック → 「設定…」で既定のブラウザに設定ページが開く（黒いコンソール窓が出ない。タスクマネージャーに `nagi-settings.exe` と、その子の `imserver.exe` が 1 つずつ）。`nagi-settings.exe` が DLL と同じディレクトリに無いと「設定…」が灰色。起動に失敗したら `tsf.log` に `[menu] open failed kind=settings_gui code=…`。スタートメニューの「Nagi 設定」でも同じ画面が開く
+  - 項目がカテゴリごとに並び、「シンプル / 詳細」で項目数が変わる。iOS 専用の項目（濁点の循環順・タッチ座標の利用・グライド入力）が出ない。ライト/ダーク（Windows の色設定）に追従する。Tab キーだけで操作でき、トグル・入力欄のラベルが読み上げられる
+  - 項目を変えると（トグル・数値・選択・テキスト）すぐ `%APPDATA%\Nagi\config.toml` に反映される（メモ帳で開いて確認。ファイル内のコメントと他の項目が保たれる）。変更が実際の入力にも反映される（例: ライブ変換のオン/オフ。入力方式を切り替え直さずに）。「既定に戻す」で明示指定が消える
+  - `requires_restart` の項目（例: 更新の自動確認）に「変更を反映するには入力方式を切り替え直すかアプリを開き直してください」のバッジが出る
+  - 範囲外の値（例: ライブ変換の待ち時間に 99999）で、その項目の下にコアのメッセージが出て、`config.toml` は変わらない。`config.toml` を壊した状態で開くと、画面上部にエラーが出て値は書き込まれない
+  - 「config.toml を直接開く」でメモ帳、「ユーザー辞書フォルダを開く」でエクスプローラーが開く。「学習データを全削除…」で確認ダイアログが出て、キャンセルでは消えない・「削除する」で `learning.tsv` の内容が消える
+  - タブを閉じると数秒後に `nagi-settings.exe` と子の `imserver.exe` が消える。再読み込み（F5）では終了しない。15 分放置で終了する。`nagi-settings.exe` をタスクマネージャーで強制終了しても子の `imserver.exe` が残らない（`--parent-pid`）。2 つ同時に開いても別ポートで動く
+  - **トークンなしのアクセスの拒否**（PowerShell。設定画面を開いたまま）: ポートを調べる `$p = (Get-Process nagi-settings | Select-Object -First 1).Id; $port = (Get-NetTCPConnection -OwningProcess $p -State Listen).LocalPort`。次はどれも 403 になる: `Invoke-WebRequest "http://127.0.0.1:$port/" -UseBasicParsing`（トークンなし。`-SkipHttpErrorCheck` が使える PowerShell 7 か、5.1 なら try/catch で `$_.Exception.Response.StatusCode`）、`Invoke-WebRequest "http://127.0.0.1:$port/?t=wrong" -UseBasicParsing`、`Invoke-WebRequest "http://127.0.0.1:$port/api/settings" -Method Post -ContentType application/json -Body '{}' -UseBasicParsing`（ヘッダーなし）、`Invoke-WebRequest "http://127.0.0.1:$port/" -Headers @{Host='evil.example'} -UseBasicParsing`（5.1 は Host を上書きできないので `curl.exe -H "Host: evil.example" http://127.0.0.1:$port/` で確認）。ブラウザのアドレスバーのトークンつき URL は 200。別のサイトのページから `fetch("http://127.0.0.1:<port>/api/settings", {method:"POST"})` が失敗する（CORS ヘッダーなし）
+  - Edge / Chrome / Firefox で表示が崩れず、DevTools のコンソールに CSP 違反が出ない。`<dialog>` の確認が出る。日本語が文字化けしない
+  - 設定画面を開いたまま `install.ps1`（更新）を実行しても、`nagi-settings.exe` が `.old` に退避されて置き換わる。`uninstall.ps1` が開いている設定画面を止めて削除できる
 - [ ] `GetReconversion`: `ITfFnReconversion` を呼ぶアプリ（Office 等）で再変換の候補一覧が出て、選ぶと範囲が置き換わりキャレットが末尾に来る。複数文節の範囲で、選んだ候補以外の部分（残りの文節）が失われない。アプリが文書ロックを持つ最中に呼んだ場合に失敗して固まらない。呼んだ後にコアが変換中のまま残らない（直後の入力が通常どおり）。選択が空・200 文字超・入力中は失敗する。待ちきれないとき（初回の逆引き索引）の通知
-- [ ] `THIRD_PARTY_LICENSES_WINDOWS.md`（104 crates）が実際の Windows のビルド（MSVC・`--features llama`）の依存と一致する（`cargo tree --target x86_64-pc-windows-msvc` を Windows 上で実行して比較。llama.cpp のビルド用の crate が漏れていないか）。zip の `THIRD_PARTY_LICENSES.md` が Windows 用になっている
+- [ ] `THIRD_PARTY_LICENSES_WINDOWS.md`（112 crates。設定画面 `nagi-settings-ui` の依存を含む）が実際の Windows のビルド（MSVC・`--features llama`）の依存と一致する（`cargo tree --target x86_64-pc-windows-msvc` を Windows 上で実行して比較。llama.cpp のビルド用の crate が漏れていないか）。zip の `THIRD_PARTY_LICENSES.md` が Windows 用になっている
 
 ### 8.5d トレイのアイコンが出ない場合の確認と tsf.log（H-54。実機で一度も動かしていない）
 - [ ] Windows 11 / 10 のタスクバー右端の入力インジケーターに「あ / A」（藍の角アイコン）が出る。出ない場合の確認の順序:
@@ -221,7 +236,7 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
   2. `[langbar] AddItem ok (GUID_LBI_INPUTMODE)` があるか。`AddItem failed hr=0x…` / `ITfLangBarItemMgr unavailable` ならその HRESULT を記録する。`[tsf] Activate done langbar=false` は登録失敗
   3. `AddItem ok` なのにトレイに出ないなら、アイコン側（`GetIcon` のサイズ・描画）か、シェルがこの項目を採用していない。`GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT` / `IMMERSIVESUPPORT` / `UIELEMENTENABLED` が登録されているか（`regsvr32` を管理者で再実行）、サインアウトして入れ直す
   4. 設定 > 時刻と言語 > 言語と地域 > 日本語 > 言語のオプション > キーボード で Nagi が見えるか。「入力インジケーター」をオフにしていないか（設定 > 個人用設定 > タスクバー > システムトレイ アイコン）
-- [ ] 右クリックでメニュー（ひらがな / 英数・状態・「設定ファイルを開く…」）、左クリックでひらがな ⇄ 英数。エンジン起動に失敗している環境（`imserver.exe` が無い・初期化失敗）でもアイコンとメニューは出る（メニューは「変換エンジンに接続していません」）
+- [ ] 右クリックでメニュー（ひらがな / 英数・状態・「設定…」「設定ファイル（config.toml）を直接開く」）、左クリックでひらがな ⇄ 英数。エンジン起動に失敗している環境（`imserver.exe` が無い・初期化失敗）でもアイコンとメニューは出る（メニューは「変換エンジンに接続していません」）
 - [ ] tsf.log の内容: `[engine] location exe=… exists=…`（imserver の置き場）、`starting` / `started …` / `launch failed: spawn failed|initialize timeout|initialize failed|…` / `stopped (crash or start failure)` / `entering minimal profile`。複数のホストプロセスが同時に書いても行が壊れない
 
 ### 8.5e imserver の起動失敗（「起動に N 回失敗したので辞書のみで起動します」）の診断（H-56。実機で一度も動かしていない）

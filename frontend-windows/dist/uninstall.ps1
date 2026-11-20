@@ -57,6 +57,16 @@ function Get-InstalledEngines([string]$Dir) {
     })
 }
 
+# 開いている設定画面（nagi-settings.exe。H-97）のプロセスを、パスで列挙する。使用中だと exe を消せないため止める
+function Get-InstalledSettingsGui([string]$Dir) {
+    $prefix = (Join-Path $Dir 'nagi-settings.exe')
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null
+        try { $path = $_.Path } catch { }
+        $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
 function Get-Regsvr32 {
     if ([Environment]::Is64BitProcess) {
         return (Join-Path $env:SystemRoot 'System32\regsvr32.exe')
@@ -102,6 +112,7 @@ function Uninstall-Privileged {
     $dll = Join-Path $InstallDir $DllName
     $pending = $false
     # 動作中の imserver（`.old` も含む）を先に止める。使用中のままだと exe を消せず、再起動まで残る
+    Get-InstalledSettingsGui $InstallDir | Stop-Process -Force -ErrorAction SilentlyContinue
     Get-InstalledEngines $InstallDir | Stop-Process -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $dll) {
         $process = Start-Process -FilePath (Get-Regsvr32) -ArgumentList @('/u', '/s', ('"{0}"' -f $dll)) -Wait -PassThru

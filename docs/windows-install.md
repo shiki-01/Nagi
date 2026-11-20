@@ -51,7 +51,7 @@ irm https://nagi.shiki-01.com/install.ps1 | iex
 
 | 場所 | 内容 |
 | --- | --- |
-| `C:\Program Files\Nagi\` | `nagi_windows_tsf.dll`（入力方式）、`imserver.exe`（変換エンジン）、`uninstall.ps1`、ライセンス、`VERSION`、`SHA256SUMS` |
+| `C:\Program Files\Nagi\` | `nagi_windows_tsf.dll`（入力方式）、`imserver.exe`（変換エンジン）、`nagi-settings.exe`（設定画面）、`uninstall.ps1`、ライセンス、`VERSION`、`SHA256SUMS` |
 | `%APPDATA%\Nagi\data\` | 辞書（`dict\nagi-dict.bin`）とモデル（`models\*.gguf`）。配布元から取得したもの |
 | `%APPDATA%\Nagi\` | 設定（`config.toml`）、学習データ、ユーザー辞書 |
 | `%ProgramData%\Microsoft\Windows\Start Menu\Programs\Nagi\` | スタートメニューのショートカット（設定・設定フォルダ・ログフォルダ・状態確認） |
@@ -85,9 +85,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Nagi\unins
 
 インストール先には更新の適用スクリプト `apply-update.ps1`（スタートメニューの「Nagi を更新」）と、実機の動作確認用スクリプト `verify.ps1`（クラッシュ復帰・スリープ・環境・パスワード欄の確認。手順は `docs/windows-verification.md`）も置かれます。
 
-スタートメニューの「Nagi」フォルダ（全ユーザー）に、「Nagi 設定（config.toml）」（メモ帳で開く）、「Nagi 設定フォルダ」（`%APPDATA%\Nagi`）、「Nagi ログフォルダ」（`%LOCALAPPDATA%\Nagi\logs`）、「Nagi 状態確認（verify）」（`verify.ps1 status` を新しいコンソールで実行）、「Nagi を更新」（取得済みの更新の適用。「更新」の節）のショートカットが作られます（アンインストールで削除。作れなくてもインストールは成功します）。入力インジケーターのメニューに頼らずに設定を開けます。
+スタートメニューの「Nagi」フォルダ（全ユーザー）に、「Nagi 設定」（設定画面。下記）、「Nagi 設定ファイル（config.toml）」（メモ帳で開く）、「Nagi 設定フォルダ」（`%APPDATA%\Nagi`）、「Nagi ログフォルダ」（`%LOCALAPPDATA%\Nagi\logs`）、「Nagi 状態確認（verify）」（`verify.ps1 status` を新しいコンソールで実行）、「Nagi を更新」（取得済みの更新の適用。「更新」の節）のショートカットが作られます（アンインストールで削除。作れなくてもインストールは成功します）。入力インジケーターのメニューに頼らずに設定を開けます。
 
-タスクバーの入力インジケーター（あ / A）を右クリックすると、設定（`config.toml`）・設定フォルダ・ユーザー辞書フォルダ・ログフォルダを開く項目と、「状態を確認（verify.ps1）」（`verify.ps1 status` を新しいコンソールで実行）が出ます。設定の GUI はまだありません（`config.toml` を直接編集します）。
+タスクバーの入力インジケーター（あ / A）を右クリックすると、設定（`config.toml`）・設定フォルダ・ユーザー辞書フォルダ・ログフォルダを開く項目と、「状態を確認（verify.ps1）」（`verify.ps1 status` を新しいコンソールで実行）が出ます。一番上の「設定…」が設定画面です。
+
+## 設定の開き方（設定画面）
+
+次のどちらかで開きます。
+
+- タスクバーの入力インジケーター（あ / A）を右クリック → **設定…**
+- スタートメニュー → Nagi → **Nagi 設定**
+
+`nagi-settings.exe` が起動し、既定のブラウザに設定のページが開きます。ページはこの PC の中（`127.0.0.1`）だけで動き、インターネットには何も送りません。項目ごとに値を変えると、すぐ `config.toml` に保存されて反映されます（コメントや他の項目は保たれます）。
+
+- 「シンプル / 詳細」で表示する項目を切り替えられます。「既定に戻す」でその項目の明示指定を消せます。
+- 「再起動が必要」のバッジがある項目は、入力方式を切り替え直すか、アプリを開き直すと反映されます。
+- 値が範囲外などのときは、その項目の下にエラーが出て、保存されません。
+- ページの上部の「config.toml を直接開く」でメモ帳が開きます。「学習データを全削除…」は確認のあとに学習内容をすべて消します（ユーザー辞書は消えません）。
+- タブを閉じると、設定画面のプログラム（と、その裏のエンジン）は数秒後に自動で終了します。15 分間操作しなくても終了します。終了した後は、もう一度「設定…」から開いてください。
+- 開けないとき（`nagi-settings.exe` が無い場合は「設定…」が灰色です）は、`config.toml` を直接編集できます。ユーザー辞書の管理画面はまだありません。
 
 ## SmartScreen について
 

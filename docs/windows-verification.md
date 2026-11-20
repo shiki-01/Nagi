@@ -183,7 +183,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 - [ ] 管理者でない PowerShell から実行すると UAC の確認が出る。承認後、昇格した子プロセスが配置と登録だけを行う。
 - [ ] `SHA256SUMS` の検証が通る（配置前）。
-- [ ] `C:\Program Files\Nagi` に次が置かれる: `nagi_windows_tsf.dll`、`imserver.exe`、`uninstall.ps1`、`README.md`、`LICENSE-MIT`、`LICENSE-APACHE`、`NOTICE`、`THIRD_PARTY_LICENSES.md`、`VERSION`、`SHA256SUMS`。
+- [ ] `C:\Program Files\Nagi` に次が置かれる: `nagi_windows_tsf.dll`、`imserver.exe`、`nagi-settings.exe`、`uninstall.ps1`、`README.md`、`LICENSE-MIT`、`LICENSE-APACHE`、`NOTICE`、`THIRD_PARTY_LICENSES.md`、`VERSION`、`SHA256SUMS`。
 - [ ] `regsvr32 /s` が成功する（終了コード 0）。
 - [ ] 「設定 > アプリ > インストールされているアプリ」に「Nagi（日本語入力）」が出る（`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Nagi`）。
 - [ ] 辞書・モデルの取得（約 150MB）が通り、`%APPDATA%\Nagi\data\dict\nagi-dict.bin` と `%APPDATA%\Nagi\data\models\*.gguf` ができる。
@@ -474,7 +474,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $v status
 - **検証専用ファイル `debug-env.json`**: `env` は `%LOCALAPPDATA%\Nagi\debug-env.json` を書いて OS の検出値（電源・メモリ・サーマル）を上書きします。形式は `{"on_battery":true,"battery_saver":false,"memory":"critical","thermal":"serious"}`（省略した項目は実値。`memory` は normal / warning / critical、`thermal` は nominal / fair / serious / critical）。**検証のためだけの仕組みで、通常の利用では置かないでください**。ファイルがあるあいだ `[env] sent … source=override` になります。検証後は必ず `env clear`（ファイルを消す。次の確認で実値に戻って再送される）。不正な JSON は無視されて実値のままになり、`[env] invalid debug-env.json …` が 1 回だけ出ます。
 - **tsf.log に追加した行**（入力内容は書きません。列挙値・真偽・実行ファイル名のみ）: `[env] sent ac=ac|battery battery_saver=… memory=… thermal=… source=real|override`（環境が変わって送ったときだけ）、`[engine] restart requested (resume: os-notification|tick-gap)`（スリープ復帰での再起動要求。経路の区別）、`[ctx] secure_input=true|false app=<exe名>`（機密欄かどうかが変わったときだけ。周辺テキストは書かない）。
 - Nagi を使っているアプリが複数あると imserver も複数になります（ホストごとに起動）。`crash` はそのすべてを終了させます。検証中は余計なアプリを閉じておくと判定が読みやすくなります。
-- **ショートカット（H-94）**: `install.ps1` が スタートメニューの「Nagi」フォルダ（`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Nagi\`）に「Nagi 設定（config.toml）」「Nagi 設定フォルダ」「Nagi ログフォルダ」「Nagi 状態確認（verify）」を作ります（`uninstall.ps1` で削除）。入力インジケーターの右クリックメニューに頼らず設定・ログ・状態確認を開けます。
+- **ショートカット（H-94）**: `install.ps1` が スタートメニューの「Nagi」フォルダ（`%ProgramData%\Microsoft\Windows\Start Menu\Programs\Nagi\`）に「Nagi 設定」（設定画面）「Nagi 設定ファイル（config.toml）」「Nagi 設定フォルダ」「Nagi ログフォルダ」「Nagi 状態確認（verify）」を作ります（`uninstall.ps1` で削除）。入力インジケーターの右クリックメニューに頼らず設定・ログ・状態確認を開けます。
 - **右クリックメニューの現状（0.1.11 実機）**: 入力インジケーター（「あ」）の右クリックでメニューが出ませんでした（左クリックのモード切替は動作）。原因は未特定のため、`tsf.log` に `[langbar] GetInfo called` / `GetStatus called` / `Show called` / `OnClick called click=… x=… y=…` / `InitMenu called entries=N` / `OnMenuSelect called id=…` を追加しました（頻発する `GetIcon` 等は出さない）。右クリックして `InitMenu called` が出るか（OS がメニューを要求したか）を確認し、出ないなら OS 側が項目の右クリックを `InitMenu` に回していない、出るなら `AddMenuItem` 以降の問題、と切り分けます。
 - スクリプトは PowerShell が無い Linux では実行できず、CI では構文検査だけを行っています。**実機での初回実行でスクリプト自体の不具合が見つかったら、その出力を報告してください**。
 
@@ -581,7 +581,7 @@ OS ビルドの取得: `[Environment]::OSVersion.Version`、または `winver`�
 - ARM64 / 32bit ホスト対応。`install.ps1` は ARM64 を拒否する。
 - 辞書・モデルのアプリ内ダウンロード導線。
 - Authenticode 署名の実施（Secrets 未登録）、winget / MSI。
-- 設定 GUI（Phase 4）。設定は `config.toml` をメモ帳で開く入口のみ。
+- 設定 GUI のうち、ユーザー辞書の管理画面・キーマップ編集（H-97 の「未実装」）。設定画面本体（`nagi-settings.exe`）は §8.5c の実機項目で確認する。
 - 再変換候補の選択結果の学習。
 - 候補ウィンドウのマウス操作（v1 の非目標）。
 
@@ -599,7 +599,7 @@ OS ビルドの取得: `[Environment]::OSVersion.Version`、または `winver`�
 8. **標準ユーザー + 別アカウントで UAC の場合の入力方式の登録先**（H-42）。
 9. **`regsvr32` の登録と UAC の流れ、`-Elevated` 子プロセスの終了コード、更新時の `.old` 退避、アンインストール時の再起動後削除、`irm | iex`（PowerShell 5.1 / 7）**（H-42 (1)(3)(4)(5)）。
 10. **GitHub Actions 上の Windows ランナーでの llama ビルド、`signtool` の場所、スモークテスト**（H-42 (6)）。
-11. **実測なしの閾値**: キー処理 250ms のタイムアウト（H-39）、メモリ逼迫（利用可能 5%/10%・300MB/800MB）、サーマル推定（周波数 / 上限の比 85%/60%/40%）。
+11. **実測なしの閾値**: キー処理 250ms のタイムアウト（H-39）、メモリ逼迫（Warning: 利用可能 <600MB または 4%〈上限 1000MB〉、Critical: <250MB または 2%〈上限 500MB〉、改善は 125% 超で。H-99）、サーマル推定（周波数 / 上限の比 85%/60%/40%）。
 12. **`VK_OEM_BACKTAB` の実キー割り当て**、`IS_PASSWORD`（値 31）のパスワード欄判定（H-39、H-41）。
 13. **ホストごとの `imserver` 起動のメモリ・起動時間**（H-39、H-43 §4）。ホストを 1 / 5 / 10 個開いたときの合計メモリ（ワーキングセット・コミットサイズ）、`initialize` の所要、`learning.tsv` の取りこぼし、`reconvert` 後のピーク（約 270MB の逆引き索引、G-29）を記録する。
 

@@ -2,7 +2,8 @@
 
 このファイルは `cargo xtask gen-licenses` で生成される（手で編集しない）。
 Windows 向けビルド（TSF の DLL `nagi-windows-tsf` と、エンジン `imserver` = `nagi-server`
-feature `llama` 有効、ターゲット `x86_64-pc-windows-msvc`）の Rust 依存クレートの一覧である。
+feature `llama` 有効、設定画面 `nagi-settings` = `nagi-settings-ui`、
+ターゲット `x86_64-pc-windows-msvc`）の Rust 依存クレートの一覧である。
 配布 zip（`bundle-windows`）には `THIRD_PARTY_LICENSES.md` の名前で同梱される。
 
 - 辞書（Mozc OSS 辞書 / IPAdic）・ローマ字表（Mozc）・変換モデル（zenz）の出典とライセンスは、リポジトリルートの [`NOTICE`](NOTICE) を参照すること
@@ -10,15 +11,18 @@ feature `llama` 有効、ターゲット `x86_64-pc-windows-msvc`）の Rust 依
 - `windows` / `windows-*` クレートは Microsoft の公式バインディング（`MIT OR Apache-2.0`）
 - Nagi 自身のコード（`nagi-*`）は `MIT OR Apache-2.0`
 
-依存クレート数: 104
+依存クレート数: 112
 
 | crate | version | license (SPDX) | repository |
 | --- | --- | --- | --- |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | https://github.com/oyvindln/adler2 |
+| ascii | 1.1.0 | Apache-2.0 OR MIT | https://github.com/tomprogrammer/rust-ascii |
 | base64 | 0.22.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils |
+| bumpalo | 3.20.3 | MIT OR Apache-2.0 | https://github.com/fitzgen/bumpalo |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if |
 | chrono | 0.4.45 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono |
+| chunked_transfer | 1.5.0 | MIT OR Apache-2.0 | https://github.com/frewsxcv/rust-chunked-transfer |
 | core_detect | 1.0.0 | MIT/Apache-2.0 | https://github.com/thomcc/core_detect |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 | https://github.com/RustCrypto/utils |
 | crc32fast | 1.5.2 | MIT OR Apache-2.0 | https://github.com/srijs/rust-crc32fast |
@@ -35,7 +39,9 @@ feature `llama` 有効、ターゲット `x86_64-pc-windows-msvc`）の Rust 依
 | fst | 0.4.7 | Unlicense/MIT | https://github.com/BurntSushi/fst |
 | generic-array | 0.14.7 | MIT | https://github.com/fizyk20/generic-array.git |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
+| getrandom | 0.3.4 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
+| httpdate | 1.0.3 | MIT OR Apache-2.0 | https://github.com/pyfisch/httpdate |
 | icu_collections | 2.3.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | icu_locale_core | 2.3.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | icu_normalizer | 2.3.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
@@ -84,6 +90,7 @@ feature `llama` 有効、ターゲット `x86_64-pc-windows-msvc`）の Rust 依
 | sysinfo | 0.38.4 | MIT | https://github.com/GuillaumeGomez/sysinfo |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror |
+| tiny_http | 0.12.0 | MIT OR Apache-2.0 | https://github.com/tiny-http/tiny-http |
 | tinystr | 0.8.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | toml | 0.8.23 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml |
 | toml_datetime | 0.6.11 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml |
@@ -117,4 +124,6 @@ feature `llama` 有効、ターゲット `x86_64-pc-windows-msvc`）の Rust 依
 | zeroize | 1.9.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils |
 | zerotrie | 0.2.5 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
 | zerovec | 0.11.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x |
+| zip | 2.6.1 | MIT | https://github.com/zip-rs/zip2.git |
 | zmij | 1.0.23 | MIT | https://github.com/dtolnay/zmij |
+| zopfli | 0.8.4 | Apache-2.0 | https://github.com/zopfli-rs/zopfli |

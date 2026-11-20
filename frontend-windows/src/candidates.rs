@@ -364,6 +364,54 @@ pub fn anchor_rect(caret: Option<Rect>, fallback: Point) -> Rect {
     }
 }
 
+/// 候補ウィンドウの基準にした矩形の由来（ログ用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorSource {
+    /// composition の先頭の点範囲
+    Start,
+    /// composition 全体の範囲
+    Range,
+    /// 選択範囲（キャレット）
+    Caret,
+    /// いずれも測れず、マウス位置
+    Mouse,
+}
+
+impl AnchorSource {
+    /// ログの表記（`[cand] anchor source=…`）
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AnchorSource::Start => "start",
+            AnchorSource::Range => "range",
+            AnchorSource::Caret => "caret",
+            AnchorSource::Mouse => "mouse",
+        }
+    }
+}
+
+/// 測った矩形として使えるか（ゼロ矩形や高さのない矩形は測定失敗とみなす。
+/// 点範囲は幅 0 が普通なので幅は問わない）
+fn usable_rect(r: &Rect) -> bool {
+    !r.is_zero() && r.bottom > r.top
+}
+
+/// 候補ウィンドウの基準にする矩形を、先頭の点範囲 → composition 全体 → キャレットの順で選ぶ。
+/// 左端と行の下端は先頭の点の矩形（複数行でも最初の行の下に出す）。
+/// どれも使えなければ `None`（呼び出し側はマウス位置を使う）
+pub fn choose_anchor(
+    start: Option<Rect>,
+    range: Option<Rect>,
+    caret: Option<Rect>,
+) -> Option<(AnchorSource, Rect)> {
+    [
+        (AnchorSource::Start, start),
+        (AnchorSource::Range, range),
+        (AnchorSource::Caret, caret),
+    ]
+    .into_iter()
+    .find_map(|(source, rect)| rect.filter(usable_rect).map(|r| (source, r)))
+}
+
 /// ウィンドウの表示位置。既定はキャレット行の下。
 /// 作業領域（タスクバーを除く）の下端に収まらなければ上側に反転し、水平は作業領域内に収める。
 /// `work_areas` はモニターごとの作業領域（先頭がプライマリ）。キャレットを含むものを使い、無ければ先頭。
@@ -652,6 +700,58 @@ mod tests {
     fn no_work_area_means_no_clamping() {
         let p = place_window(caret(5000, 5000), SIZE, &[]);
         assert_eq!(p.origin, Point { x: 5000, y: 5022 });
+    }
+
+    #[test]
+    fn choose_anchor_prefers_start_then_range_then_caret() {
+        let start = Rect {
+            left: 10,
+            top: 20,
+            right: 10,
+            bottom: 40,
+        };
+        let range = Rect {
+            left: 10,
+            top: 20,
+            right: 300,
+            bottom: 80,
+        };
+        let caret = Rect {
+            left: 300,
+            top: 60,
+            right: 300,
+            bottom: 80,
+        };
+        // 点範囲は幅 0 でも使う（複数行の composition でも先頭行の下端）
+        assert_eq!(
+            choose_anchor(Some(start), Some(range), Some(caret)),
+            Some((AnchorSource::Start, start))
+        );
+        assert_eq!(
+            choose_anchor(Some(Rect::default()), Some(range), Some(caret)),
+            Some((AnchorSource::Range, range))
+        );
+        assert_eq!(
+            choose_anchor(None, Some(Rect::default()), Some(caret)),
+            Some((AnchorSource::Caret, caret))
+        );
+        // 高さのない矩形は測定失敗
+        let flat = Rect {
+            left: 5,
+            top: 9,
+            right: 5,
+            bottom: 9,
+        };
+        assert_eq!(choose_anchor(Some(flat), None, None), None);
+        assert_eq!(choose_anchor(None, None, None), None);
+    }
+
+    #[test]
+    fn anchor_source_names() {
+        assert_eq!(AnchorSource::Start.as_str(), "start");
+        assert_eq!(AnchorSource::Range.as_str(), "range");
+        assert_eq!(AnchorSource::Caret.as_str(), "caret");
+        assert_eq!(AnchorSource::Mouse.as_str(), "mouse");
     }
 
     #[test]
