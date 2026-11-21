@@ -66,6 +66,7 @@
       <li><a href="/privacy">プライバシーポリシー</a></li>
       <li><a href="/custom-keyboard">カスタムキーボード</a></li>
       <li><a href="/reference">リファレンス</a></li>
+      <li><a href="/code-signing">コード署名ポリシー</a></li>
       <li><a href={REPO_URL} rel="noopener">GitHub</a></li>
     </ul>
   </div>
