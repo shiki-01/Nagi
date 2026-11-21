@@ -29,6 +29,18 @@ fn backend(model: FakeModel, budget_ms: u64) -> Pipeline {
     Pipeline::new(Some(dict()), Some(Box::new(model)), runtime)
 }
 
+/// 条件が満たされるまで短い間隔でポーリングする。成功時はすぐ返り、上限は遅い CI ランナーでも
+/// 足りるよう十分長く取る（上限まで待つのは失敗時だけ）
+const WAIT_LIMIT: Duration = Duration::from_secs(15);
+
+fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = Instant::now() + WAIT_LIMIT;
+    while !cond() {
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn joined(segs: &[nagi_engine::BackendSegment]) -> Vec<(String, String)> {
     segs.iter()
         .map(|s| (s.reading.clone(), s.surface.clone()))
@@ -125,25 +137,26 @@ fn unalignable_output_becomes_single_segment() {
 
 #[test]
 fn slow_model_times_out_then_result_is_cached() {
+    // 遅延は予算（30ms）より十分長く、負荷で多少遅れても「予算を超えて待たない」を判定できる値にする
     let mut model = FakeModel::new(&[("こうえん", "講演")]);
-    model.delay = Duration::from_millis(300);
+    model.delay = Duration::from_millis(1000);
     let converts = model.converts.clone();
     let b = backend(model, 30);
 
     let started = Instant::now();
     let segs = b.convert_sentence("こうえん", "");
     assert!(
-        started.elapsed() < Duration::from_millis(200),
-        "予算を超えて待たない"
+        started.elapsed() < Duration::from_millis(800),
+        "予算を超えて（モデルの完了まで）待たない"
     );
     assert_eq!(joined(&segs)[0].1, "公園", "予算超過時は辞書の結果");
 
-    // 推論はバックグラウンドで完了し、キャッシュに入る
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while converts.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    std::thread::sleep(Duration::from_millis(50));
+    // 推論はバックグラウンドで完了し、キャッシュに入る（完了通知が積まれたらキャッシュ済み）
+    let mut completions = Vec::new();
+    wait_until("バックグラウンド推論が完了しない", || {
+        completions.extend(b.take_completions());
+        !completions.is_empty()
+    });
     let started = Instant::now();
     let segs = b.convert_sentence("こうえん", "");
     assert_eq!(
@@ -151,7 +164,10 @@ fn slow_model_times_out_then_result_is_cached() {
         "講演",
         "次回はキャッシュから LLM の結果が即座に返る"
     );
-    assert!(started.elapsed() < Duration::from_millis(30));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "キャッシュ参照でモデルの完了（1000ms）を待たない"
+    );
     assert_eq!(converts.load(Ordering::SeqCst), 1, "再推論しない");
 }
 
@@ -229,7 +245,7 @@ fn slow_model_queues_completion_after_timeout() {
     use std::sync::atomic::Ordering;
 
     let mut model = FakeModel::new(&[("こうえん", "講演")]);
-    model.delay = Duration::from_millis(300);
+    model.delay = Duration::from_millis(1000);
     let converts = model.converts.clone();
     let b = backend(model, 30);
 
@@ -237,20 +253,17 @@ fn slow_model_queues_completion_after_timeout() {
     let started = Instant::now();
     let segs = b.convert_sentence("こうえん", "");
     assert!(
-        started.elapsed() < Duration::from_millis(200),
+        started.elapsed() < Duration::from_millis(800),
         "予算内に返る"
     );
     assert_eq!(joined(&segs)[0].1, "公園", "予算超過時は辞書の結果");
 
-    // バックグラウンド推論が完了するまで待つ
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while converts.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    // 完了通知が積まれている
-    let completions = b.take_completions();
-    assert!(!completions.is_empty(), "完了通知が積まれる");
+    // バックグラウンド推論が完了し、完了通知が積まれるまで待つ
+    let mut completions = Vec::new();
+    wait_until("完了通知が積まれない", || {
+        completions.extend(b.take_completions());
+        !completions.is_empty()
+    });
     assert_eq!(completions[0].reading, "こうえん");
     assert_eq!(completions[0].left_context, "");
 
@@ -262,7 +275,10 @@ fn slow_model_queues_completion_after_timeout() {
         "講演",
         "キャッシュから LLM の結果が即座に返る"
     );
-    assert!(started.elapsed() < Duration::from_millis(30));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "キャッシュ参照でモデルの完了（1000ms）を待たない"
+    );
     assert_eq!(converts.load(Ordering::SeqCst), 1, "再推論しない");
 }
 
@@ -310,16 +326,20 @@ fn late_llm_result_is_pushed_as_update_preedit() {
     );
     let space_revision = response["revision"].as_u64().unwrap();
 
-    // LLM の完了を待つ（ping の応答のあとに通知が続く）。固定 sleep ではなく上限付きで待つ
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let update = loop {
-        let lines = send(json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
-        if let Some(n) = lines.into_iter().find(|l| l["method"] == "update_preedit") {
-            break n;
+    // LLM の完了を待つ（ping の応答のあとに通知が続く）。遅い環境では完了が Space 自身の応答の
+    // 直後に付いて来ることもあるので、Space の応答の通知も見る。上限付きでポーリングする
+    let mut update = space
+        .iter()
+        .find(|l| l["method"] == "update_preedit")
+        .cloned();
+    wait_until("update_preedit が届かない", || {
+        if update.is_none() {
+            let lines = send(json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
+            update = lines.into_iter().find(|l| l["method"] == "update_preedit");
         }
-        assert!(Instant::now() < deadline, "update_preedit が届かない");
-        std::thread::sleep(Duration::from_millis(10));
-    };
+        update.is_some()
+    });
+    let update = update.unwrap();
     let params = &update["params"];
     assert_eq!(params["session_id"], "s");
     assert_eq!(params["preedit"]["text"], "講演");
@@ -377,19 +397,27 @@ fn wake_callback_and_poll_notifications_deliver_late_llm_result() {
         "予算超過時は辞書の結果"
     );
 
-    // LLM の完了でコールバックが呼ばれる（リクエストは送らない）
-    wake_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("コールバックが呼ばれない");
-    let lines: Vec<Value> = server
-        .poll_notifications()
-        .iter()
-        .map(|l| serde_json::from_str(l).expect("JSON"))
-        .collect();
-    let update = lines
+    // LLM の完了でコールバックが呼ばれる（リクエストは送らない）。遅い環境では完了が最後のキーの
+    // 応答の直後に付いて来る（コールバックは呼ばれるが poll では空）こともあるので、その通知も見る。
+    // 他の通知（設定再読み込み等）でも起こされうるので、見つかるまで起こされるたびに取り出す
+    let mut update = last
         .iter()
         .find(|l| l["method"] == "update_preedit")
-        .expect("update_preedit が取り出せる");
+        .cloned();
+    let deadline = Instant::now() + WAIT_LIMIT;
+    while update.is_none() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        wake_rx
+            .recv_timeout(left)
+            .expect("コールバックが呼ばれない");
+        let lines: Vec<Value> = server
+            .poll_notifications()
+            .iter()
+            .map(|l| serde_json::from_str(l).expect("JSON"))
+            .collect();
+        update = lines.into_iter().find(|l| l["method"] == "update_preedit");
+    }
+    let update = update.expect("update_preedit が取り出せる");
     assert_eq!(update["params"]["preedit"]["text"], "講演");
     // 取り出したあとは空
     assert!(server.poll_notifications().is_empty());
