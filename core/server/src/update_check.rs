@@ -9,10 +9,18 @@ use std::path::Path;
 /// 既定のマニフェスト URL（OS ごとに `https://nagi.shiki-01.com/updates/{os}/latest.json`。
 /// `{os}` は `std::env::consts::OS`。macOS なら `macos`）
 pub fn default_check_url() -> String {
-    format!(
-        "https://nagi.shiki-01.com/updates/{}/latest.json",
-        std::env::consts::OS
-    )
+    check_url_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// OS・CPU ごとのマニフェストの URL。Windows の ARM64 だけ配布物が別（`latest-arm64.json`）で、
+/// それ以外は従来どおり `latest.json`（0.1.15 以前の x64 クライアントの取得先を変えないため）
+fn check_url_for(os: &str, arch: &str) -> String {
+    let name = if os == "windows" && arch == "aarch64" {
+        "latest-arm64.json"
+    } else {
+        "latest.json"
+    };
+    format!("https://nagi.shiki-01.com/updates/{os}/{name}")
 }
 
 /// アップデート配布物の署名検証に使う ed25519 公開鍵（16進数、32バイト）。
@@ -293,7 +301,16 @@ mod tests {
         let url = default_check_url();
         assert!(url.contains("/updates/"), "{url}");
         assert!(url.contains(std::env::consts::OS), "{url}");
-        assert!(url.ends_with("/latest.json"), "{url}");
+        assert!(url.ends_with(".json"), "{url}");
+    }
+
+    #[test]
+    fn check_url_uses_arm64_manifest_only_on_windows_arm64() {
+        assert!(
+            check_url_for("windows", "aarch64").ends_with("/updates/windows/latest-arm64.json")
+        );
+        assert!(check_url_for("windows", "x86_64").ends_with("/updates/windows/latest.json"));
+        assert!(check_url_for("macos", "aarch64").ends_with("/updates/macos/latest.json"));
     }
 
     #[test]
