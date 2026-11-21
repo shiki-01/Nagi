@@ -4,10 +4,12 @@
 
 use nagi_dict::{ConnectionLayout, Dictionary, DictionaryBuilder};
 use nagi_infer::{ConversionModel, ConvertRequest, Hypothesis, InferError};
+use nagi_server::Server;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const POS_DEFS: &str = "\
 0 BOS/EOS,*,*,*,*,*,*
@@ -157,5 +159,58 @@ impl ConversionModel for FakeModel {
             .iter()
             .map(|c| if c == favorite { -0.1 } else { -5.0 })
             .collect())
+    }
+}
+
+/// 非同期の完了を待つ上限。成功したらすぐ返るので、遅い CI ランナーでも足りるよう十分長く取る
+/// （上限まで待つのは失敗時だけ）
+pub const WAIT_LIMIT: Duration = Duration::from_secs(15);
+
+/// 条件が満たされるまで短い間隔でポーリングする。上限を超えたら `what` で失敗する
+pub fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = Instant::now() + WAIT_LIMIT;
+    while !cond() {
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// 通知の行（応答に付いて返ったものも、`poll_notifications` のものも）から `update_candidates` の
+/// `params` だけを取り出す
+pub fn update_candidates_params(lines: &[String]) -> Vec<Value> {
+    lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|l| l["method"] == "update_candidates")
+        .map(|l| l["params"].clone())
+        .collect()
+}
+
+/// 最後の打鍵の同期応答（`sync_revision` はそのリビジョン）より新しい `update_candidates` が届くまで
+/// ポーリングし、届いた中でリビジョンが最大のものの `params` を返す。`seen` は、打鍵の応答に付いて
+/// 返った通知など、すでに手元にあるもの。`limit` までに届かなければ `None`。
+/// 通知が必ず届く場面（`limit` = `WAIT_LIMIT`）と、届かないことがある場面（読みが変わらない打鍵など。
+/// 短い `limit` で、届いていれば拾うだけにする）を呼び出し側が選ぶ
+pub fn latest_candidates_update(
+    s: &mut Server,
+    sync_revision: u64,
+    mut seen: Vec<Value>,
+    limit: Duration,
+) -> Option<Value> {
+    let deadline = Instant::now() + limit;
+    loop {
+        seen.extend(update_candidates_params(&s.poll_notifications()));
+        let newest = seen
+            .iter()
+            .max_by_key(|p| p["revision"].as_u64().unwrap_or(0));
+        if let Some(n) = newest
+            && n["revision"].as_u64().unwrap_or(0) > sync_revision
+        {
+            return Some(n.clone());
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }

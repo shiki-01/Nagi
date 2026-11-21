@@ -4,7 +4,9 @@
 
 mod common;
 
-use common::{FakeModel, dict_with_extra};
+use common::{
+    FakeModel, WAIT_LIMIT, dict_with_extra, latest_candidates_update, update_candidates_params,
+};
 use nagi_config::Config;
 use nagi_engine::EngineConfig;
 use nagi_learn::{LearnConfig, Learner};
@@ -13,7 +15,6 @@ use nagi_profile::SystemInfo;
 use nagi_server::{Pipeline, Runtime, Server, Tunables};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::Duration;
 
 const EXTRA: &str = "\
 きょう\t1\t1\t3000\t今日
@@ -80,9 +81,12 @@ fn server(partial: Option<bool>, loanword: bool) -> Server {
 }
 
 /// かなを 1 文字ずつ送り（キーボードの `insertReading` と同じ）、最後に届いた候補バーを返す。
-/// 同期の応答には候補の再計算が載らないこと（`insert_reading` の応答の `candidates` が空）も確認する
+/// 同期の応答には候補の再計算が載らないこと（`insert_reading` の応答の `candidates` が空）も確認する。
+/// 候補は非同期の通知で届くので、最後の打鍵より新しい通知が届くまで待つ（応答に付いて返った通知も見る）
 fn typed(s: &mut Server, text: &str) -> Vec<Value> {
     let mut last_sync: Option<Value> = None;
+    let mut sync_revision = 0;
+    let mut seen = Vec::new();
     for (i, ch) in text.chars().enumerate() {
         let lines = s.handle_line(
             &json!({"jsonrpc":"2.0","id":10 + i as i64,"method":"insert_reading","params":{
@@ -91,6 +95,8 @@ fn typed(s: &mut Server, text: &str) -> Vec<Value> {
         );
         let r: Value = serde_json::from_str(&lines[0]).unwrap();
         last_sync = Some(r["result"]["candidates"].clone());
+        sync_revision = r["result"]["revision"].as_u64().unwrap_or(0);
+        seen.extend(update_candidates_params(&lines));
     }
     // 同期の応答には、拡充した候補（接頭辞）を載せない
     if let Some(c) = last_sync.filter(|c| !c.is_null()) {
@@ -103,13 +109,8 @@ fn typed(s: &mut Server, text: &str) -> Vec<Value> {
             "{c}"
         );
     }
-    std::thread::sleep(Duration::from_millis(300));
-    s.poll_notifications()
-        .iter()
-        .map(|l| serde_json::from_str::<Value>(l).unwrap())
-        .filter(|l| l["method"] == "update_candidates")
-        .next_back()
-        .and_then(|l| l["params"]["candidates"]["items"].as_array().cloned())
+    latest_candidates_update(s, sync_revision, seen, WAIT_LIMIT)
+        .and_then(|p| p["candidates"]["items"].as_array().cloned())
         .unwrap_or_default()
 }
 

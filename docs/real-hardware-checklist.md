@@ -131,7 +131,9 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 > **実機確認の状況（2026-11-20、ユーザー報告・0.1.14）**: 次の項目は Windows 実機で動作を確認した（根拠はユーザー報告。ログ・計測値は未取得）:
 > 導入（`install.ps1`）、設定 GUI、候補の重複・位置、プロファイル判定、キー応答、モード切替、ライブ変換、右クリックメニュー、imserver の寿命管理、スタートメニューのショートカット。
 >
-> **未確認の一覧（実機）**: 自動更新（H-95。取得・署名検証・UAC 1 回での適用・トースト）、更新時の旧エンジン停止（`imserver.exe.old` が残らないこと）、`uninstall.ps1`、標準ユーザーでの動作、VC++ 再頒布可能パッケージなしの環境、ARM64（H-107）、SmartScreen の出方、曖昧入力の Windows 実機（§9）。
+> **追加で確認した（2026-11-21、ユーザー報告・0.1.16。ログ・計測値は未取得）**: 自動更新（0.1.15 の環境で右クリック「更新を確認…」→設定画面の更新ページ→新版 0.1.16 の検出・取得・「更新を適用…」→UAC 1 回→適用→`verify.ps1 status` で VERSION 0.1.16）、ネイティブ設定画面（H-104。ウィンドウが開く・見た目・項目の変更が config.toml に反映・シンプル/詳細の切替・データ・ファイルページ〈config.toml・フォルダを開く、学習全削除の確認ダイアログ〉・多重起動で既存ウィンドウが前面・閉じたあと imserver が残らない・Tab/Esc）、候補ウィンドウの位置（最初の 1 文字を含む。0.1.15 でも確認）。0.1.15（2026-11-20）: 右クリックメニューの幅（H-103）、`irm https://nagi.shiki-01.com/install.ps1 | iex` での導入、`uninstall.ps1`。
+>
+> **未確認の一覧（実機）**: 標準ユーザーでの動作、VC++ 再頒布可能パッケージなしの環境、ARM64（H-107）、SmartScreen の出方（文言の記録）、曖昧入力の Windows 実機（§9）。自動更新の失敗系（zip 改竄・古い版・UAC 拒否）、更新時の旧エンジン停止（`imserver.exe.old` が残らないこと）の個別確認、設定画面の DPI 150% 以外の個別項目（別 DPI のモニター間移動・`--web`・設定画面を開いたままの更新）は個別には未記録。
 > 2026-11-21 に追加した H-102・H-105〜H-109 も実機未確認（§8.5 の候補の先頭位置、§8.8）: 最初の 1 文字の候補位置、文書切替・キャレット移動での確定、`ITfFnConfigure`（言語のオプションから設定 GUI）、テーマ追従、UILess、モード切替のキャレット付近表示、ARM64 機での導入・入力。
 > 加えて、下の個別項目のうち `[ ]` のものは個別には未確認（上の「確認した」項目に含まれる範囲は個別の `[x]` に反映した）。
 
@@ -225,7 +227,7 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] 「設定ファイル（config.toml）を直接開く」（旧「設定を開く（config.toml）…」）: `config.toml`（`get_status` の `config_path`）がメモ帳で開く。ファイルが無いときの作成の確認。`config_path` が無いとき項目が灰色
 - [ ] 右クリックメニューの状態行が短い（H-103）: 「プロファイル: balanced（推論 48ms）」のように理由が短い表記で、メニュー幅が横に長すぎない。メモリ逼迫などで切り替わった後も「（メモリ逼迫）」等の短い表記。詳細な理由は `tsf.log` の `[engine] notify … profile_changed` で確認できる
 - [ ] 右クリックメニューの開く項目（H-93。`ITfMenu` の平坦な項目 5 行）: 「設定フォルダを開く」でエクスプローラーが `%APPDATA%\Nagi` を開く。「ユーザー辞書フォルダを開く」が `user_dict` があればそれ、無ければ `%APPDATA%\Nagi` を開く。「ログフォルダを開く」が `%LOCALAPPDATA%\Nagi\logs` を開く。「状態を確認（verify.ps1）」が新しいコンソールで `verify.ps1 status` を実行し、終了後もコンソールが閉じない（`-NoExit`。ExecutionPolicy で止まらない）。対象のフォルダ・`verify.ps1` が無い環境では該当項目が灰色（フォルダは作られない）。開けなかったときは `tsf.log` に `[menu] open failed kind=… code=…` が出る。開く操作の前後で入力中の文字列・モードが変わらない
-- [ ] **設定画面（H-97 → H-104 でネイティブの Win32 ウィンドウに変更。`nagi-settings.exe`。Linux ではモデル・レイアウト・ワーカーの単体テストと HTTP 版の統合テストのみ。ネイティブ版は Windows 実機で一度も動かしていない（0.1.14 で起動を確認したのは H-97 の Web 版。H-101）。`--web` で従来のブラウザ版）**:
+- [x] **設定画面（H-97 → H-104 でネイティブの Win32 ウィンドウに変更。`nagi-settings.exe`。Linux ではモデル・レイアウト・ワーカーの単体テストと HTTP 版の統合テストのみ。Windows 実機で一度も動かしていない。`--web` で従来のブラウザ版）**: **確認済み（0.1.16、2026-11-21、ユーザー報告。根拠はユーザー報告のみ）**: 開く・見た目・項目の反映・シンプル/詳細・データ・ファイルページ・多重起動・閉じたあと imserver が残らない・Tab/Esc。下の個別項目のうち DPI の切替、`--web`、更新との併用は個別には未記録。
   - ウィンドウが開く: 右クリック → 「設定…」（スタートメニューの「Nagi 設定」も）で「Nagi 設定」ウィンドウが開く（ブラウザは開かない。黒いコンソール窓が出ない。ウィンドウが先に出て、最初は「読み込み中…」→ 項目が並ぶ）。タスクマネージャーに `nagi-settings.exe` と、その子の `imserver.exe` が 1 つずつ。`nagi-settings.exe` が無いと「設定…」が灰色。起動に失敗したら `tsf.log` に `[menu] open failed kind=settings_gui code=…`。`imserver.exe` を退避して開くと「設定を読み込めませんでした」+「再試行」（戻すと再試行で読み込める）。アイコン・最小サイズ・リサイズが自然。タイトルバーがシステムのライト/ダークに追従
   - DPI 150%（と 100%/200%、別 DPI のモニター間の移動）でレイアウトが崩れない: 文字が切れない・説明が折り返す・ボタンが重ならない・フォントがぼやけない。最小サイズまで縮めても入力欄とボタンが隠れない。縦スクロール（ホイール・つまみ）と Tab での移動で、フォーカスした項目が見える位置まで動く。コンボボックスの上でホイールを回しても値が変わらない
   - 項目: 左の一覧にカテゴリが並び、「詳細設定を表示」で項目数が変わる（カテゴリごと消えるものがある）。iOS 専用の項目（濁点の循環順・タッチ座標の利用・グライド入力）が出ない
@@ -267,12 +269,12 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] 展開した zip で `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`: `SHA256SUMS` の検証、UAC の確認、`C:\Program Files\Nagi` への配置、`regsvr32` の登録、「アプリと機能」の項目、辞書・モデルの取得（`%APPDATA%\Nagi\data`、約 150MB）が通る。標準ユーザー（UAC で別アカウントの資格情報を入力）の場合に、入力方式が使うアカウントに登録されるか
 - [ ] Program Files の DLL が UWP / 保護されたアプリ（設定アプリ・Edge の一部・Microsoft Store アプリ）でも読み込まれる（`ALL APPLICATION PACKAGES` の読み取り権限）
 - [ ] 更新（上書きインストール）: 入力方式の使用中に再実行して `.old` への退避が通り、サインアウト / 再起動後に新しい版にそろう。`.old` が次回に片付く。動作中の imserver（旧版）が混在して問題を起こさない
-- [ ] `uninstall.ps1`: 登録が消え（`regsvr32 /u`）、ファイルが消える。使用中のファイルが再起動後に消える。`-RemoveUserData` の確認（`yes`）と `-Force`。既定ではユーザーデータが残る。「アプリと機能」の項目が消える
-- [ ] `irm https://nagi.shiki-01.com/install.ps1 | iex`（PowerShell 5.1 と 7）: latest.json の取得、SHA-256 検証、SmartScreen が出ないこと。`NAGI_SKIP_DATA=1`。prerelease の間は 404 になる（想定どおり）。公開前に `web.yml` の取り込み（`static/updates/windows/latest.json`）を確認する
+- [x] `uninstall.ps1`: 登録が消え（`regsvr32 /u`）、ファイルが消える。使用中のファイルが再起動後に消える。`-RemoveUserData` の確認（`yes`）と `-Force`。既定ではユーザーデータが残る。「アプリと機能」の項目が消える **実行できた（0.1.15、2026-11-20、ユーザー報告。個別の確認項目の詳細は未記録）。**
+- [x] `irm https://nagi.shiki-01.com/install.ps1 | iex`（PowerShell 5.1 と 7）: latest.json の取得、SHA-256 検証、SmartScreen が出ないこと。`NAGI_SKIP_DATA=1`。prerelease の間は 404 になる（想定どおり）。公開前に `web.yml` の取り込み（`static/updates/windows/latest.json`）を確認する **実行できた（0.1.15、2026-11-20、ユーザー報告。個別の確認項目の詳細は未記録）。**
 - [ ] ブラウザで取得した zip の SmartScreen / Defender の警告の出方（Edge・Chrome）と、`docs/windows-install.md` の回避手順（zip のブロック解除、「詳細情報」→「実行」）で実際に進める。`.ps1` の MOTW 付きでも `-ExecutionPolicy Bypass` で実行できる
 - [ ] Authenticode 署名（Secrets を登録した場合）: `signtool verify /pa` が通り、署名した DLL / exe が読み込まれる。タイムスタンプの取得
 - [ ] 更新の通知: 旧版の imserver が `/updates/windows/latest.json` を取得し、新版があれば右下のトーストが出る（文言「…取得中です。取得できたらスタートメニューの「Nagi を更新」から適用できます」→ 取得後「新しい版 X をダウンロードしました。スタートメニューの「Nagi を更新」から適用できます」）。`%APPDATA%\Nagi\update_check.json` による 24 時間の間引き
-- [ ] 自動更新（H-95。取得・署名検証・UAC 1 回での適用。**実機未確認**）。確認用に旧版（例: 0.1.12）を入れた状態で、新しい版 X の `Nagi-windows-X.zip` と `latest.json`（`windows-release.yml` の成果物。署名は zip に対するものなので `download_url` を書き換えても有効）を 1 つのフォルダに置き、`download_url` を `http://localhost:8000/Nagi-windows-X.zip` に書き換えて `python -m http.server 8000` で配る。`%APPDATA%\Nagi\config.toml` に `[update]` `check_url = "http://localhost:8000/latest.json"` を書く（prerelease は web の `latest.json` に載らないため、本番の URL では試せない。`prerelease=false` で公開すれば本番の URL でも確認できる）。`%APPDATA%\Nagi\update_check.json` を消して（24 時間の間引きを外す）、メモ帳などで Nagi を使って imserver を起動する。
+- [x] 自動更新（H-95。取得・署名検証・UAC 1 回での適用。**0.1.15→0.1.16 で確認済み、2026-11-21、ユーザー報告。失敗系と旧エンジン停止は個別には未記録**）。確認用に旧版（例: 0.1.12）を入れた状態で、新しい版 X の `Nagi-windows-X.zip` と `latest.json`（`windows-release.yml` の成果物。署名は zip に対するものなので `download_url` を書き換えても有効）を 1 つのフォルダに置き、`download_url` を `http://localhost:8000/Nagi-windows-X.zip` に書き換えて `python -m http.server 8000` で配る。`%APPDATA%\Nagi\config.toml` に `[update]` `check_url = "http://localhost:8000/latest.json"` を書く（prerelease は web の `latest.json` に載らないため、本番の URL では試せない。`prerelease=false` で公開すれば本番の URL でも確認できる）。`%APPDATA%\Nagi\update_check.json` を消して（24 時間の間引きを外す）、メモ帳などで Nagi を使って imserver を起動する。
   - [ ] `%LOCALAPPDATA%\Nagi\update\` に `Nagi-windows-X.zip` と `ready.json` ができる（`.tmp` が残らない）。再度 imserver を起動しても再取得しない（ログに取得の記録が増えない）。トースト「新しい版 X をダウンロードしました…」
   - [ ] 入力インジケーターの右クリックに「更新を適用（X）…」が出る。取得前・適用後は出ない
   - [ ] スタートメニューの「Nagi を更新」または右クリックの項目で、UAC が 1 回出て、検証 → 展開 → 配置 → 完了メッセージ「サインアウトまたは再起動で全アプリが新しい版になります」。`C:\Program Files\Nagi\VERSION` が X、「アプリと機能」の版が X、`staging` と `update\` の `ready.json`・zip が消える。サインアウト後に新しい版（`Get-Process imserver | Select Path`）

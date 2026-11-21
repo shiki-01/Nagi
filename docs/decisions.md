@@ -2232,6 +2232,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **未実装**: 本体（クライアント領域）のダークモード、アクセシビリティの詳細確認（「既定に戻す」ボタンの読み上げ名が他の項目と区別できない・UI Automation の名前）、キーマップ・ユーザー辞書の編集 UI、数値入力のスピナー（UPDOWN）、PgUp/PgDn などキーボードでのパネルのスクロール、更新確認中の他の設定変更の待ち（ワーカーは 1 本で、確認が終わるまで後続のコマンドが待つ）、ウィンドウの位置・サイズの記憶。
 - **未確認（実機確認項目）**: `docs/real-hardware-checklist.md` §8.5c の設定画面の項目（ウィンドウが開く・DPI 150% のレイアウト・項目の変更が config.toml に反映・再起動バッジ・更新ページ・多重起動・閉じたあと imserver が残らない・キーボード操作）。
 
+<<<<<<< HEAD
 ### H-105. 文書フォーカス・キャレット移動への追従と ITfFnConfigure（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
 
 - **文書フォーカス（`ITfThreadMgrEventSink`）**: 同一アプリ内で文書（入力欄・タブ）が切り替わったとき、旧文書の composition を確定する。`focus_out` → `focus_in` は `frontend-windows/src/focus.rs` の `FocusTracker` で冪等化し、キー sink の `OnSetFocus` 経路と二重に送らない（同じ状態への遷移は送らない）。
@@ -2255,6 +2256,8 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **制約**: TSF DLL は ARM64 ネイティブのみ。COM の `InprocServer32` は 1 CLSID に 1 パスで、x64 DLL の併用登録はできない。そのため **x64 エミュレーションで動くアプリでは Nagi が使えない**。解消は ARM64X（ARM64 + ARM64EC）で、未着手。
 - **未確認**: `windows-11-arm` イメージに ARM64 の libclang があるか。ARM64 実機での導入・入力。
 - **関連**: H-42 の「x64 のみ」「ARM64 は未実装」を更新した。
+
+- **ARM64 の llama.cpp のビルド（2026-11-21、CI の試行で確定）**: ggml-cpu は ARM64 の MSVC（cl.exe）を拒否する（"MSVC is not supported for ARM, use clang"）ため、ARM64 だけ VS の開発者環境（`ilammy/msvc-dev-cmd`、arm64）を読み込み、Ninja + clang-cl でビルドする。あわせて (1) bash では Git の `/usr/bin/link.exe` が MSVC のリンカーより先に見つかるので退避、(2) clang-cl は C++ 例外が既定で無効なので `-EHsc`（`/EHsc` は MSYS のパス変換で壊れる）、(3) clang-cl の OpenMP は LLVM の libomp（`__kmpc_*`）を要しランナーにも配布物にも無いため、toolchain ファイルの `CMAKE_DISABLE_FIND_PACKAGE_OpenMP` で OpenMP を無効にし ggml 自前のスレッドプールを使う（macOS と同じ経路。追加 DLL なし）。x64 は従来どおり MSVC + OpenMP。ARM64 の推論速度は実機未計測。
 
 ### H-108. UILess モード（ITfCandidateListUIElement）（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
 
@@ -2294,3 +2297,16 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - `IsArm64` が x86 の Setup プロセス上で ARM64 を正しく判定するか（誤っても install.ps1 の ARCH 検査で配置前に止まる）。
 - 配置失敗時（ssPostInstall の RaiseException）に Inno がきれいに終了するか。
 - 取得に失敗した後の再取得の導線が弱い（setup.exe の再実行か `imserver --install-data`）。スタートメニューに「辞書・モデルを取得」を足す案がある。
+=======
+### H-112. Windows 0.1.16 の実機確認の記録と CI の hybrid テストの不安定さの修正（2026-11-21、ユーザー報告。コードの挙動は変えない。文書のみ。番号は ARM64 対応のブランチが H-111 まで使用しているため H-112 とした）
+
+- **確認結果（すべて OK、ユーザー報告。ログ・計測値は未取得）**:
+  - 自動更新（H-95・H-100）: 0.1.15 の環境で右クリック「更新を確認…」→設定画面の更新ページ→新版 0.1.16 の検出・取得・「更新を適用…」→UAC 1 回→適用→`verify.ps1 status` で VERSION 0.1.16。
+  - ネイティブ設定画面（H-104）: ウィンドウが開く・見た目・項目の変更が config.toml に反映・シンプル/詳細の切替・データ・ファイルページ（config.toml・フォルダを開く、学習全削除の確認ダイアログ）・多重起動で既存ウィンドウが前面・閉じたあと imserver が残らない・キーボード操作（Tab・Esc）。
+  - 候補ウィンドウの位置（最初の 1 文字を含む。H-102。0.1.15 でも確認済み）。
+  - 0.1.15（2026-11-20）: 右クリックメニューの幅（H-103）、`irm https://nagi.shiki-01.com/install.ps1 | iex` での導入、`uninstall.ps1` の実行。
+- **配布**: 公開版（prerelease ではない）として配布中。自動更新に対応。
+- **既知の未確認**: 標準ユーザー、VC++ 再頒布可能パッケージなしの環境、ARM64（別セッションで対応中。H-107 以降）、SmartScreen の文言の記録、曖昧入力（H-88・H-89）の Windows 実機。自動更新の失敗系・設定画面の DPI 切替・`--web` も個別には未記録。
+- **CI の修正**: macOS の CI で hybrid のテストが固定 sleep のため不安定だった件を修正済み（コミット a910246）。**未対応**: 同型の固定 sleep の候補が他のテストファイルにある（`model_unload.rs`、`touch_rpc.rs`、`retro_review.rs`、`suggest_prefix.rs`、`async_load.rs`）。不安定になったら同様に、固定時間の待ちを条件待ち（ポーリング）に置き換える。
+- **更新した文書**: `CLAUDE.md`（現状）、`docs/progress.md`（Windows 節）、`docs/real-hardware-checklist.md`（§8 冒頭・§8.5c・§8.7）、`docs/windows-verification.md`（自動更新の手順）。
+>>>>>>> origin/main

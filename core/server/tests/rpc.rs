@@ -772,7 +772,7 @@ fn llm_backed_conversion_end_to_end() {
         let profile = st["result"]["profile"].as_str().unwrap().to_string();
         let reason = st["result"]["profile_reason"].as_str().unwrap().to_string();
         if (profile != "minimal" && reason.contains("キャリブレーション"))
-            || started.elapsed() > std::time::Duration::from_secs(10)
+            || started.elapsed() > std::time::Duration::from_secs(15)
         {
             break (profile, reason);
         }

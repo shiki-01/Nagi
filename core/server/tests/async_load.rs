@@ -79,7 +79,7 @@ fn uses_llm(built: &Built) -> bool {
 }
 
 fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if cond() {
             return true;
