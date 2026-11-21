@@ -493,9 +493,16 @@ jobs:
             $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           }
           if (-not $iscc) { throw 'ISCC.exe が見つかりません' }
-          $v = [version]$iscc.VersionInfo.ProductVersion
-          Write-Host "ISCC: $($iscc.FullName) ($v)"
-          if ($v -lt [version]'6.3') { throw "Inno Setup 6.3 以降が必要です（$v）" }
+          # ISCC.exe のファイル情報の版は 0.0.0.0 になることがある（2026-11 のランナーで確認）ので、ISCC 自身の
+          # 表示（"Inno Setup 6.x.x Command-Line Compiler"）から読む。読めなければ警告だけで続ける
+          $banner = (& $iscc.FullName '/?' 2>&1 | Out-String)
+          if ($banner -match 'Inno Setup (\d+\.\d+(\.\d+)?)') {
+            $v = [version]$Matches[1]
+            Write-Host "ISCC: $($iscc.FullName) ($v)"
+            if ($v -lt [version]'6.3') { throw "Inno Setup 6.3 以降が必要です（$v）" }
+          } else {
+            Write-Host "::warning::ISCC の版を読めませんでした: $($iscc.FullName)"
+          }
           if (-not (Test-Path (Join-Path $iscc.DirectoryName 'Languages\Japanese.isl'))) { throw 'Japanese.isl が見つかりません' }
           "ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
