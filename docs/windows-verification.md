@@ -496,7 +496,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $v status
 - [ ] 次回の `install.ps1`（または `uninstall.ps1`）で、使用中でなくなった `.old` が片付く。
 - [ ] 「アプリと機能」の `DisplayVersion` が新しい版になる。
 - [ ] 更新の通知: 旧版の imserver が `/updates/windows/latest.json` を取得し、新版があれば右下にトースト（「…取得中です。取得できたらスタートメニューの「Nagi を更新」から…」）が出る。`update_check.json`（`%APPDATA%\Nagi\update_check.json`）で 24 時間間引かれる。公開リリース（`prerelease=false`）と `web.yml` の実行が前提（H-42。prerelease は対象外）。
-- [ ] 自動更新（H-95。実機未確認）。手順と確認項目は `docs/real-hardware-checklist.md` §8.7 の「自動更新」。要点: (1) 旧版を入れる。(2) 新版の zip と `latest.json` をローカルの HTTP サーバーで配り（`download_url` を書き換えてよい。署名は zip に対するもの）、`config.toml` の `[update] check_url` をそれに向けて `update_check.json` を消す。(3) Nagi を使って imserver を起動 → `%LOCALAPPDATA%\Nagi\update\` に zip と `ready.json`、トースト、右クリックの「更新を適用（X）…」。(4) スタートメニューの「Nagi を更新」を実行 → UAC 1 回 → 完了メッセージ。(5) `VERSION`・「アプリと機能」の版、`staging` と staged の削除、サインアウト後に新しい版。(6) 失敗系: zip の改竄・古い版・UAC 拒否で何も置き換わらない。NG のときは `imserver-*.log`・`tsf.log`・`apply-update.ps1` の画面の全文・`ready.json` を記録する。
+- [x] 自動更新（H-95。**確認済み（0.1.15→0.1.16、2026-11-21、ユーザー報告）**。失敗系は未記録）。手順と確認項目は `docs/real-hardware-checklist.md` §8.7 の「自動更新」。要点: (1) 旧版を入れる。(2) 新版の zip と `latest.json` をローカルの HTTP サーバーで配り（`download_url` を書き換えてよい。署名は zip に対するもの）、`config.toml` の `[update] check_url` をそれに向けて `update_check.json` を消す。(3) Nagi を使って imserver を起動 → `%LOCALAPPDATA%\Nagi\update\` に zip と `ready.json`、トースト、右クリックの「更新を適用（X）…」。(4) スタートメニューの「Nagi を更新」を実行 → UAC 1 回 → 完了メッセージ。(5) `VERSION`・「アプリと機能」の版、`staging` と staged の削除、サインアウト後に新しい版。(6) 失敗系: zip の改竄・古い版・UAC 拒否で何も置き換わらない。NG のときは `imserver-*.log`・`tsf.log`・`apply-update.ps1` の画面の全文・`ready.json` を記録する。
 - [ ] 更新の確認を無効にした設定（`[update] auto_check`）で通知が出ない。
 
 #### F-2 アンインストール
