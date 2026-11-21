@@ -5,6 +5,9 @@ use nagi_server::Server;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod common;
+use common::wait_until;
+
 fn server() -> Server {
     let mut s = Server::new(Arc::new(KanaBackend), "balanced", EngineConfig::default());
     call(
@@ -170,7 +173,7 @@ fn composing_candidates_are_pushed_without_further_input() {
     insert(&mut s, 2, json!({"type":"text","content":"きょうは"}));
 
     // 入力のあと、リクエストを送らなくても候補が届く
-    rx.recv_timeout(Duration::from_secs(5))
+    rx.recv_timeout(Duration::from_secs(15))
         .expect("通知で起こされる");
     let lines: Vec<Value> = s
         .poll_notifications()
@@ -280,9 +283,11 @@ fn set_context_drops_stale_suggestions_and_rebuilds_them() {
             "protocol_version":1,"client_name":"t","client_version":"0","os":"ios"}}),
     );
     insert(&mut s, 2, json!({"type":"text","content":"きょうは"}));
-    std::thread::sleep(Duration::from_millis(600));
-    let first = candidate_updates(&mut s);
-    assert!(first.iter().any(|c| c["visible"] == true), "{first:?}");
+    let mut first = Vec::new();
+    wait_until("サジェストが届かない", || {
+        first.extend(candidate_updates(&mut s));
+        first.iter().any(|c| c["visible"] == true)
+    });
 
     // 文脈が変わった: 古いサジェストを消す通知が（応答と一緒に）届き、そのあと新しい文脈で作り直される
     let lines = s.handle_line(
@@ -297,12 +302,10 @@ fn set_context_drops_stale_suggestions_and_rebuilds_them() {
         .map(|l| l["params"]["candidates"].clone())
         .collect();
     assert_eq!(updates.first().map(|c| &c["visible"]), Some(&json!(false)));
-    std::thread::sleep(Duration::from_millis(600));
-    updates.extend(candidate_updates(&mut s));
-    assert!(
-        updates.last().is_some_and(|c| c["visible"] == true),
-        "{updates:?}"
-    );
+    wait_until("新しい文脈のサジェストが届かない", || {
+        updates.extend(candidate_updates(&mut s));
+        updates.last().is_some_and(|c| c["visible"] == true)
+    });
 
     // 確定したあとは、遅れて届く更新でサジェストが復活しない
     let r = call(

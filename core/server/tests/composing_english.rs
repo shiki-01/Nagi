@@ -3,7 +3,9 @@
 
 mod common;
 
-use common::{FakeModel, dict_with_extra};
+use common::{
+    FakeModel, WAIT_LIMIT, dict_with_extra, latest_candidates_update, update_candidates_params,
+};
 use nagi_config::Config;
 use nagi_engine::EngineConfig;
 use nagi_english::{Lexicon, LexiconBuilder};
@@ -61,26 +63,31 @@ fn server(lexicon: Option<Arc<Lexicon>>) -> Server {
     s
 }
 
-/// 1 文字ずつ送り（キーボードの `insertReading` と同じ）、最後に届いた候補バーの表記を返す
-fn typed_candidates(s: &mut Server, keys: &str, first_id: i64) -> Vec<String> {
+/// 1 文字ずつ送り（キーボードの `insertReading` と同じ）、最後に届いた候補バーの表記を返す。
+/// 候補は非同期の通知で届くので、最後の打鍵より新しい通知が届くまで待つ（応答に付いて返った通知も見る）
+fn typed_candidates(s: &mut Server, keys: &str, first_id: i64, expect_update: bool) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut sync_revision = 0;
     for (i, ch) in keys.chars().enumerate() {
-        s.handle_line(
+        let lines = s.handle_line(
             &json!({"jsonrpc":"2.0","id":first_id + i as i64,"method":"insert_reading","params":{
                 "session_id":"s","input":{"type":"text","content":ch.to_string()}}})
             .to_string(),
         );
+        sync_revision = serde_json::from_str::<Value>(&lines[0]).unwrap()["result"]["revision"]
+            .as_u64()
+            .unwrap_or(0);
+        seen.extend(update_candidates_params(&lines));
     }
-    std::thread::sleep(Duration::from_millis(250));
-    let updates: Vec<Value> = s
-        .poll_notifications()
-        .iter()
-        .map(|l| serde_json::from_str::<Value>(l).unwrap())
-        .filter(|l| l["method"] == "update_candidates")
-        .map(|l| l["params"]["candidates"].clone())
-        .collect();
-    updates
-        .last()
-        .and_then(|c| c["items"].as_array())
+    // 読みが変わらない打鍵（保留中のローマ字だけが増える等）では通知が来ないので、
+    // 通知が必須でない呼び出しは短く待つだけにする（負の確認なので、遅れても失敗にはならない）
+    let limit = if expect_update {
+        WAIT_LIMIT
+    } else {
+        Duration::from_millis(250)
+    };
+    latest_candidates_update(s, sync_revision, seen, limit)
+        .and_then(|p| p["candidates"]["items"].as_array().cloned())
         .map(|items| {
             items
                 .iter()
@@ -93,7 +100,7 @@ fn typed_candidates(s: &mut Server, keys: &str, first_id: i64) -> Vec<String> {
 #[test]
 fn typed_english_word_appears_in_the_composing_bar() {
     let mut s = server(Some(fixture_lexicon()));
-    let items = typed_candidates(&mut s, "computer", 2);
+    let items = typed_candidates(&mut s, "computer", 2, true);
     // 先頭は打った通り（動かさない）。ASCII は 2 番目
     assert_eq!(
         items.first().map(String::as_str),
@@ -110,7 +117,7 @@ fn typed_english_word_appears_in_the_composing_bar() {
 #[test]
 fn selecting_the_english_candidate_commits_ascii() {
     let mut s = server(Some(fixture_lexicon()));
-    let items = typed_candidates(&mut s, "computer", 2);
+    let items = typed_candidates(&mut s, "computer", 2, true);
     let index = items.iter().position(|i| i == "computer").unwrap();
     let r = s.handle_line(
         &json!({"jsonrpc":"2.0","id":100,"method":"select_candidate","params":{
@@ -133,7 +140,7 @@ fn japanese_typing_never_shows_ascii_candidates() {
         // 打鍵のたびの状態（接頭辞）すべてで見る
         for end in 3..=keys.len() {
             let mut s = server(Some(fixture_lexicon()));
-            let items = typed_candidates(&mut s, &keys[..end], 2);
+            let items = typed_candidates(&mut s, &keys[..end], 2, false);
             assert!(
                 items
                     .iter()
@@ -150,6 +157,6 @@ fn without_a_lexicon_computer_is_not_judged_english() {
     // 設計上の限界: 語彙が無いと computer は特徴量だけで Low になり、候補バーに出ない
     // （語彙は本体アプリの「追加データ」で入れる。H-56）
     let mut s = server(None);
-    let items = typed_candidates(&mut s, "computer", 2);
+    let items = typed_candidates(&mut s, "computer", 2, false);
     assert!(!items.iter().any(|i| i == "computer"), "{items:?}");
 }

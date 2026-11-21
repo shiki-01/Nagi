@@ -29,6 +29,8 @@ struct Probe {
     reload_gate: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
     /// `set_active(true)` に入った回数
     reload_entered: Arc<AtomicUsize>,
+    /// `set_active(true)` が終わった（`active` を書いた）回数
+    reload_done: Arc<AtomicUsize>,
 }
 
 /// テスト側が持つ `Probe` の操作口
@@ -40,6 +42,7 @@ struct Handles {
     started: Arc<AtomicUsize>,
     reload_gate: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
     reload_entered: Arc<AtomicUsize>,
+    reload_done: Arc<AtomicUsize>,
 }
 
 fn probe(gate: Option<mpsc::Receiver<()>>) -> (Probe, Handles) {
@@ -50,6 +53,7 @@ fn probe(gate: Option<mpsc::Receiver<()>>) -> (Probe, Handles) {
         started: Arc::new(AtomicUsize::new(0)),
         reload_gate: Arc::new(Mutex::new(None)),
         reload_entered: Arc::new(AtomicUsize::new(0)),
+        reload_done: Arc::new(AtomicUsize::new(0)),
     };
     let p = Probe {
         inner: FakeModel::new(&[("こうえんにいく", "公園に行く")]),
@@ -60,6 +64,7 @@ fn probe(gate: Option<mpsc::Receiver<()>>) -> (Probe, Handles) {
         started: handles.started.clone(),
         reload_gate: handles.reload_gate.clone(),
         reload_entered: handles.reload_entered.clone(),
+        reload_done: handles.reload_done.clone(),
     };
     (p, handles)
 }
@@ -99,6 +104,9 @@ impl ConversionModel for Probe {
             return Err(InferError::Other("テスト用の再読み込み失敗".into()));
         }
         self.active.store(active, Ordering::SeqCst);
+        if active {
+            self.reload_done.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(())
     }
 }
@@ -143,7 +151,7 @@ fn uses_llm(pipeline: &dyn ConversionBackend) -> bool {
 }
 
 fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if cond() {
             return true;
@@ -231,7 +239,9 @@ fn unload_and_reload_methods_switch_between_dictionary_only_and_llm() {
 #[test]
 fn critical_memory_pressure_unloads_and_normal_reloads_after_delay() {
     let mut f = fixture("pressure", None, |_| {});
-    f.runtime.set_model_reload_delay(Duration::from_millis(300));
+    // 待ち時間は、遅い環境で「まだ戻さない」の確認までに経過しない程度に長く取る
+    let delay = Duration::from_millis(1000);
+    f.runtime.set_model_reload_delay(delay);
     assert!(wait_until(|| uses_llm(&*f.pipeline)));
 
     rpc(
@@ -250,11 +260,13 @@ fn critical_memory_pressure_unloads_and_normal_reloads_after_delay() {
         "set_environment",
         json!({"memory_pressure":"warning"}),
     );
-    std::thread::sleep(Duration::from_millis(400));
+    // 待ち時間より長く待つ（下限。遅い環境で長くなっても意味は変わらない）
+    std::thread::sleep(delay + Duration::from_millis(100));
     rpc(&mut f.server, "ping", json!({}));
     assert!(f.runtime.model_unloaded(), "warning の間は解放したまま");
 
     // normal に戻っても、待ち時間が経つまでは戻さない
+    let normal_sent = Instant::now();
     rpc(
         &mut f.server,
         "set_environment",
@@ -262,14 +274,18 @@ fn critical_memory_pressure_unloads_and_normal_reloads_after_delay() {
     );
     assert!(f.runtime.model_unloaded());
     assert!(!f.runtime.effective().use_llm);
-    // 時間が経ち、次のリクエストで再読み込みされる
-    std::thread::sleep(Duration::from_millis(400));
+    // 時間が経ち、次のリクエストで再読み込みされる（待ち時間は下限だけを検証し、上限は緩める）
     assert!(
         wait_until(|| {
             rpc(&mut f.server, "ping", json!({}));
             f.runtime.effective().use_llm
         }),
         "normal から待ち時間後に再読み込みされる"
+    );
+    assert!(
+        normal_sent.elapsed() >= delay,
+        "待ち時間より前に再読み込みされた: {:?}",
+        normal_sent.elapsed()
     );
     assert!(f.handles.active.load(Ordering::SeqCst));
     assert!(wait_until(|| uses_llm(&*f.pipeline)));
@@ -486,6 +502,7 @@ fn unload_during_reload_keeps_weights_released_and_states_consistent() {
     let (release, gate) = mpsc::channel();
     *f.handles.reload_gate.lock().unwrap() = Some(gate);
     let entered = f.handles.reload_entered.load(Ordering::SeqCst);
+    let done = f.handles.reload_done.load(Ordering::SeqCst);
     rpc(&mut f.server, "reload_model", json!({}));
     assert!(wait_until(|| f
         .handles
@@ -495,9 +512,13 @@ fn unload_during_reload_keeps_weights_released_and_states_consistent() {
     rpc(&mut f.server, "unload_model", json!({}));
     release.send(()).unwrap();
 
-    // 重みは解放され、Runtime / Pipeline のどちらも解放中で一致する
+    // 重みは解放され、Runtime / Pipeline のどちらも解放中で一致する。
+    // 再読み込みはゲートで止めている間も `active == false` なので、先に再読み込みの完了を待つ
+    // （待たないと、遅い環境で再読み込みの完了前の `false` を見て先へ進んでしまう）
+    assert!(wait_until(
+        || f.handles.reload_done.load(Ordering::SeqCst) > done
+    ));
     assert!(wait_until(|| !f.handles.active.load(Ordering::SeqCst)));
-    std::thread::sleep(Duration::from_millis(200));
     assert!(!f.handles.active.load(Ordering::SeqCst));
     assert!(f.runtime.model_unloaded());
     assert!(!f.runtime.effective().use_llm);
