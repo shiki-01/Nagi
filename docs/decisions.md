@@ -1355,7 +1355,7 @@ Phase 5 の最後の担当。コア（`core/` の各 crate）は変更してい�
 
 **配布物と置き場所**
 - **配置先は `%ProgramFiles%\Nagi`（管理者権限が要る）**。`%LOCALAPPDATA%` は管理者権限が要らないが、TSF の DLL は UWP / AppContainer など保護されたアプリにも読み込まれ、利用者プロファイル配下は `ALL APPLICATION PACKAGES` の読み取り権限が既定で付かないため読み込めない（見込み。実機で要確認）。Program Files は既定で付く。どのみち `regsvr32` による COM 登録（`HKCR\CLSID`）に管理者権限が要るので、UAC の回数は増えない。データ（辞書・モデル・設定・学習）は従来どおり利用者ごとの `%APPDATA%\Nagi`（H-39 の決定どおり）
-- **登録は 64bit の `regsvr32 /s`**（32bit の PowerShell からは `Sysnative` 経由）。x64 のみ。ARM64 Windows と 32bit ホスト用の DLL は作らない（設計書 §7 の対象が x64）。ARM64 は将来、`aarch64-pc-windows-msvc` の DLL を別途用意する必要がある（エミュレーションされた x64 アプリに読ませる `ARM64X`/`ARM64EC` は未検討）→ ~~ARM64 は未実装~~ **H-106 で ARM64 ネイティブ版を配布する（ARM64X は未対応）**
+- **登録は 64bit の `regsvr32 /s`**（32bit の PowerShell からは `Sysnative` 経由）。x64 のみ。ARM64 Windows と 32bit ホスト用の DLL は作らない（設計書 §7 の対象が x64）。ARM64 は将来、`aarch64-pc-windows-msvc` の DLL を別途用意する必要がある（エミュレーションされた x64 アプリに読ませる `ARM64X`/`ARM64EC` は未検討）→ ~~ARM64 は未実装~~ **H-107 で ARM64 ネイティブ版を配布する（ARM64X は未対応）**
 - **zip**: `cargo xtask bundle-windows` が `Nagi-windows-<version>.zip` を作る（最上位に同名ディレクトリ 1 つ）。中身: `nagi_windows_tsf.dll` / `imserver.exe` / `install.ps1` / `uninstall.ps1` / `README.md`（`docs/windows-install.md`）/ `LICENSE-MIT` / `LICENSE-APACHE` / `NOTICE` / `THIRD_PARTY_LICENSES.md` / `VERSION` / `SHA256SUMS`。macOS（`Nagi-macos-<version>.zip`、タグ `macos-vX.Y.Z`）に名前をそろえ、Windows は `Nagi-windows-<version>.zip`・タグ `windows-vX.Y.Z`。ビルドは行わず成果物の収集・署名・チェックサム・zip だけ（ビルドは CI の windows ランナー。収集と zip は OS 非依存で、単体テストは Linux で動く: PE ヘッダ検査・チェックサム・BOM・再現性）。`.ps1` は zip に入れるとき **UTF-8 BOM 付き**にする（BOM が無いと Windows PowerShell 5.1 は日本語を ANSI として読み文字化けする。リポジトリ上は BOM 無し）。zip の更新時刻は固定で、同じ入力から同じバイト列になる
 - **`SHA256SUMS`**: 同梱ファイルの `<sha256>  <相対パス>`。`install.ps1` が配置の前に突き合わせる（破損・取り違えの検出。zip ごと差し替えられた場合の改ざん検知は latest.json の SHA-256 と ed25519 の役目）。署名（Authenticode）した後のバイト列で計算する
 - `THIRD_PARTY_LICENSES.md` は現状 iOS の依存閉包の一覧（`gen-licenses`）で、Windows の依存（`windows` クレート、`ureq`/`rustls`/`ring`/`webpki-roots` など）は含まない。**Windows 用の一覧の生成は未実装**（`gen_licenses.rs` が `nagi-ffi` と iOS ターゲットに固定。macOS 版は一覧自体を同梱していないので、それよりは進んでいる）
@@ -1388,12 +1388,12 @@ Phase 5 の最後の担当。コア（`core/` の各 crate）は変更してい�
 | --- | --- | --- | --- |
 | 署名なし + 手順書 + `irm \| iex` | 無料 | zip を手動取得するとブラウザ / Defender が警告（回避手順を書く）。`irm \| iex` は印が付かず警告なし | **現状の最適解**（採用） |
 | OV / EV の Authenticode 証明書（年額有償） | 証明書の購入と本人・組織確認が要る | 署名すれば「発行元不明」は解消するが、評判（reputation）は配布実績で貯まる。EV でも即時に警告が消えるとは限らない（要確認） | 個人開発では費用対効果が低い |
-| Azure Trusted Signing（Artifact Signing 等、クラウド署名） | 月額の低額課金。提供地域・個人 / 組織の本人確認の条件がある（日本からの利用可否は**未調査・要確認**） | 署名の鍵管理が不要で CI から署名できる。評判の扱いは Microsoft が証明書の寿命を短くして管理 | **将来の第一候補**（条件が合えば）→ **H-109 で SignPath Foundation に決定（個人は対象外の地域があるため）** |
+| Azure Trusted Signing（Artifact Signing 等、クラウド署名） | 月額の低額課金。提供地域・個人 / 組織の本人確認の条件がある（日本からの利用可否は**未調査・要確認**） | 署名の鍵管理が不要で CI から署名できる。評判の扱いは Microsoft が証明書の寿命を短くして管理 | **将来の第一候補**（条件が合えば）→ **H-110 で SignPath Foundation に決定（個人は対象外の地域があるため）** |
 | MSIX / Microsoft Store | Store 配布は審査と登録料 | Store 経由ならダウンロード時の警告なし | **不可の見込み**: TIP（`HKCR`/`HKLM` へのグローバルな COM 登録と他プロセスへの DLL の読み込み）は MSIX のコンテナと両立しない見込み（要確認） |
 | winget / MSI | MSI は署名なしでも警告対象。winget は署名不要でハッシュ検証 | winget 経由の取得は警告が出にくい | zip 内の `.ps1` 方式は winget の installer 種別に合わない。EXE / MSI 化が前提で、署名導入後に再検討 |
 
 - **現状**: 署名なしで配布する。主導線は `irm | iex`（警告なし）、手動の zip は README の手順（zip のブロック解除、または「詳細情報」→「実行」）。ワークフローに Secrets があれば署名するオプション（上記）を入れてある
-- ~~**将来**: (1) Azure Trusted Signing が使えれば~~ → **H-109 で署名方針を SignPath Foundation に決定（未申請）**。以下は決定前の記述: (1) Azure Trusted Signing が使えれば、`signtool` の `/dlib` 方式でワークフローから署名する。(2) 署名ができたら MSI / EXE インストーラ化と winget への登録。(3) いずれも**一般公開（App Store / 広く配る段階）の前に判断**する。個人利用・テスト配布の間は署名なしを維持する
+- ~~**将来**: (1) Azure Trusted Signing が使えれば~~ → **H-110 で署名方針を SignPath Foundation に決定（未申請）**。以下は決定前の記述: (1) Azure Trusted Signing が使えれば、`signtool` の `/dlib` 方式でワークフローから署名する。(2) 署名ができたら MSI / EXE インストーラ化と winget への登録。(3) いずれも**一般公開（App Store / 広く配る段階）の前に判断**する。個人利用・テスト配布の間は署名なしを維持する
 
 **迷った判断**
 1. 配置先を Program Files にした（管理者権限が要る代わりに、保護されたアプリで読める）
@@ -1406,7 +1406,7 @@ Phase 5 の最後の担当。コア（`core/` の各 crate）は変更してい�
 
 **未検証（実機 / Actions）**: すべて。特に (1) `regsvr32` の登録と UAC の流れ、`-Elevated` 子プロセスの終了コード、(2) Program Files の DLL が UWP / 保護されたアプリで読めること、(3) 更新（上書き）時の `.old` 退避と再起動後の切り替え、(4) `uninstall.ps1` の再起動時削除、(5) `irm | iex` の動作（PowerShell 5.1 と 7）、(6) ワークフロー全体（windows-latest での llama ビルド、`signtool` の場所、スモークテスト）。PowerShell の構文は Linux の PowerShell 7.5 の構文解析器と `Test-Payload`（`SHA256SUMS` の検証）の動作で確認した範囲のみ
 
-**Phase 5 で残る未実装**: 複数ホストでのエンジン共有（名前付きパイプ + 常駐ブローカー、H-39）、言語バーのボタン、`ITfFnReconversion::GetReconversion`、アプリ内の自動更新（置き換え）、Windows 用の依存ライセンス一覧、~~ARM64~~（H-106 で対応）/ 32bit ホスト対応、辞書・モデルのアプリ内ダウンロード導線、Authenticode 署名の実施（方針は H-109 で SignPath に決定・未申請）、winget / MSI。実機での検証すべて（`docs/real-hardware-checklist.md` §8）
+**Phase 5 で残る未実装**: 複数ホストでのエンジン共有（名前付きパイプ + 常駐ブローカー、H-39）、言語バーのボタン、`ITfFnReconversion::GetReconversion`、アプリ内の自動更新（置き換え）、Windows 用の依存ライセンス一覧、~~ARM64~~（H-107 で対応）/ 32bit ホスト対応、辞書・モデルのアプリ内ダウンロード導線、Authenticode 署名の実施（方針は H-110 で SignPath に決定・未申請）、winget / MSI。実機での検証すべて（`docs/real-hardware-checklist.md` §8）
 
 ### H-43. Windows フロント: GetReconversion・言語バーのボタン・Windows 用ライセンス一覧、エンジン共有（ブローカー）の設計メモ（2026-10-22、ユーザー指示「裁量に任せる」、実機未確認）
 
@@ -1470,7 +1470,7 @@ H-41・H-42 の残件のうち、実機なしで作れるものを実装し、�
 
 **5. 検証**: `cargo fmt --all --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（llama なし）と、`cargo check` / `cargo clippy -p nagi-windows-tsf --target x86_64-pc-windows-gnu --all-targets -- -D warnings`（型・シグネチャのみ。リンクと実行は未確認）。`GetReconversion` と言語バーの COM 部分は**実機で一度も動かしていない**。特に (1) `ITfLangBarItemMgr` を `ITfThreadMgr` への `QueryInterface` で得られるか、(2) `BTN_BUTTON` の右クリックで `InitMenu` が呼ばれるか、(3) `GetIcon` の `HICON` の所有権、(4) `GetReconversion` を呼ぶアプリ（Office 等）が文書ロックの外で呼ぶか、`SetResult` の呼び方、(5) トレイの「あ / A」との二重表示
 
-**Phase 5 で最終的に残る未実装**: 複数ホストでのエンジン共有（上記の実測が先）、アプリ内の自動更新（置き換え）、~~ARM64~~（H-106 で対応）/ 32bit ホスト対応、辞書・モデルのアプリ内ダウンロード導線、Authenticode 署名の実施（方針は H-109 で SignPath に決定・未申請）、winget / MSI、設定 GUI（Phase 4）、再変換候補の選択結果の学習、候補ウィンドウのマウス操作（v1 非目標）。実機での検証すべて（`docs/real-hardware-checklist.md` §8）
+**Phase 5 で最終的に残る未実装**: 複数ホストでのエンジン共有（上記の実測が先）、アプリ内の自動更新（置き換え）、~~ARM64~~（H-107 で対応）/ 32bit ホスト対応、辞書・モデルのアプリ内ダウンロード導線、Authenticode 署名の実施（方針は H-110 で SignPath に決定・未申請）、winget / MSI、設定 GUI（Phase 4）、再変換候補の選択結果の学習、候補ウィンドウのマウス操作（v1 非目標）。実機での検証すべて（`docs/real-hardware-checklist.md` §8）
 
 ### H-44. iOS 実機確認の結果と、クリック音・触覚の連続再生の課題（2026-10-22〜23、要対応）
 
@@ -2216,7 +2216,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **詳細な理由はメニューにも設定 GUI（`core/settings-ui/`）の状態欄にも出さない**: 設定 GUI は `--no-llm` の別プロセスの imserver に問い合わせるため、`profile` が実環境（LLM あり・実測あり）と異なり、理由を出すと誤解を招く。詳細は `tsf.log` の `[engine] notify … profile_changed` と imserver のログ（0.1.14 で出力）で確認する。
 - **未確認（実機）**: メニュー幅が妥当か。
 
-### H-104. 文書フォーカス・キャレット移動への追従と ITfFnConfigure（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
+### H-105. 文書フォーカス・キャレット移動への追従と ITfFnConfigure（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
 
 - **文書フォーカス（`ITfThreadMgrEventSink`）**: 同一アプリ内で文書（入力欄・タブ）が切り替わったとき、旧文書の composition を確定する。`focus_out` → `focus_in` は `frontend-windows/src/focus.rs` の `FocusTracker` で冪等化し、キー sink の `OnSetFocus` 経路と二重に送らない（同じ状態への遷移は送らない）。
 - **キャレット移動（`ITfTextEditSink`）**: 自分以外の編集でキャレットが composition の外に出たら確定する（MS-IME と同じ挙動）。確定は `Deferred` の書き込みセッションで行い、確定後に `focus_in` を再送する。
@@ -2225,14 +2225,14 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **残課題**: 背景アプリでの文書変化で `focus_in` が送られうる（フォーカスを持たないアプリの文書切替）。`ITfFunctionProvider` が `ITfFnConfigure` を返さない場合がある（言語のオプションに設定が出なければ対応）。
 - **未確認（Windows 実機）**: `docs/real-hardware-checklist.md` §8.8。
 
-### H-105. 候補ウィンドウ・トーストのテーマ追従（ライト・ダーク・ハイコントラスト）（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
+### H-106. 候補ウィンドウ・トーストのテーマ追従（ライト・ダーク・ハイコントラスト）（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
 
 - **決定**: `frontend-windows/src/theme.rs` にライト / ダーク / ハイコントラスト（HC）のパレットを置く。判定は `AppsUseLightTheme`・`SPI_GETHIGHCONTRAST`・`GetSysColor`。`WM_SETTINGCHANGE`（`"ImmersiveColorSet"` / `SPI_SETHIGHCONTRAST`）と `WM_SYSCOLORCHANGE` でキャッシュを破棄し、再起動なしで反映する。
 - **ライトも固定パレット**にし、選択行を #0078D7 → #0066CC に変えた（白文字とのコントラスト比が 4.5 に届かないため）。
 - **トースト**は暗い HUD を維持する。ダークの背景は #404044。HC では補助文字もウィンドウ文字色にする。
 - **未確認（Windows 実機）**: 各テーマの見た目と切替の即時反映（§8.8）。
 
-### H-106. ARM64 版の配布（2026-11-21。Linux での単体テストのみ・Actions と Windows ARM64 実機は未実行）
+### H-107. ARM64 版の配布（2026-11-21。Linux での単体テストのみ・Actions と Windows ARM64 実機は未実行）
 
 - **決定**: CPU 別の zip（x64 は従来名 `Nagi-windows-<ver>.zip` を変えない。ARM64 は `Nagi-windows-arm64-<ver>.zip`）と manifest（`latest.json` / `latest-arm64.json`）を 1 つのリリースに載せる。zip に `ARCH` ファイルを同梱し、`cargo xtask bundle-windows --arch` が PE の Machine を検査する。`install.ps1` は `IsWow64Process2` で CPU を判定し、`ARCH` 不一致の配置を拒否する。`update_check` の取得先は Windows ARM64 だけ `latest-arm64.json`（x64・他 OS は不変）。
 - **ネイティブの `windows-11-arm` ランナーでビルド**: llama.cpp の cmake と libclang をクロスコンパイル用に設定しないため。公開リポジトリのみ無料。
@@ -2240,7 +2240,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **未確認**: `windows-11-arm` イメージに ARM64 の libclang があるか。ARM64 実機での導入・入力。
 - **関連**: H-42 の「x64 のみ」「ARM64 は未実装」を更新した。
 
-### H-107. UILess モード（ITfCandidateListUIElement）（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
+### H-108. UILess モード（ITfCandidateListUIElement）（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
 
 - **決定**: アプリが UILess を要求する（`BeginUIElement` の `show` が `FALSE`）ときは自前の候補ウィンドウを出さず、アプリ側の描画に任せる（全画面ゲーム等）。候補リストのモデル・フラグ差分・ページ分割は `frontend-windows/src/ui_element.rs`（OS 非依存・テスト付き）、COM 側は `frontend-windows-tsf/src/ui_element.rs`。
 - **選択**: `SetSelection` は `select_candidate`（候補を閉じてしまう）ではなく、現在位置との差の回数だけ `NextCandidate` / `PrevCandidate` を送る。`Finalize` = Commit、`Abort` = Cancel。
@@ -2248,20 +2248,33 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **採らなかった案**: `COMLESS` は未検証のため入れない。
 - **未確認（Windows 実機）**: UILess 対応アプリで自前の候補が出ず、アプリ側の候補で選択・確定できること（§8.8）。
 
-### H-108. モード切替時のキャレット付近の表示（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
+### H-109. モード切替時のキャレット付近の表示（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
 
-- **決定**: 利用者の操作（キー応答の `mode` 変化、言語バー・メニューの `request_mode` の最中）でモードが変わったときだけ、キャレット付近に「あ / A」を 1 秒表示する。フォーカス同期・エンジン再起動・他の IME による変更では出さない。位置はキャレット矩形 → マウス位置の順で、どちらも無ければ出さない。UILess 中（H-107）は出さない。
+- **決定**: 利用者の操作（キー応答の `mode` 変化、言語バー・メニューの `request_mode` の最中）でモードが変わったときだけ、キャレット付近に「あ / A」を 1 秒表示する。フォーカス同期・エンジン再起動・他の IME による変更では出さない。位置はキャレット矩形 → マウス位置の順で、どちらも無ければ出さない。UILess 中（H-108）は出さない。
 - **設定**: 設定項目は無く、ハードコードで有効。案: `[ui] mode_popup = true`（設定画面の作業で追加する）。
 - **残課題**: コンパートメント通知が非同期で届く環境では、言語バー操作で出ない可能性がある。
 - **未確認（Windows 実機）**: §8.8。
 
-### H-109. Authenticode 署名は SignPath Foundation で申請する（2026-11-21、ユーザー決定）
+### H-110. Authenticode 署名は SignPath Foundation で申請する（2026-11-21、ユーザー決定）
 
 - **比較**: SignPath Foundation（無料。OSS の審査あり。証明書の発行者名は「SignPath Foundation」。GitHub Actions 連携）/ Certum の OSS 向けコード署名証明書（有料。個人名で発行。クラウド署名）/ Azure Artifact Signing（個人の利用は米国・カナダの居住者のみ）。
 - **決定**: SignPath Foundation に申請する（**未申請**。申請はユーザーが行う）。手順は `docs/code-signing.md`、公開ポリシーは `nagi.shiki-01.com/code-signing`（`web/src/routes/code-signing/`）。
 - **リスク**: 審査で知名度不足を理由に断られた例がある。その場合は Certum に切り替える。
 - **関連**: H-42 の署名方針（Azure Trusted Signing を第一候補としていた）を本決定で置き換える。
 
-### H-110. セットアップ用 .exe（Inno Setup）（2026-11-21、ユーザー要望「ターミナルではなく実行ファイルで入れたい」）
+### H-111. セットアップ用 .exe（Inno Setup）（2026-11-21、ユーザー要望「ターミナルではなく実行ファイルで入れたい」）
 
-(詳細は実装後に追記)
+- 形式: Inno Setup 6 の `Nagi-setup-<ver>.exe` を 1 個。x64 と ARM64 の zip の中身を両方持ち、CPU で出し分ける（`ArchitecturesAllowed=x64compatible arm64`。`arm64=false` で作ると x64 専用）。スクリプトは `frontend-windows/installer/nagi.iss`、ビルドは `windows-release.yml` の `installer` ジョブ（iscc。無ければ choco で入れ、6.3 以上と Japanese.isl を検査）。
+- 役割分担（正は `install.ps1`）: exe は画面・UAC（PrivilegesRequired=admin）・CPU 判定・展開・アンインストーラだけを持ち、配置・TSF 登録・`Uninstall\Nagi`・スタートメニューは展開した `install.ps1 -Elevated -NoPause -StopEngines -HideUninstallEntry -LogPath` を非表示で実行して行う。自動更新（`apply-update.ps1`）と導入結果が必ず同じになるため。
+- 採らなかった案: Inno の [Files]・restartreplace で配置する方式（install.ps1 と二重実装になり、使用中 DLL が再起動まで置き換わらない）。スタートメニューも [Icons] を使わない（自動更新で同じ処理が再実行されるため）。
+- 「アプリと機能」の重複回避: `apply-update.ps1` が `Uninstall\Nagi` の InstallLocation を必須とするのでキーは残し `SystemComponent=1` で隠す。一覧には Inno の項目だけを出し、自動更新後は `Sync-SetupEntryVersion` で DisplayVersion を揃える。
+- 辞書・モデル: `install.ps1 -DataOnly` を元ユーザー権限（ExecAsOriginalUser）の別窓で実行して進み具合を見せる。失敗しても導入は完了し、完了画面に手動取得の方法を出す。標準ユーザーが別の管理者で昇格した場合に昇格側の `{tmp}` が読めないので、スクリプトは `ProgramData\Nagi\setup` に写して実行する。
+- アンインストール: `[UninstallRun]` で `uninstall.ps1 -KeepInstallerFiles`（`regsvr32 /u`・エンジン停止・スタートメニュー削除）。ユーザーデータ（`%APPDATA%\Nagi`）の削除は完了後の確認で、既定は残す（MS-IME 等の慣行）。サイレントでは `/REMOVEUSERDATA=1` のときだけ消す。
+- `install.ps1` に足した引数: `-NoPause` `-LogPath` `-StopEngines` `-HideUninstallEntry` `-DataOnly`。既存の呼び出し方の挙動は変えない。`irm | iex` の PowerShell 版は上級者向けとして残す。
+- 署名: SignPath（H-110）の Secrets が登録されるまでは無署名。
+
+残課題・未確認:
+- PowerShell と iscc はこの開発環境に無く、構文検査は CI 任せ。実機の確認は `docs/real-hardware-checklist.md` §8.8。
+- `IsArm64` が x86 の Setup プロセス上で ARM64 を正しく判定するか（誤っても install.ps1 の ARCH 検査で配置前に止まる）。
+- 配置失敗時（ssPostInstall の RaiseException）に Inno がきれいに終了するか。
+- 取得に失敗した後の再取得の導線が弱い（setup.exe の再実行か `imserver --install-data`）。スタートメニューに「辞書・モデルを取得」を足す案がある。

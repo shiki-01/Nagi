@@ -1,7 +1,7 @@
 # Windows 版のコード署名（SignPath Foundation）
 
 Windows 版の配布物（セットアップ用 .exe・zip 内の .exe / .dll）に Authenticode 署名を付けるための手順。
-方式は SignPath Foundation の OSS 向け無料プログラム（2026-11-21 ユーザー決定。比較は `docs/decisions.md` の H-104 以降）。
+方式は SignPath Foundation の OSS 向け無料プログラム（2026-11-21 ユーザー決定。比較は `docs/decisions.md` の H-110）。
 
 - 公開ポリシー: <https://nagi.shiki-01.com/code-signing>（`web/src/routes/code-signing/+page.svelte`）
 - SignPath 側の設定の写し: `.signpath/artifact-configuration.xml`（正は SignPath の Web 画面。変更したら両方を揃える）
