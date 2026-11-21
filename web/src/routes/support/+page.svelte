@@ -15,7 +15,7 @@
     <h1>使い方と、困ったとき</h1>
     <p class="lead">
       Nagi（iOS 版）の使い方とよくある質問です。現在は TestFlight で検証中の開発版で、画面や手順が変わることがあります。
-      macOS・Android 版の入手方法は<a href="/#status">いまの状況</a>をご覧ください。
+      macOS・Windows 版の入手方法は<a href="/#download">ダウンロード</a>、Android 版は<a href="/#status">対応状況</a>をご覧ください。
     </p>
   </header>
 

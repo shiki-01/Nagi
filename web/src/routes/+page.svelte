@@ -50,6 +50,41 @@
   // 12 キーの配列（カスタムキーボードの紹介用。実際の既定配列とは細部が異なる）
   const kana = ['あ', 'か', 'さ', 'た', 'な', 'は', 'ま', 'や', 'ら', '小ﾞﾟ', 'わ', '、。?!']
   const macInstall = 'curl -fsSL https://nagi.shiki-01.com/install.sh | sh'
+  const winInstall = 'irm https://nagi.shiki-01.com/install.ps1 | iex'
+
+  // よくある質問。回答の事実は docs/windows-install.md（SmartScreen: 同「SmartScreen について」、決定 H-42）に合わせる
+  const faqs = [
+    {
+      id: 'faq-smartscreen',
+      q: 'Windows で「Windows によって PC が保護されました」と表示されます',
+      a: 'Authenticode（コード署名）なしで配布しているためで、現時点では署名の証明書を用意できていません。「詳細情報」→「実行」で進められます。ブラウザが「一般的にダウンロードされていません」と警告する場合、Edge ではダウンロード一覧の「…」→「保存」→「詳細表示」→「保持する」で保存できます。PowerShell の 1 行（irm | iex）で入れると、この警告の原因になる印は付きません。'
+    },
+    {
+      id: 'faq-verify',
+      q: 'ダウンロードしたファイルが正しいか確かめられますか',
+      a: 'zip は、同じリリースに公開している latest.json の SHA-256 と照合できます。PowerShell で (Get-FileHash .\\Nagi-windows-X.Y.Z.zip -Algorithm SHA256).Hash を実行して比べてください。ソースコードも公開しているので、自分でビルドすることもできます。'
+    },
+    {
+      id: 'faq-update',
+      q: '更新はどうなりますか',
+      a: 'Windows 版・macOS 版とも、新しい版があれば署名を検証してから適用します（更新の確認は設定で無効にできます）。Windows 版は、新しい Nagi-setup-X.Y.Z.exe をそのまま実行しても上書きできます。'
+    },
+    {
+      id: 'faq-uninstall',
+      q: 'アンインストールすると、学習データやユーザー辞書は消えますか',
+      a: 'Windows 版は、設定 >「アプリ」>「インストールされているアプリ」の「Nagi（日本語入力）」から削除できます。設定・学習データ・ユーザー辞書・取得した辞書とモデルは、既定では残します（削除するかを確認する画面が出ます）。'
+    },
+    {
+      id: 'faq-data',
+      q: '入力した文章は外部に送られますか',
+      a: '送りません。変換・学習・辞書の処理はすべて端末内です。ネットワークを使うのは、辞書・モデルの取得と更新の確認だけです。'
+    },
+    {
+      id: 'faq-trouble',
+      q: 'うまく動かないときは',
+      a: '使い方や変換が遅いときの対処は「サポート」にまとめています。不具合は GitHub の Issues か、サポートページの連絡先からお知らせください。Windows の ARM64 版は実機での検証が少ないため、特に報告をお待ちしています。'
+    }
+  ] as const
 </script>
 
 <Meta
@@ -60,28 +95,89 @@
 
 <main>
   <Minamo>
-    {#snippet intro()}
+    {#snippet eyebrow()}
       <p class="eyebrow">日本語入力システム</p>
-      <p class="lead">
-        Nagi（凪）は、小さなローカル言語モデルでかな漢字変換を行う日本語 IME です。変換も学習も端末の中で完結し、入力した文章をサーバーへ送りません。
-      </p>
     {/snippet}
     {#snippet title()}
       <h1 id="hero-title"><span>端末の中だけで考える、</span><span>ニューラルかな漢字変換。</span></h1>
     {/snippet}
+    {#snippet lead()}
+      <p class="lead">
+        Nagi（凪）は、小さなローカル言語モデルでかな漢字変換を行う日本語 IME です。変換も学習も端末の中で完結し、入力した文章をサーバーへ送りません。
+      </p>
+    {/snippet}
     {#snippet actions()}
       <p class="cta">
-        <a class="btn primary" href="#status">入手方法を見る</a>
-        <a class="btn" href={REPO_URL} rel="noopener">ソースコード</a>
+        <a class="btn primary" href="#windows">Windows 版をダウンロード</a>
+        <a class="btn" href="#macos">macOS 版</a>
+        <a class="btn ghost" href={REPO_URL} rel="noopener">ソースコード</a>
       </p>
-      <ul class="avail">
-        <li><span>macOS</span><b>配布中</b></li>
-        <li><span>Android</span><b>配布中</b></li>
-        <li><span>iOS</span><b>検証中</b></li>
-        <li><span>Windows</span><b>配布中</b></li>
-      </ul>
+      <p class="avail">Windows 10 22H2 以降 / 11・macOS 13 以降・Android 配布中・iOS は TestFlight で検証中</p>
     {/snippet}
   </Minamo>
+
+  <section class="wrap block" aria-labelledby="download">
+    <header class="block-head">
+      <p class="eyebrow">ダウンロード</p>
+      <h2 id="download"><span>macOS と Windows に、</span><span>入れてみる</span></h2>
+      <p class="block-lead">2026 年 11 月時点の状況です。開発中の版で、機能や手順は変わることがあります。辞書とモデルは、インストール時に配布元から取得します。</p>
+    </header>
+    <div class="dl">
+      <article class="card" id="windows" aria-labelledby="win-h">
+        <header>
+          <h3 id="win-h">Windows</h3>
+          <p class="req">Windows 10 22H2 以降 / 11（x64・ARM64）</p>
+          {@render track(4)}
+        </header>
+        <p class="cta">
+          <a class="btn primary" href={RELEASES_URL} rel="noopener">Nagi-setup-&lt;版&gt;.exe を入手（GitHub）</a>
+        </p>
+        <p class="small">
+          配布ページの <code>windows-v</code> で始まる最新版にあります。x64・ARM64 共通の 1 個で、CPU に合う版が入ります。導入後は自動で更新されます。
+        </p>
+        <ol class="steps">
+          <li>ダウンロードした <code>Nagi-setup-&lt;版&gt;.exe</code> を実行します。</li>
+          <li>
+            「Windows によって PC が保護されました」と出たら、<strong>「詳細情報」→「実行」</strong>を押します（<a href="#faq-smartscreen"
+              >理由</a
+            >）。
+          </li>
+          <li>ユーザーアカウント制御で「はい」を押し、ウィザードに従って進めます（辞書とモデルの取得は約 150MB）。</li>
+          <li>
+            設定 > 時刻と言語 > 言語と地域 > 日本語 >「言語のオプション」>「キーボードを追加する」で <strong>Nagi</strong> を選び、Win+Space で切り替えます。
+          </li>
+        </ol>
+        <details>
+          <summary>ほかの入れ方（PowerShell の 1 行・zip）</summary>
+          <h4>PowerShell で 1 行</h4>
+          <p class="small">通常の PowerShell（管理者でなくてよい）で実行します。CPU に合う最新版の zip を取得し、SHA-256 を確かめてから導入します。</p>
+          <CodeExample code={winInstall} />
+          <h4>zip を手動でダウンロード</h4>
+          <p class="small">
+            同じ配布ページから、x64 は <code>Nagi-windows-&lt;版&gt;.zip</code>、ARM64 は <code>Nagi-windows-arm64-&lt;版&gt;.zip</code> を取得します。展開する前に、zip
+            のプロパティで「許可する」にチェックを入れ、展開したフォルダで <code>install.ps1</code> を PowerShell から実行します（手順は
+            <a href={REPO_URL + '/blob/main/docs/windows-install.md'} rel="noopener">導入手順書</a>）。
+          </p>
+        </details>
+        <p class="small">
+          署名の準備中のため、署名なしで配布しています（<a href="/code-signing">コード署名ポリシー</a>）。ARM64 版は実機での検証が少ないため、不具合があれば<a
+            href="/support">サポート</a
+          >からお知らせください。
+        </p>
+      </article>
+
+      <article class="card" id="macos" aria-labelledby="mac-h">
+        <header>
+          <h3 id="mac-h">macOS</h3>
+          <p class="req">macOS 13 以降</p>
+          {@render track(4)}
+        </header>
+        <p><strong>配布中</strong>（0.1.10）。ターミナルで次の 1 行を実行すると、署名・公証済みのアプリを入れ、辞書とモデルを取得します。</p>
+        <CodeExample code={macInstall} />
+        <p class="small">管理者権限は使いません。更新は署名を検証してから適用します。</p>
+      </article>
+    </div>
+  </section>
 
   <section class="wrap block" aria-labelledby="features">
     <header class="block-head">
@@ -157,23 +253,11 @@
 
   <section class="wrap block" aria-labelledby="status">
     <header class="block-head">
-      <p class="eyebrow">対応状況と入手</p>
-      <h2 id="status">いまの状況</h2>
-      <p class="block-lead">2026 年 11 月時点の状況です。いずれも開発中の版で、機能や手順は変わることがあります。</p>
+      <p class="eyebrow">対応状況</p>
+      <h2 id="status">そのほかの OS</h2>
+      <p class="block-lead">2026 年 11 月時点の状況です。いずれも開発中の版で、機能や手順は変わることがあります。macOS と Windows は<a href="#download">ダウンロード</a>をご覧ください。</p>
     </header>
     <ul class="status">
-      <li id="macos">
-        <div class="pf">
-          <h3>macOS</h3>
-          <p class="req">macOS 13 以降</p>
-        </div>
-        {@render track(4)}
-        <div class="pf-body">
-          <p><strong>配布中</strong>（0.1.10）。ターミナルで次の 1 行を実行すると、署名・公証済みのアプリを入れ、辞書とモデルを取得します。</p>
-          <CodeExample code={macInstall} />
-          <p class="small">管理者権限は使いません。更新は署名を検証してから適用します。</p>
-        </div>
-      </li>
       <li id="android">
         <div class="pf">
           <h3>Android</h3>
@@ -202,22 +286,6 @@
           </p>
           <!-- TODO: 外部テストの公開リンク（TestFlight Public Link）が決まったらここに設置する。 -->
           <p class="small">TestFlight の公開リンクは準備中です。用意でき次第、ここに掲載します。</p>
-        </div>
-      </li>
-      <li id="windows">
-        <div class="pf">
-          <h3>Windows</h3>
-          <p class="req">Windows 10 22H2 以降 / 11（x64・ARM64）</p>
-        </div>
-        {@render track(4)}
-        <div class="pf-body">
-          <p>
-            <strong>配布中</strong>。<a href={RELEASES_URL} rel="noopener">GitHub の配布ページ</a>にある
-            <code>windows-v</code> で始まる版の <code>Nagi-setup-&lt;版&gt;.exe</code> を実行してください（x64・ARM64 共通）。導入後は自動で更新されます。
-          </p>
-          <p class="small">
-            署名の準備中のため、初回は SmartScreen の警告が出ます。「詳細情報」→「実行」で進めてください。ARM64 版は実機での検証が少ないため、不具合があれば<a href="/support">サポート</a>からお知らせください。
-          </p>
         </div>
       </li>
       <li>
@@ -338,6 +406,20 @@
       {#each kana.slice(9, 12) as k (k)}<span class="k small">{k}</span>{/each}
     </div>
   </section>
+  <section class="wrap block" aria-labelledby="faq">
+    <header class="block-head">
+      <p class="eyebrow">よくある質問</p>
+      <h2 id="faq">つまずきやすいところ</h2>
+    </header>
+    <div class="faq">
+      {#each faqs as f (f.id)}
+        <details id={f.id}>
+          <summary>{f.q}</summary>
+          <p>{f.a}</p>
+        </details>
+      {/each}
+    </div>
+  </section>
 </main>
 
 <style>
@@ -359,56 +441,47 @@
   }
 
   /* ---- 冒頭（水面）に渡す中身 ---- */
-  .lead {
-    max-width: 27em;
-    margin: 18px 0 0;
-    font-size: 0.9375rem;
-    line-height: 2;
-  }
-  /* 見出しは縦書き。右の行から読む */
   h1 {
-    writing-mode: vertical-rl;
-    margin: 0;
-    font-size: clamp(1.5rem, 3.1vw, 2.25rem);
-    line-height: 1.8;
-    letter-spacing: 0.1em;
-    white-space: nowrap;
+    margin: 22px 0 0;
+    font-size: clamp(1.5rem, 6.6vw, 5rem);
+    line-height: 1.35;
+    letter-spacing: 0.02em;
+    font-feature-settings: 'palt';
   }
   h1 span {
     display: block;
   }
-  h1 span + span {
-    padding-top: 1.4em;
+  .lead {
+    max-width: 30em;
+    margin: 28px 0 0;
+    font-size: 1rem;
+    line-height: 2;
+    color: var(--muted);
   }
   .cta {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
-    margin: 0 0 20px;
+    margin: 32px 0 0;
   }
   .cta .btn {
-    min-height: 44px;
-    padding: 6px 18px;
+    min-height: 48px;
+    padding: 6px 22px;
+  }
+  .cta .btn.primary {
+    font-weight: 600;
+    padding-inline: 28px;
+  }
+  .btn.ghost {
+    background: transparent;
+    border-color: transparent;
+    text-decoration: underline;
+    text-underline-offset: 0.3em;
+    text-decoration-thickness: 1px;
   }
   .avail {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    border-top: 1px solid var(--line);
+    margin: 16px 0 0;
     font-size: 0.8125rem;
-  }
-  .avail li {
-    display: flex;
-    justify-content: space-between;
-    padding: 7px 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .avail span {
-    font-family: var(--font-mono);
-    letter-spacing: 0.02em;
-  }
-  .avail b {
-    font-weight: 400;
     color: var(--muted);
   }
 
@@ -703,6 +776,132 @@
     font-size: 0.75rem;
     line-height: 1.7;
     color: var(--muted);
+  }
+
+  /* ---- ダウンロード ---- */
+  .dl {
+    display: grid;
+    gap: 24px;
+    align-items: start;
+  }
+  @media (min-width: 960px) {
+    .dl {
+      grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    }
+  }
+  .card {
+    min-width: 0;
+    padding: 24px clamp(18px, 3vw, 28px) 26px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-top: 2px solid var(--fg);
+    scroll-margin-top: 72px;
+  }
+  .card header {
+    margin-bottom: 14px;
+  }
+  .card h3 {
+    font-family: var(--font-serif);
+    font-weight: 600;
+    font-size: 1.5rem;
+    line-height: 1.4;
+    margin: 0;
+  }
+  .card h4 {
+    margin: 18px 0 4px;
+    font-size: 0.9375rem;
+  }
+  .card p {
+    margin: 10px 0 0;
+    font-size: 0.9375rem;
+  }
+  .card .small {
+    font-size: 0.8125rem;
+    color: var(--muted);
+  }
+  .card .cta {
+    margin: 16px 0 0;
+  }
+  .card .cta .btn {
+    max-width: 100%;
+    height: auto;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .card :global(.example) {
+    margin: 8px 0 12px;
+  }
+  .steps {
+    margin: 18px 0;
+    padding-left: 1.5em;
+    font-size: 0.9375rem;
+  }
+  .steps li {
+    margin: 8px 0;
+    padding-left: 4px;
+  }
+  .steps li::marker {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .card details {
+    margin: 14px 0;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 14px;
+  }
+  .card summary {
+    padding: 10px 0;
+    cursor: pointer;
+    font-size: 0.9375rem;
+    font-weight: 600;
+  }
+  .card details[open] {
+    padding-bottom: 12px;
+  }
+  .card code {
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- よくある質問 ---- */
+  .faq {
+    max-width: 52em;
+    border-top: 1px solid var(--line-strong);
+  }
+  .faq details {
+    border-bottom: 1px solid var(--line);
+    scroll-margin-top: 72px;
+  }
+  .faq summary {
+    padding: 16px 28px 16px 0;
+    position: relative;
+    cursor: pointer;
+    font-weight: 600;
+    list-style: none;
+    line-height: 1.6;
+  }
+  .faq summary::-webkit-details-marker {
+    display: none;
+  }
+  .faq summary::after {
+    content: '+';
+    position: absolute;
+    right: 4px;
+    top: 14px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+  }
+  .faq details[open] summary::after {
+    content: '−';
+  }
+  .faq details p {
+    margin: 0 0 18px;
+    font-size: 0.9375rem;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .faq summary:hover {
+    color: var(--accent);
   }
 
   /* ---- 対応状況: 水平線の上を進む日で段階を示す ---- */

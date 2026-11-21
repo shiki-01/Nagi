@@ -2,10 +2,12 @@
   import '../app.css'
   import { page } from '$app/state'
   import { REPO_URL } from '$lib/site'
+  import Logo from '$lib/components/site/Logo.svelte'
 
   let { children } = $props()
   const nav = [
     { href: '/', label: 'Nagi について' },
+    { href: '/#download', label: 'ダウンロード' },
     { href: '/support', label: 'サポート' },
     { href: '/custom-keyboard', label: 'カスタムキーボード' },
     { href: '/reference', label: 'リファレンス' },
@@ -21,12 +23,7 @@
 <header class="site-header">
   <div class="inner" class:wide={isTool}>
     <a class="brand" href="/" aria-label="Nagi ホーム">
-      <picture>
-        <source srcset="/icon-dark.svg" media="(prefers-color-scheme: dark)" />
-        <img src="/icon.svg" alt="" width="30" height="30" />
-      </picture>
-      <span class="name">Nagi</span>
-      <span class="kanji" aria-hidden="true">凪</span>
+      <Logo />
     </a>
     <nav aria-label="メインメニュー">
       <ul class="nav">
@@ -45,23 +42,20 @@
 </div>
 
 <footer class="site-footer" class:tool={isTool}>
-  {#if !isTool}
-    <!-- 水平線に半分沈んだ「凪」と、水面に映る像 -->
-    <div class="nagi" aria-hidden="true">
-      <div class="above"><span>凪</span></div>
-      <div class="below"><span>凪</span></div>
-    </div>
-  {/if}
   <div class="inner">
+    {#if !isTool}
+      <div class="mark"><Logo size="1.75rem" /></div>
+    {/if}
     <div class="sign">
       <p class="word"><span>なぎ</span>【凪】</p>
       <p class="def">風がやみ、波が静まること。</p>
     </div>
     <p class="about">
       Nagi は個人で開発しているオープンソースの日本語入力システムです。<br />
-      コードのライセンスは MIT OR Apache-2.0 です。
+      コードのライセンスは MIT OR Apache-2.0 です（<a href={REPO_URL} rel="noopener">ソースコード</a>）。
     </p>
     <ul class="links">
+      <li><a href="/#download">ダウンロード</a></li>
       <li><a href="/support">サポート</a></li>
       <li><a href="/privacy">プライバシーポリシー</a></li>
       <li><a href="/custom-keyboard">カスタムキーボード</a></li>
@@ -105,23 +99,6 @@
     color: var(--fg);
     text-decoration: none;
     padding: 6px 0;
-  }
-  .brand img {
-    display: block;
-    border-radius: 6px;
-  }
-  .brand .name {
-    font-family: var(--font-serif);
-    font-weight: 600;
-    font-size: 1.1875rem;
-    letter-spacing: 0.04em;
-  }
-  .brand .kanji {
-    font-family: var(--font-serif);
-    color: var(--muted);
-    font-size: 0.875rem;
-    padding-left: 10px;
-    border-left: 1px solid var(--line);
   }
   .nav {
     list-style: none;
@@ -180,6 +157,7 @@
 
   .site-footer {
     margin-top: clamp(88px, 12vw, 144px);
+    border-top: 1px solid var(--line);
     color: var(--muted);
     font-size: 0.875rem;
   }
@@ -187,45 +165,16 @@
     margin-top: 0;
     border-top: 1px solid var(--line);
   }
-  /* 「凪」の上半分を水平線の上に、下半分の代わりに反転した像を水面に置く */
-  .nagi {
-    --size: clamp(7.5rem, 24vw, 17rem);
-    font-family: var(--font-serif);
-    font-weight: 600;
-    font-size: var(--size);
-    line-height: 1;
-    color: var(--fg);
-    user-select: none;
-  }
-  .nagi div {
-    height: 0.56em;
-    overflow: hidden;
-  }
-  .nagi span {
-    display: block;
-    width: fit-content;
-    margin-left: max(var(--gutter), calc((100% - var(--wrap)) / 2 + var(--gutter)));
-  }
-  .nagi .above {
-    border-bottom: 1px solid var(--fg);
-  }
-  .nagi .below {
-    height: 0.4em;
-    background: linear-gradient(var(--water), var(--bg));
-  }
-  .nagi .below span {
-    transform: scaleY(-1);
-    transform-origin: 50% 0.28em;
-    opacity: 0.13;
-    -webkit-mask-image: linear-gradient(to top, #000, transparent 75%);
-    mask-image: linear-gradient(to top, #000, transparent 75%);
-  }
   .site-footer .inner {
     display: grid;
     gap: 20px 48px;
     grid-template-columns: minmax(0, 1fr);
-    padding-top: 12px;
+    padding-top: 40px;
     padding-bottom: 44px;
+  }
+  .mark {
+    grid-column: 1 / -1;
+    padding-bottom: 8px;
   }
   .site-footer.tool .inner {
     padding-top: 28px;

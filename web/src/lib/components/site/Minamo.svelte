@@ -3,12 +3,13 @@
   「読みが真実で、表記はその射影」という Nagi の内部表現を、水面に映る像として見せる。
   読みを 1 文字ずつ入力（ライブ変換で下の表記が追従）→ Space で文節に分かれる → 注目文節の候補 → Enter で確定、を繰り返す。
   実際のエンジンは動かさず、決め打ちの台本を再生するだけ。動きを減らす設定では変換後の状態を止めて表示する。
-  intro（左上の導入）と title（右の縦書きの見出し）、actions（水面の右の導線）は呼び出し側から渡す。
+  eyebrow・title（大きな見出し）・lead（導入文）・actions（導線）は呼び出し側から渡す。
+  日と水面の映りがゆっくり呼吸するように明滅する（動きを減らす設定では止まる）。
 -->
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte'
 
-  let { intro, title, actions }: { intro: Snippet; title: Snippet; actions: Snippet } = $props()
+  let { eyebrow, title, lead, actions }: { eyebrow: Snippet; title: Snippet; lead: Snippet; actions: Snippet } = $props()
 
   type Source = '学習' | 'LLM' | '辞書' | 'かな'
   type Script = {
@@ -135,8 +136,12 @@
 
 <section class="minamo" aria-labelledby="hero-title">
   <div class="sky">
-    <div class="intro">{@render intro()}</div>
-    <div class="title">{@render title()}</div>
+    <div class="copy">
+      {@render eyebrow()}
+      {@render title()}
+      {@render lead()}
+      {@render actions()}
+    </div>
     <p class="kana" class:gone={phase === 'committed'} aria-hidden="true">
       <span class="label">よみ</span>
       <span class="chars">{s.reading.slice(0, typed)}</span>{#if phase === 'typing'}<span class="caret"></span>{/if}
@@ -182,45 +187,37 @@
           変換の様子（イメージ）。水平線の上が打った読み、下がその表記です。太い下線の文節が候補の対象で、候補の右に出どころ（学習・LLM・辞書など）が付きます。
         </figcaption>
       </figure>
-      <div class="actions">{@render actions()}</div>
     </div>
   </div>
 </section>
 
 <style>
   .minamo {
-    --sun-r: clamp(34px, 5.2vw, 62px);
-    --sun-x: 63%;
+    --sun-r: clamp(40px, 7vw, 84px);
+    --sun-x: 80%;
     position: relative;
     overflow: hidden;
   }
 
-  /* ---- 空 ---- */
+  /* ---- 空: 日のあたりだけがほのかに明るい ---- */
   .sky {
+    position: relative;
+    background: radial-gradient(ellipse 60% 70% at var(--sun-x) 100%, color-mix(in srgb, var(--sun) 26%, transparent), transparent 70%);
+  }
+  .sky > * {
+    position: relative;
+  }
+  .copy {
     max-width: var(--wrap);
     margin: 0 auto;
-    padding: clamp(24px, 4vw, 44px) var(--gutter) 0;
+    padding: clamp(56px, 9vw, 120px) var(--gutter) 0;
     box-sizing: border-box;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: 1fr auto;
-    column-gap: clamp(16px, 4vw, 56px);
-    min-height: clamp(400px, 56vh, 500px);
-  }
-  .intro {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .title {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    padding-bottom: clamp(20px, 3vw, 36px);
   }
   .kana {
-    grid-column: 1;
-    grid-row: 2;
-    margin: 0;
-    padding: 24px 0 14px;
+    max-width: var(--wrap);
+    margin: 0 auto;
+    padding: clamp(40px, 6vw, 72px) var(--gutter) 14px;
+    box-sizing: border-box;
     min-height: 1.9em;
     font-family: var(--font-serif);
     font-size: clamp(1.0625rem, 2.5vw, 1.875rem);
@@ -274,6 +271,8 @@
     height: var(--sun-r);
     border-radius: var(--sun-r) var(--sun-r) 0 0;
     background: var(--sun);
+    animation: breathe 9s ease-in-out infinite;
+    transform-origin: 50% 100%;
   }
   /* 水面に映る日。横縞に割れて、下へ向かって消える */
   .glow {
@@ -286,24 +285,32 @@
     mask-image: repeating-linear-gradient(#000 0 3px, transparent 3px 9px), linear-gradient(#000, transparent 92%);
     -webkit-mask-composite: source-in;
     mask-composite: intersect;
+    animation: shimmer 9s ease-in-out infinite;
   }
+  @keyframes breathe {
+    50% {
+      transform: scale(1.025);
+      filter: brightness(1.04);
+    }
+  }
+  @keyframes shimmer {
+    50% {
+      opacity: 0.4;
+      transform: translateX(3px);
+    }
+  }
+
   /* ---- 水面 ---- */
   .water {
+    position: relative;
     background: linear-gradient(var(--water), var(--bg));
   }
   .shore {
+    position: relative;
     max-width: var(--wrap);
     margin: 0 auto;
     padding: 0 var(--gutter) clamp(48px, 7vw, 88px);
     box-sizing: border-box;
-    display: grid;
-    gap: 8px 56px;
-  }
-  @media (min-width: 900px) {
-    .shore {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 300px);
-      align-items: start;
-    }
   }
   .conv {
     position: relative;
@@ -409,13 +416,10 @@
     line-height: 1.7;
     color: var(--muted);
   }
-  .actions {
-    padding-top: 26px;
-  }
 
   @media (max-width: 899px) {
     .minamo {
-      --sun-x: 86%;
+      --sun-x: 84%;
     }
     .label {
       display: block;
@@ -429,9 +433,6 @@
     }
     .state {
       margin-top: 138px;
-    }
-    .actions {
-      padding-top: 18px;
     }
   }
 </style>
