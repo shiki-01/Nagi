@@ -1,6 +1,8 @@
 //! Nagi 設定画面（Windows 向け。他 OS でも動くがテスト・開発用）。
 //!
-//! `nagi-settings.exe` が 127.0.0.1 のランダムポートで小さな HTTP サーバーを起動し、既定のブラウザで
+//! 既定（Windows）はネイティブの Win32 ウィンドウ。`--web`（Windows 以外は常に）では次の Web 版になる。
+//!
+//! Web 版: `nagi-settings.exe` が 127.0.0.1 のランダムポートで小さな HTTP サーバーを起動し、既定のブラウザで
 //! 設定画面を開く。画面はコアの `get_settings` / `update_settings` が返す項目記述子から自動生成する
 //! （iOS の設定タブと同じ仕組み。`docs/decisions.md` H-97）。値の検証と `config.toml` への書き込みは
 //! すべてコア（`imserver` の子プロセス）が行い、ここには設定のロジックを持たない。
@@ -12,12 +14,20 @@
 //! - `opener`: ブラウザ・メモ帳・エクスプローラーの起動
 //! - `run`: HTTP サーバーのループ
 //! - `cli`: コマンドライン引数
+//! - `native_model` / `native_layout` / `native_worker`: ネイティブ設定ウィンドウの OS 非依存部分
+//!   （画面モデル・レイアウト計算・バックエンド用ワーカースレッド。`docs/decisions.md` H-104）
+//! - `native`（Windows のみ）: Win32 のウィンドウ層。上の 3 つだけを見る
 
 pub mod assets;
 pub mod backend;
 pub mod cli;
 pub mod http;
 pub mod lifecycle;
+#[cfg(windows)]
+pub mod native;
+pub mod native_layout;
+pub mod native_model;
+pub mod native_worker;
 pub mod opener;
 pub mod run;
 pub mod token;

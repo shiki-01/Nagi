@@ -11,9 +11,12 @@ pub struct Args {
     pub data_dir: Option<PathBuf>,
     /// `--user-dir <dir>`
     pub user_dir: Option<PathBuf>,
-    /// `--no-browser`: ブラウザを開かない（検証用）
+    /// `--web`: ネイティブのウィンドウではなく、従来の Web 画面（ローカル HTTP + ブラウザ）で開く。
+    /// Windows 以外では常に Web 画面
+    pub web: bool,
+    /// `--no-browser`: ブラウザを開かない（検証用。`--web` のときだけ意味を持つ）
     pub no_browser: bool,
-    /// `--url-file <path>`: 画面の URL（トークンつき）をこのファイルに書く（検証用。既定では出力しない）
+    /// `--url-file <path>`: 画面の URL（トークンつき）をこのファイルに書く（検証用。既定では出力しない。`--web` のときだけ）
     pub url_file: Option<PathBuf>,
     /// `--update-dir <dir>`: 取得した更新の保存先（既定は Windows の `%LOCALAPPDATA%\Nagi\update`）
     pub update_dir: Option<PathBuf>,
@@ -24,6 +27,16 @@ pub struct Args {
 }
 
 impl Args {
+    /// ネイティブのウィンドウで開くか（Windows の既定。`--web` で Web 画面に切り替える）
+    pub fn use_native(&self) -> bool {
+        cfg!(windows) && !self.web
+    }
+
+    /// 更新ページを開いた状態で始めるか（`--section update` または `--auto-check`）
+    pub fn opens_update_page(&self) -> bool {
+        self.section.as_deref() == Some("update") || self.auto_check
+    }
+
     /// ブラウザで開く URL に付ける断片（`update` = 更新セクションへスクロール、
     /// `update-check` = さらに確認を自動実行）。`--auto-check` だけでも更新セクションを開く
     pub fn start_fragment(&self) -> Option<&'static str> {
@@ -59,6 +72,7 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Args, Strin
             }
             "--auto-check" => out.auto_check = true,
             "--no-browser" => out.no_browser = true,
+            "--web" => out.web = true,
             other => return Err(format!("不明な引数: {other}")),
         }
     }
@@ -139,8 +153,10 @@ mod tests {
             "--no-browser",
             "--url-file",
             "/f",
+            "--web",
         ])
         .unwrap();
+        assert!(a.web);
         assert_eq!(a.imserver, Some(PathBuf::from("/x/imserver")));
         assert_eq!(a.data_dir, Some(PathBuf::from("/d")));
         assert_eq!(a.user_dir, Some(PathBuf::from("/u")));
@@ -154,6 +170,16 @@ mod tests {
         assert!(parse(&["--section", "other"]).is_err());
         assert!(parse(&["--data-dir"]).is_err());
         assert!(parse(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn native_is_the_default_only_on_windows_and_web_overrides_it() {
+        let native = parse(&[]).unwrap();
+        assert_eq!(native.use_native(), cfg!(windows));
+        assert!(!parse(&["--web"]).unwrap().use_native());
+        assert!(!native.opens_update_page());
+        assert!(parse(&["--section", "update"]).unwrap().opens_update_page());
+        assert!(parse(&["--auto-check"]).unwrap().opens_update_page());
     }
 
     #[test]
