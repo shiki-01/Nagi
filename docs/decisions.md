@@ -2232,7 +2232,6 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **未実装**: 本体（クライアント領域）のダークモード、アクセシビリティの詳細確認（「既定に戻す」ボタンの読み上げ名が他の項目と区別できない・UI Automation の名前）、キーマップ・ユーザー辞書の編集 UI、数値入力のスピナー（UPDOWN）、PgUp/PgDn などキーボードでのパネルのスクロール、更新確認中の他の設定変更の待ち（ワーカーは 1 本で、確認が終わるまで後続のコマンドが待つ）、ウィンドウの位置・サイズの記憶。
 - **未確認（実機確認項目）**: `docs/real-hardware-checklist.md` §8.5c の設定画面の項目（ウィンドウが開く・DPI 150% のレイアウト・項目の変更が config.toml に反映・再起動バッジ・更新ページ・多重起動・閉じたあと imserver が残らない・キーボード操作）。
 
-<<<<<<< HEAD
 ### H-105. 文書フォーカス・キャレット移動への追従と ITfFnConfigure（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
 
 - **文書フォーカス（`ITfThreadMgrEventSink`）**: 同一アプリ内で文書（入力欄・タブ）が切り替わったとき、旧文書の composition を確定する。`focus_out` → `focus_in` は `frontend-windows/src/focus.rs` の `FocusTracker` で冪等化し、キー sink の `OnSetFocus` 経路と二重に送らない（同じ状態への遷移は送らない）。
@@ -2297,7 +2296,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - `IsArm64` が x86 の Setup プロセス上で ARM64 を正しく判定するか（誤っても install.ps1 の ARCH 検査で配置前に止まる）。
 - 配置失敗時（ssPostInstall の RaiseException）に Inno がきれいに終了するか。
 - 取得に失敗した後の再取得の導線が弱い（setup.exe の再実行か `imserver --install-data`）。スタートメニューに「辞書・モデルを取得」を足す案がある。
-=======
+
 ### H-112. Windows 0.1.16 の実機確認の記録と CI の hybrid テストの不安定さの修正（2026-11-21、ユーザー報告。コードの挙動は変えない。文書のみ。番号は ARM64 対応のブランチが H-111 まで使用しているため H-112 とした）
 
 - **確認結果（すべて OK、ユーザー報告。ログ・計測値は未取得）**:
@@ -2309,4 +2308,3 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **既知の未確認**: 標準ユーザー、VC++ 再頒布可能パッケージなしの環境、ARM64（別セッションで対応中。H-107 以降）、SmartScreen の文言の記録、曖昧入力（H-88・H-89）の Windows 実機。自動更新の失敗系・設定画面の DPI 切替・`--web` も個別には未記録。
 - **CI の修正**: macOS の CI で hybrid のテストが固定 sleep のため不安定だった件を修正済み（コミット a910246）。**未対応**: 同型の固定 sleep の候補が他のテストファイルにある（`model_unload.rs`、`touch_rpc.rs`、`retro_review.rs`、`suggest_prefix.rs`、`async_load.rs`）。不安定になったら同様に、固定時間の待ちを条件待ち（ポーリング）に置き換える。
 - **更新した文書**: `CLAUDE.md`（現状）、`docs/progress.md`（Windows 節）、`docs/real-hardware-checklist.md`（§8 冒頭・§8.5c・§8.7）、`docs/windows-verification.md`（自動更新の手順）。
->>>>>>> origin/main
