@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath の artifact configuration（セットアップ exe 用。slug 推奨: windows-setup）。
+  正は SignPath の Web 画面。ここは貼り付け用の写し（docs/code-signing.md §2）。変更したら両方を揃える。
+
+  署名対象: windows-release.yml の sign-installer ジョブが送る artifact（zip）に入った Nagi-setup-<version>.exe だけ。
+  中身の dll / exe は、zip を作る前に .signpath/artifact-configuration.xml で署名済み。
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="Nagi-setup-*.exe">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

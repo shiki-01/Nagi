@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath の artifact configuration（中身用。slug 推奨: windows-release）。
+  正は SignPath の Web 画面。ここは貼り付け用の写し（docs/code-signing.md §2）。変更したら両方を揃える。
+
+  署名対象: windows-release.yml の sign ジョブが GitHub の artifact（外側は zip）として送る、
+    <arch>/nagi_windows_tsf.dll  <arch>/imserver.exe  <arch>/nagi-settings.exe   （<arch> は x86_64 と aarch64）
+  のうち Nagi 自身のバイナリだけ。ファイル名を明示し、`*.dll` / `*.exe` のワイルドカードは使わない
+  （第三者の DLL を巻き込まないため。imserver が必要とする DLL を同梱するようになっても、ここに足さない限り署名されない）。
+  ARM64 を載せない実行（arm64=false）でも、一致するファイルだけが署名される。
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file-set>
+      <include path="**/nagi_windows_tsf.dll" />
+      <include path="**/imserver.exe" />
+      <include path="**/nagi-settings.exe" />
+      <authenticode-sign />
+    </pe-file-set>
+  </zip-file>
+</artifact-configuration>

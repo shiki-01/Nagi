@@ -12,8 +12,20 @@ name: windows-release
 # ため web ワークフローを起動する（web が最新の windows-v* リリースから latest*.json を取り込む）。
 # 方針は docs/decisions.md H-42（ARM64 の追加は同 H-104）。
 #
-# 署名なし配布が前提（Authenticode 証明書は未取得。SmartScreen の扱いは docs/windows-install.md）。
-# 証明書があれば、次の Secrets を登録すると signtool で DLL と exe に署名する（無ければ署名なしで続行）:
+# ジョブの流れ:
+#   prepare → build（x64 / ARM64。未署名の dll / exe を artifact に上げる）
+#           → sign（SignPath。両アーキテクチャの中身を 1 回の要求で署名。Secrets が無ければ skip）
+#           → bundle（署名後の中身から zip・SHA256SUMS・latest*.json の ed25519 署名を作る）
+#           → installer（setup exe を作る）→ sign-installer（SignPath。skip 可）→ release
+# zip のハッシュと ed25519 署名は必ず署名「後」の中身から作る（順序を変えると自動更新の検証が壊れる）。
+#
+# Authenticode 署名は SignPath Foundation（OSS 無料）。手順・Secrets・Variables は docs/code-signing.md、
+# SignPath 側に貼る設定は .signpath/*.xml。次が揃っているときだけ署名する（無ければ署名なしで従来どおり配布）:
+#   Secret   SIGNPATH_API_TOKEN
+#   Variable SIGNPATH_ORGANIZATION_ID / SIGNPATH_PROJECT_SLUG / SIGNPATH_SIGNING_POLICY_SLUG /
+#            SIGNPATH_ARTIFACT_CONFIGURATION_SLUG（中身用）/ SIGNPATH_ARTIFACT_CONFIGURATION_SETUP_SLUG（setup exe 用。省略時 windows-setup）
+# SignPath は 1 回の要求ごとに手動承認が要る。承認は 2 回（中身 1 回 + setup exe 1 回）。
+# 旧方式（自前の証明書 .pfx。SignPath が使えないとき用。SignPath で署名したときは使わない）:
 #   WINDOWS_CODESIGN_PFX           コード署名証明書（秘密鍵つき）の .pfx を base64 にしたもの
 #   WINDOWS_CODESIGN_PFX_PASSWORD  上の .pfx のパスワード
 # 必須の Secrets:
@@ -65,6 +77,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       matrix: ${{ steps.matrix.outputs.matrix }}
+      has_signpath: ${{ steps.secrets.outputs.has_signpath }}
     defaults:
       run:
         shell: bash
@@ -90,14 +103,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # ジョブの if では secrets を直接参照できないため、ここで有無を output にして後続ジョブが使う
       - name: Secrets の確認
+        id: secrets
         env:
           SIGNING_KEY: ${{ secrets.NAGI_UPDATE_SIGNING_KEY }}
           PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
         run: |
           [ -n "$SIGNING_KEY" ] || { echo "::error::Secrets が未設定です: NAGI_UPDATE_SIGNING_KEY"; exit 1; }
-          if [ -z "$PFX" ]; then
-            echo "::notice::WINDOWS_CODESIGN_PFX が未設定のため、Authenticode 署名なしでビルドします（SmartScreen の警告が出る配布物になります）"
+          if [ -n "$SIGNPATH_API_TOKEN" ] && [ -n "$SIGNPATH_ORGANIZATION_ID" ]; then
+            echo "has_signpath=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::SignPath で Authenticode 署名します（SignPath の画面で承認が 2 回必要です）"
+          else
+            echo "has_signpath=false" >> "$GITHUB_OUTPUT"
+            if [ -z "$PFX" ]; then
+              echo "::notice::SignPath（SIGNPATH_API_TOKEN と変数 SIGNPATH_ORGANIZATION_ID）も WINDOWS_CODESIGN_PFX も未設定のため、Authenticode 署名なしでビルドします（SmartScreen の警告が出る配布物になります）"
+            fi
           fi
 
       # arch: xtask の --arch / zip: zip のファイル名の先頭 / manifest: latest.json のファイル名
@@ -185,10 +208,136 @@ jobs:
           RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --release --target "$TARGET" -p nagi-settings-ui
 
-      - name: Authenticode 署名の準備（証明書があるときだけ）
+      # 未署名の中身（TSF の DLL・imserver.exe・nagi-settings.exe）を artifact に上げる。zip 化・チェックサム・
+      # latest.json は署名の後（bundle ジョブ）。bin/<arch>/ の構成は署名の前後で揃える
+      - name: 中身を集める（未署名）
+        run: |
+          mkdir -p "bin/${{ matrix.arch }}"
+          for f in nagi_windows_tsf.dll imserver.exe nagi-settings.exe; do
+            cp "core/target/$TARGET/release/$f" "bin/${{ matrix.arch }}/$f"
+          done
+          ls -l "bin/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-bin-${{ matrix.arch }}-${{ needs.prepare.outputs.version }}
+          path: bin
+          if-no-files-found: error
+
+  # 両アーキテクチャの中身を 1 回の SignPath 要求で署名する（承認 1 回）。SignPath の Secrets が無いときは skip
+  # （bundle ジョブが未署名の artifact をそのまま使う）。署名を設定しているのに失敗したときは、bundle 以降も
+  # 走らせない（未署名のものを黙って公開しない）
+  sign:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.has_signpath == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: unsigned-bin-*-${{ needs.prepare.outputs.version }}
+          path: sign-input
+          merge-multiple: true
+
+      - name: 署名対象の確認
+        run: find sign-input -type f | sort
+
+      - name: SignPath に送る
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: sign-input-${{ needs.prepare.outputs.version }}
+          path: sign-input
+          if-no-files-found: error
+
+      # TODO: action のバージョンは実際の最新を action.yml / リリースで確認して上げる（v1 系の入力名で書いている）。
+      # 入力名（wait-for-completion-timeout-in-seconds など）は公式 README と照合すること
+      - name: SignPath で署名（手動承認待ち）
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-bin
+
+      - name: 署名後の確認（ファイルが揃っているか）
+        run: |
+          find signed-bin -type f | sort
+          for f in $(cd sign-input && find . -type f); do
+            [ -f "signed-bin/$f" ] || { echo "::error::署名後の成果物に $f がありません"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-bin-${{ needs.prepare.outputs.version }}
+          path: signed-bin
+          if-no-files-found: error
+
+  # 署名後（SignPath を使わないときは署名なし）の中身から、zip・SHA256SUMS・latest*.json（ed25519 署名）を作る。
+  # sign が skip のときも動く（署名に失敗した・キャンセルされたときは動かさない）
+  bundle:
+    needs: [prepare, build, sign]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped') }}
+    name: bundle (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      ZIP_NAME: ${{ matrix.zip }}-${{ needs.prepare.outputs.version }}.zip
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (rust-toolchain.toml)
+        working-directory: core
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: windows-release-bundle-${{ matrix.arch }}
+
+      # 署名したときは署名後（bin/<arch>/ を含む全アーキテクチャ分）、しなかったときは build の未署名の中身
+      - uses: actions/download-artifact@v4
+        if: needs.sign.result == 'success'
+        with:
+          name: signed-bin-${{ needs.prepare.outputs.version }}
+          path: bin
+
+      - uses: actions/download-artifact@v4
+        if: needs.sign.result != 'success'
+        with:
+          name: unsigned-bin-${{ matrix.arch }}-${{ needs.prepare.outputs.version }}
+          path: bin
+
+      - name: 署名の確認（SignPath で署名したとき）
+        if: needs.sign.result == 'success'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in 'nagi_windows_tsf.dll', 'imserver.exe', 'nagi-settings.exe') {
+            $p = "bin/${{ matrix.arch }}/$f"
+            $sig = Get-AuthenticodeSignature -LiteralPath $p
+            Write-Host "$p : $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if (-not $sig.SignerCertificate) { throw "$p に署名がありません" }
+          }
+
+      # 旧方式（自前の .pfx）。SignPath で署名したときは使わない（二重署名を避ける）
+      - name: Authenticode 署名の準備（.pfx があるときだけ）
         id: codesign
         env:
-          PFX: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          PFX: ${{ needs.sign.result != 'success' && secrets.WINDOWS_CODESIGN_PFX || '' }}
         run: |
           if [ -z "$PFX" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -202,7 +351,7 @@ jobs:
           echo "signtool=$(cygpath -w "$signtool")" >> "$GITHUB_OUTPUT"
           echo "pfx=$(cygpath -w "$RUNNER_TEMP/codesign.pfx")" >> "$GITHUB_OUTPUT"
 
-      - name: bundle（収集・署名・チェックサム・zip）
+      - name: bundle（収集・チェックサム・zip。中身は署名後のものを使う）
         working-directory: core
         env:
           NAGI_WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
@@ -211,7 +360,10 @@ jobs:
           if [ "${{ steps.codesign.outputs.enabled }}" = "true" ]; then
             sign=(--sign-pfx "${{ steps.codesign.outputs.pfx }}" --signtool "${{ steps.codesign.outputs.signtool }}")
           fi
-          cargo xtask bundle-windows --arch "${{ matrix.arch }}" --target "$TARGET" "${sign[@]}"
+          bin="$GITHUB_WORKSPACE/bin/${{ matrix.arch }}"
+          cargo xtask bundle-windows --arch "${{ matrix.arch }}" --target "$TARGET" \
+            --dll "$bin/nagi_windows_tsf.dll" --imserver "$bin/imserver.exe" --settings "$bin/nagi-settings.exe" \
+            "${sign[@]}"
           cp "target/windows-bundle/$ZIP_NAME" "../$ZIP_NAME"
 
       # install.ps1 / uninstall.ps1 の実行確認（regsvr32 の登録と解除を含む）。ランナーでの TSF 登録が
@@ -262,7 +414,7 @@ jobs:
   # 両アーキテクチャの zip を展開して、1 個のセットアップ exe（Inno Setup）を作る。
   # publish=false でも走らせる（artifact の exe を落として試せる）
   installer:
-    needs: [prepare, build]
+    needs: [prepare, bundle]
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -305,12 +457,9 @@ jobs:
           if (-not (Test-Path (Join-Path $iscc.DirectoryName 'Languages\Japanese.isl'))) { throw 'Japanese.isl が見つかりません' }
           "ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # Authenticode 署名の差し込み位置（未実装）。SignPath / Certum のクラウド署名などを入れるときは、ここで
-      # Secrets の有無を確かめ（無ければ skip）、署名コマンドを組み立てて下の iscc に
-      #   /DSignToolName=nagisign "/Snagisign=<署名コマンド> $f"
-      # を渡す（setup exe とアンインストーラが署名される）。クラウド署名のようにコマンドラインで署名できない
-      # サービスは、iscc の後に生成された exe を署名して置き換える形にする（その場合は /DSignToolName は不要）。
-      # 現在は証明書が未登録のため、署名なしで作る
+      # setup exe の署名は、このジョブの後の sign-installer ジョブ（SignPath）で行う。SignPath はコマンドラインの
+      # signtool 形式ではないため、iscc に /DSignToolName は渡さない（setup exe 本体だけが署名され、
+      # 内部のアンインストーラ uninst*.exe は署名されない。中身の dll / exe は署名済みの zip から来る）
 
       - name: セットアップ exe をビルドする
         run: |
@@ -325,15 +474,61 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "iscc が失敗しました ($LASTEXITCODE)" }
           Get-ChildItem installer-out | Format-Table Name, Length
 
+      # SignPath を使わないときは、そのまま公開用の artifact にする
       - uses: actions/upload-artifact@v4
+        if: needs.prepare.outputs.has_signpath != 'true'
         with:
           name: nagi-setup-${{ needs.prepare.outputs.version }}
           path: installer-out/Nagi-setup-${{ needs.prepare.outputs.version }}.exe
 
+      # SignPath を使うときは、署名前の exe を別名で上げる（release が拾う nagi-setup-* と名前を分ける）
+      - name: 署名前の setup exe を上げる
+        id: unsigned
+        if: needs.prepare.outputs.has_signpath == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup-${{ needs.prepare.outputs.version }}
+          path: installer-out/Nagi-setup-${{ needs.prepare.outputs.version }}.exe
+          if-no-files-found: error
+    outputs:
+      unsigned_artifact_id: ${{ steps.unsigned.outputs.artifact-id }}
+
+  # setup exe を SignPath で署名する（承認 1 回）。SignPath の Secrets が無いときは skip
+  sign-installer:
+    needs: [prepare, installer]
+    if: needs.prepare.outputs.has_signpath == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # TODO: sign ジョブと同じく、action のバージョン・入力名を公式で確認する
+      - name: SignPath で署名（手動承認待ち）
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SETUP_SLUG || 'windows-setup' }}
+          github-artifact-id: ${{ needs.installer.outputs.unsigned_artifact_id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-setup
+
+      - name: 署名後の確認
+        run: |
+          ls -l signed-setup
+          [ -f "signed-setup/Nagi-setup-${{ needs.prepare.outputs.version }}.exe" ] || { echo "::error::署名後の setup exe がありません"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nagi-setup-${{ needs.prepare.outputs.version }}
+          path: signed-setup/Nagi-setup-${{ needs.prepare.outputs.version }}.exe
+          if-no-files-found: error
+
   # すべてのビルドが成功したときだけ、1 つのリリースに全アーキテクチャの zip と latest*.json を載せる
   release:
-    needs: [prepare, build, installer]
-    if: inputs.publish
+    needs: [prepare, bundle, installer, sign-installer]
+    if: ${{ !cancelled() && inputs.publish && needs.bundle.result == 'success' && needs.installer.result == 'success' && (needs.sign-installer.result == 'success' || needs.sign-installer.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -357,7 +552,7 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "Nagi for Windows $VERSION" \
             "${flags[@]}" \
-            --notes "Windows 10 22H2 以降 / 11（x64: Nagi-windows-$VERSION.zip、ARM64: Nagi-windows-arm64-$VERSION.zip）。Authenticode 署名なし（SmartScreen の警告が出ることがあります。手順: docs/windows-install.md）。インストール: ダブルクリックで導入できる Nagi-setup-$VERSION.exe（x64 / ARM64 共通。署名なしのため SmartScreen で「詳細情報 → 実行」）、または PowerShell で \`irm https://nagi.shiki-01.com/install.ps1 | iex\`（CPU に合う版と、辞書・モデルを自動で取得する）。実機で未検証の版は prerelease。ARM64 版は ARM64 ネイティブのアプリだけで使える（x64 エミュレーションのアプリには出ない）。"
+            --notes "Windows 10 22H2 以降 / 11（x64: Nagi-windows-$VERSION.zip、ARM64: Nagi-windows-arm64-$VERSION.zip）。Authenticode 署名は SignPath Foundation の署名がある版のみ（無い版では SmartScreen の警告が出ることがあります。手順: docs/windows-install.md、方針: docs/code-signing.md）。インストール: ダブルクリックで導入できる Nagi-setup-$VERSION.exe（x64 / ARM64 共通。署名が無い版は SmartScreen で「詳細情報 → 実行」）、または PowerShell で \`irm https://nagi.shiki-01.com/install.ps1 | iex\`（CPU に合う版と、辞書・モデルを自動で取得する）。実機で未検証の版は prerelease。ARM64 版は ARM64 ネイティブのアプリだけで使える（x64 エミュレーションのアプリには出ない）。"
 
       - name: サイトの latest.json を更新（web ワークフローを起動）
         if: "!inputs.prerelease"
