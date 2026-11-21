@@ -216,6 +216,18 @@ jobs:
             # `C:/Program Files/Git/EHsc` に書き換えるので、clang-cl が受け付ける `-EHsc` の形で渡す
             echo "CXXFLAGS_aarch64_pc_windows_msvc=-EHsc"
           } >> "$GITHUB_ENV"
+          # clang-cl の OpenMP は LLVM のランタイム（libomp の __kmpc_*）を要し、ランナーにも配布物にも無いため
+          # リンクで失敗する。ARM64 だけ cmake に OpenMP を見つけさせず、ggml 自前のスレッドプールを使う
+          # （macOS と同じ経路。ggml は OpenMP が見つからなければ警告して OpenMP なしで続行する）。
+          # toolchain ファイルを渡すと cmake クレートはコンパイラを指定しなくなるので、ここで clang-cl を指定する
+          tc="$RUNNER_TEMP/nagi-arm64-toolchain.cmake"
+          cat > "$tc" <<'EOF'
+          set(CMAKE_C_COMPILER clang-cl)
+          set(CMAKE_CXX_COMPILER clang-cl)
+          set(CMAKE_DISABLE_FIND_PACKAGE_OpenMP TRUE)
+          EOF
+          echo "CMAKE_TOOLCHAIN_FILE_aarch64_pc_windows_msvc=$(cygpath -m "$tc")" >> "$GITHUB_ENV"
+          cat "$tc"
           "$(cygpath -u "$LIBCLANG_PATH")/clang-cl.exe" --version
           command -v ninja || { echo "::error::ninja が見つかりません"; exit 1; }
 
