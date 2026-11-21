@@ -19,7 +19,8 @@ use std::time::{Instant, SystemTime};
 use nagi_protocol::{
     CandidatesView, InputMode, KeyKind, ProcessKeyResult, StatusResult, TouchAction,
 };
-use nagi_windows::candidates::{CandidatePage, Rect, should_defer_show};
+use nagi_windows::anchor_wait::{AnchorWait, ShowDecision, TimerOutcome};
+use nagi_windows::candidates::{CandidatePage, Point, Rect};
 use nagi_windows::context::{build_context, should_report_before_key};
 use nagi_windows::environment::{
     EnvironmentReporter, OverridingProbe, ResumeDetector, ResumeSource,
@@ -83,6 +84,37 @@ static SECURE_INPUT_LOGGED: AtomicBool = AtomicBool::new(false);
 
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 
+/// 単調な経過時間（候補の表示保留のタイムアウト用。起点は最初の呼び出し）
+fn monotonic_now() -> std::time::Duration {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed()
+}
+
+/// このホストプロセスのアプリ別の位置の補正（dp）を `%APPDATA%\Nagi\window-offsets.tsv` から読む。
+/// ファイルが無い・大きすぎる・読めなければ 0（補正なし）。手で編集されるので、フォーカスを得るたびに読み直す
+fn load_window_offset() -> Point {
+    use nagi_windows::placement::{MAX_FILE_BYTES, OffsetTable, offsets_path};
+    static APP: OnceLock<Option<String>> = OnceLock::new();
+    let Some(app) = APP.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| nagi_windows::placement::app_key(&p.to_string_lossy()))
+    }) else {
+        return Point::default();
+    };
+    let Some(appdata) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) else {
+        return Point::default();
+    };
+    let path = offsets_path(std::path::Path::new(&appdata));
+    let small = std::fs::metadata(&path).is_ok_and(|m| m.len() <= MAX_FILE_BYTES);
+    if !small {
+        return Point::default();
+    }
+    std::fs::read_to_string(&path)
+        .map(|text| OffsetTable::parse(&text).get(app))
+        .unwrap_or_default()
+}
+
 /// 再変換に時間がかかったときの通知
 const RECONVERT_SLOW: &str =
     "再変換の準備に時間がかかっています。少し待ってからもう一度お試しください";
@@ -140,7 +172,10 @@ fn shared_engine() -> Arc<EngineHost> {
             let host = Arc::new(EngineHost::with_spawn_hook(
                 &location,
                 env!("CARGO_PKG_VERSION"),
-                Some(SpawnHook::new(crate::job::assign)),
+                Some(SpawnHook::new(|child| {
+                    crate::proc_mem::record_engine_pid(child.id());
+                    crate::job::assign(child);
+                })),
             ));
             // エンジンを作った後は DLL をアンロードさせない（`DllCanUnloadNow` が `S_FALSE`）
             dll::pin_for_engine();
@@ -234,6 +269,10 @@ pub(crate) struct Core {
     last_rect: Rc<Cell<Option<Rect>>>,
     /// 編集セッション完了後の再測定待ち（`edit::Env::remeasure_pending`）
     remeasure_pending: Rc<Cell<bool>>,
+    /// 候補の表示保留のタイムアウト（H-102 の緩和）
+    anchor_wait: RefCell<AnchorWait>,
+    /// 最後に候補の基準にできた矩形（保留がタイムアウトしたときの表示位置。フォーカスを失うと捨てる）
+    last_anchor: Cell<Option<Rect>>,
     handoff: RefCell<HandoffCache<KeyOutcome>>,
     candidate_window: CandidateWindow,
     toast: ToastWindow,
@@ -305,6 +344,8 @@ impl Core {
             caret: Rc::new(Cell::new(None)),
             last_rect: Rc::new(Cell::new(None)),
             remeasure_pending: Rc::new(Cell::new(false)),
+            anchor_wait: RefCell::new(AnchorWait::new()),
+            last_anchor: Cell::new(None),
             handoff: RefCell::new(HandoffCache::new()),
             candidate_window: CandidateWindow::new(),
             toast: ToastWindow::new(),
@@ -344,6 +385,8 @@ impl Core {
             remeasure_pending: Rc::clone(&self.remeasure_pending),
             on_remeasured: Rc::new(move || {
                 if let Some(core) = me.upgrade() {
+                    core.anchor_wait.borrow_mut().finish();
+                    core.note_anchor();
                     core.candidate_window.reposition(core.caret.get());
                 }
             }),
@@ -487,6 +530,8 @@ impl Core {
             }
             MessageEvent::Tick => {
                 self.poll_environment();
+                // imserver の常駐メモリを診断ログへ（H-99 の閾値の実測用。10 分に 1 回まで）
+                crate::proc_mem::log_engine_memory_throttled();
                 if self.resume.borrow_mut().tick(SystemTime::now()) {
                     self.engine.restart_in_background(ResumeSource::TickGap);
                 }
@@ -499,6 +544,7 @@ impl Core {
                 self.poll_environment();
             }
             MessageEvent::PowerChanged => self.poll_environment(),
+            MessageEvent::DeferTimeout => self.on_defer_timeout(),
         }
     }
 
@@ -769,17 +815,68 @@ impl Core {
             self.candidate_window.hide();
             return;
         }
-        let caret = self.caret.get();
-        // 位置が未確定で再測定待ちなら、マウス位置に出してから動くのを避けて保留する
-        if should_defer_show(caret.is_some(), self.remeasure_pending.get()) {
-            self.candidate_window.defer(&page);
-        } else {
-            self.candidate_window.show(&page, caret);
+        self.note_anchor();
+        // 位置が未確定で再測定待ちなら、マウス位置に出してから動くのを避けて保留する。
+        // ただし期限（`DEFER_TIMEOUT`）を過ぎたら、最後に測れた位置（無ければマウス位置）で出す
+        let decision = self.anchor_wait.borrow_mut().on_show_request(
+            monotonic_now(),
+            self.caret.get(),
+            self.remeasure_pending.get(),
+            self.last_anchor.get(),
+        );
+        match decision {
+            ShowDecision::Show(anchor) => self.candidate_window.show(&page, anchor),
+            ShowDecision::Defer { wake_after } => {
+                self.candidate_window.defer(&page);
+                self.arm_defer_timer(wake_after);
+            }
+        }
+    }
+
+    /// 測れた基準位置を「最後の既知位置」として覚える
+    fn note_anchor(&self) {
+        if let Some(rect) = self.caret.get() {
+            self.last_anchor.set(Some(rect));
+        }
+    }
+
+    fn arm_defer_timer(&self, wake_after: std::time::Duration) {
+        if let Some(window) = self.message_window.borrow().as_ref() {
+            // 切り上げて、期限より早く鳴らさない
+            let ms = wake_after.as_millis().saturating_add(1);
+            window.arm_defer_timer(u32::try_from(ms).unwrap_or(u32::MAX));
+        }
+    }
+
+    /// 表示保留のタイマーが鳴った。期限切れなら保留中の候補を最後の既知位置（無ければマウス位置）で出す
+    fn on_defer_timeout(&self) {
+        let outcome = self
+            .anchor_wait
+            .borrow_mut()
+            .on_timer(monotonic_now(), self.last_anchor.get());
+        match outcome {
+            TimerOutcome::Idle => {}
+            TimerOutcome::Rearm { wake_after } => self.arm_defer_timer(wake_after),
+            TimerOutcome::Show(anchor) => {
+                crate::tsf_log::log(
+                    "cand",
+                    &format!(
+                        "defer timeout fallback={}",
+                        if anchor.is_some() {
+                            "last-known"
+                        } else {
+                            "mouse"
+                        }
+                    ),
+                );
+                self.candidate_window.reposition(anchor);
+            }
         }
     }
 
     /// 候補を閉じる（自前のウィンドウと、UILess の要素）
     fn hide_candidates(&self) {
+        self.anchor_wait.borrow_mut().finish();
         self.end_ui_element();
         self.candidate_window.hide();
     }
@@ -1290,6 +1387,10 @@ impl Core {
 
     fn enter_focus(&self) {
         self.focused.set(true);
+        // アプリ別の位置の補正（手編集されるので、フォーカスのたびに読み直す）
+        let offset = load_window_offset();
+        self.candidate_window.set_offset(offset);
+        self.mode_popup.set_offset(offset);
         self.ui_less.set(false);
         crate::e2e_probe::record_event("set_focus", "foreground=true");
         // 入力する可能性のあるホストになったので、ここでエンジンを起動する（先読み。H-96）
@@ -1320,6 +1421,7 @@ impl Core {
         // 前の矩形・再測定待ちを持ち越さない
         self.last_rect.set(None);
         self.remeasure_pending.set(false);
+        self.last_anchor.set(None);
         let mut apply_failed = false;
         if let Ok(result) = self.engine.focus_out(&self.session_id) {
             let plan = render::plan_from_result(&result);

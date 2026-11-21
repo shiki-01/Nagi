@@ -22,11 +22,15 @@
 //! - [`icon`] — 入力方式アイコン（.ico）の生成
 //! - [`diag`] — 診断ログ（tsf.log）の整形・ローテーション判断・イベントの文言（入力内容は含めない）
 //! - [`engine_log`] — imserver の stderr の保存先（ホスト pid ごとのファイル）と古いファイルの掃除
+//! - [`placement`] — アプリ単位の表示位置の補正（候補ウィンドウ・モード切替ポップアップ）
+//! - [`anchor_wait`] — 候補の表示保留（H-102）のタイムアウト付きステートマシン
+//! - [`process_memory`] — imserver の常駐メモリの診断（型・ログ文言。取得は TSF 層）
 //! - [`process`]: 子プロセス（imserver）の stdin/stdout を通信路にする実装
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod anchor_wait;
 pub mod candidates;
 pub mod client;
 pub mod context;
@@ -37,8 +41,10 @@ pub mod focus;
 pub mod icon;
 pub mod keynorm;
 pub mod mode;
+pub mod placement;
 pub mod preedit_style;
 pub mod process;
+pub mod process_memory;
 pub mod reconvert;
 pub mod revision;
 pub mod session;

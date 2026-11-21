@@ -131,6 +131,11 @@ pub struct LogThrottle {
 }
 
 impl LogThrottle {
+    /// 何も出していない状態（`static` に置けるよう `const`）
+    pub const fn new() -> Self {
+        Self { last: None }
+    }
+
     /// `now`（任意の起点からの経過時間）で出してよければ true にして記録する
     pub fn allow(&mut self, now: Duration, interval: Duration) -> bool {
         match self.last {

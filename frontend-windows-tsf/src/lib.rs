@@ -77,6 +77,8 @@ mod popup_menu;
 #[cfg(windows)]
 mod probe;
 #[cfg(windows)]
+mod proc_mem;
+#[cfg(windows)]
 mod reconversion;
 #[cfg(windows)]
 mod register;

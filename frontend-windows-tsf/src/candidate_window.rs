@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use nagi_windows::candidates::{
     CandidatePage, Metrics, Point, Rect, Size, WindowLayout, anchor_rect, layout, place_window,
 };
+use nagi_windows::placement::shift_rect;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
@@ -54,6 +55,8 @@ pub struct CandidateWindow {
     visible: Cell<bool>,
     /// 位置の確定待ちで出していない最初の表示
     deferred: RefCell<Option<CandidatePage>>,
+    /// アプリ別の位置の補正（96 DPI 基準の dp。`nagi_windows::placement`）
+    offset: Cell<Point>,
 }
 
 impl Default for CandidateWindow {
@@ -70,7 +73,13 @@ impl CandidateWindow {
             paint: Cell::new(0),
             visible: Cell::new(false),
             deferred: RefCell::new(None),
+            offset: Cell::new(Point::default()),
         }
+    }
+
+    /// アプリ別の位置の補正（dp）を設定する。次の表示から効く
+    pub fn set_offset(&self, offset: Point) {
+        self.offset.set(offset);
     }
 
     fn ensure_window(&self) -> Option<HWND> {
@@ -131,6 +140,8 @@ impl CandidateWindow {
             )
         };
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        // アプリ別の補正（キャレット位置を正しく測れないアプリ向け）。反転の判定も補正後の位置で行う
+        let anchor = shift_rect(anchor, self.offset.get(), dpi);
 
         let cell = unsafe { user_data_ref::<PaintCell>(self.paint.get()) };
         let Some(cell) = cell else {

@@ -33,6 +33,8 @@ static CLASS: WindowClass = WindowClass::new("NagiMessageWindow");
 /// エンジンの非同期通知がキューに積まれた
 const WM_NAGI_EVENTS: u32 = WM_APP + 1;
 const TIMER_ID: usize = 1;
+/// 候補の表示保留のタイムアウト（ワンショット。`arm_defer_timer`）
+const DEFER_TIMER_ID: usize = 2;
 
 /// 定期タイマーの間隔（ミリ秒）。環境の変化とスリープ復帰の検出に使う
 pub const TICK_INTERVAL_MS: u32 = 30_000;
@@ -44,6 +46,8 @@ pub enum MessageEvent {
     EngineEvents,
     /// 定期タイマー
     Tick,
+    /// 候補の表示保留のタイマー（`arm_defer_timer`）が鳴った
+    DeferTimeout,
     /// OS からのスリープ復帰の通知
     Resume,
     /// 電源の状態（AC/電池・バッテリー節約）が変わった
@@ -109,6 +113,12 @@ impl MessageWindow {
         })
     }
 
+    /// 候補の表示保留のタイマーを `ms` ミリ秒後に 1 回鳴らす（すでに仕掛けていれば置き換える）
+    pub fn arm_defer_timer(&self, ms: u32) {
+        // `USER_TIMER_MINIMUM`（10ms）未満は OS が切り上げる
+        unsafe { SetTimer(Some(self.hwnd), DEFER_TIMER_ID, ms, None) };
+    }
+
     /// 別スレッドから UI スレッドを起こす関数（`EngineEvents` が届く）
     pub fn waker(&self) -> Waker {
         let raw = self.hwnd.0 as isize;
@@ -129,6 +139,7 @@ impl Drop for MessageWindow {
             };
         }
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), DEFER_TIMER_ID) };
         let _ = unsafe { DestroyWindow(self.hwnd) };
         CLASS.release();
     }
@@ -150,6 +161,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_TIMER if wparam.0 == TIMER_ID => {
             dispatch(hwnd, MessageEvent::Tick);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == DEFER_TIMER_ID => {
+            // ワンショット: 鳴ったら止める（再度必要なら呼び出し側が仕掛け直す）
+            let _ = unsafe { KillTimer(Some(hwnd), DEFER_TIMER_ID) };
+            dispatch(hwnd, MessageEvent::DeferTimeout);
             LRESULT(0)
         }
         WM_POWERBROADCAST => {

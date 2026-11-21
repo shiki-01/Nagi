@@ -65,6 +65,8 @@ type PaintCell = RefCell<Option<Paint>>;
 pub struct ToastWindow {
     hwnd: Cell<HWND>,
     paint: Cell<isize>,
+    /// アプリ別の位置の補正（96 DPI 基準の dp。キャレット付近に出すポップアップだけに効く）
+    offset: Cell<nagi_windows::candidates::Point>,
 }
 
 impl Default for ToastWindow {
@@ -79,7 +81,13 @@ impl ToastWindow {
         Self {
             hwnd: Cell::new(HWND::default()),
             paint: Cell::new(0),
+            offset: Cell::new(nagi_windows::candidates::Point::default()),
         }
+    }
+
+    /// アプリ別の位置の補正（dp）を設定する。次のポップアップから効く（右下の通知には効かない）
+    pub fn set_offset(&self, offset: nagi_windows::candidates::Point) {
+        self.offset.set(offset);
     }
 
     fn ensure_window(&self) -> Option<HWND> {
@@ -193,7 +201,11 @@ impl ToastWindow {
         };
         let origin = match place {
             Place::BottomRight => place_toast(work, size, scale_px(TOAST_MARGIN, dpi)),
-            Place::Near(anchor) => place_mode_popup(anchor, size, &areas),
+            Place::Near(anchor) => place_mode_popup(
+                nagi_windows::placement::shift_rect(anchor, self.offset.get(), dpi),
+                size,
+                &areas,
+            ),
         };
         *cell.borrow_mut() = Some(Paint {
             text,
