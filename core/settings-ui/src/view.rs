@@ -99,27 +99,32 @@ fn item(i: &SettingItem) -> Item {
 }
 
 /// デスクトップに出す項目か（iOS 専用は出さない）
-fn is_desktop(i: &SettingItem) -> bool {
+pub(crate) fn is_desktop(i: &SettingItem) -> bool {
     !matches!(i.platforms, SettingPlatforms::Ios)
 }
 
-/// 記述子から画面を作る。カテゴリはコアが返した順（同じ `group` が連続する前提だが、離れていても
-/// 最初に現れた位置にまとめる）
-pub fn build_screen(snapshot: &SettingsSnapshot, config_path: Option<String>) -> Screen {
-    let mut groups: Vec<Group> = Vec::new();
+/// デスクトップ向けの項目をカテゴリごとにまとめる。カテゴリはコアが返した順（同じ `group` が連続する
+/// 前提だが、離れていても最初に現れた位置にまとめる）。Web 画面とネイティブ画面で共有する
+pub(crate) fn desktop_groups(snapshot: &SettingsSnapshot) -> Vec<(String, Vec<&SettingItem>)> {
+    let mut groups: Vec<(String, Vec<&SettingItem>)> = Vec::new();
     for i in snapshot.items.iter().filter(|i| is_desktop(i)) {
-        let position = match groups.iter().position(|g| g.name == i.group) {
-            Some(p) => p,
-            None => {
-                groups.push(Group {
-                    name: i.group.clone(),
-                    items: Vec::new(),
-                });
-                groups.len() - 1
-            }
-        };
-        groups[position].items.push(item(i));
+        match groups.iter_mut().find(|(name, _)| *name == i.group) {
+            Some((_, items)) => items.push(i),
+            None => groups.push((i.group.clone(), vec![i])),
+        }
     }
+    groups
+}
+
+/// 記述子から画面を作る（カテゴリの順序は [`desktop_groups`] のとおり）
+pub fn build_screen(snapshot: &SettingsSnapshot, config_path: Option<String>) -> Screen {
+    let groups = desktop_groups(snapshot)
+        .into_iter()
+        .map(|(name, items)| Group {
+            name,
+            items: items.into_iter().map(item).collect(),
+        })
+        .collect();
     Screen {
         config_path,
         error: snapshot.error.clone(),

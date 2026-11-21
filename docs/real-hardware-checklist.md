@@ -223,16 +223,19 @@ ed25519の実装（`ed25519-dalek`）はOS依存のCライブラリを使わな�
 - [ ] 「設定ファイル（config.toml）を直接開く」（旧「設定を開く（config.toml）…」）: `config.toml`（`get_status` の `config_path`）がメモ帳で開く。ファイルが無いときの作成の確認。`config_path` が無いとき項目が灰色
 - [ ] 右クリックメニューの状態行が短い（H-103）: 「プロファイル: balanced（推論 48ms）」のように理由が短い表記で、メニュー幅が横に長すぎない。メモリ逼迫などで切り替わった後も「（メモリ逼迫）」等の短い表記。詳細な理由は `tsf.log` の `[engine] notify … profile_changed` で確認できる
 - [ ] 右クリックメニューの開く項目（H-93。`ITfMenu` の平坦な項目 5 行）: 「設定フォルダを開く」でエクスプローラーが `%APPDATA%\Nagi` を開く。「ユーザー辞書フォルダを開く」が `user_dict` があればそれ、無ければ `%APPDATA%\Nagi` を開く。「ログフォルダを開く」が `%LOCALAPPDATA%\Nagi\logs` を開く。「状態を確認（verify.ps1）」が新しいコンソールで `verify.ps1 status` を実行し、終了後もコンソールが閉じない（`-NoExit`。ExecutionPolicy で止まらない）。対象のフォルダ・`verify.ps1` が無い環境では該当項目が灰色（フォルダは作られない）。開けなかったときは `tsf.log` に `[menu] open failed kind=… code=…` が出る。開く操作の前後で入力中の文字列・モードが変わらない
-- [ ] **設定画面（H-97。`nagi-settings.exe`。Linux では HTTP ハンドラ・実 imserver との統合テストのみ。Windows 実機で一度も動かしていない）**:
-  - 右クリック → 「設定…」で既定のブラウザに設定ページが開く（黒いコンソール窓が出ない。タスクマネージャーに `nagi-settings.exe` と、その子の `imserver.exe` が 1 つずつ）。`nagi-settings.exe` が DLL と同じディレクトリに無いと「設定…」が灰色。起動に失敗したら `tsf.log` に `[menu] open failed kind=settings_gui code=…`。スタートメニューの「Nagi 設定」でも同じ画面が開く
-  - 項目がカテゴリごとに並び、「シンプル / 詳細」で項目数が変わる。iOS 専用の項目（濁点の循環順・タッチ座標の利用・グライド入力）が出ない。ライト/ダーク（Windows の色設定）に追従する。Tab キーだけで操作でき、トグル・入力欄のラベルが読み上げられる
-  - 項目を変えると（トグル・数値・選択・テキスト）すぐ `%APPDATA%\Nagi\config.toml` に反映される（メモ帳で開いて確認。ファイル内のコメントと他の項目が保たれる）。変更が実際の入力にも反映される（例: ライブ変換のオン/オフ。入力方式を切り替え直さずに）。「既定に戻す」で明示指定が消える
-  - `requires_restart` の項目（例: 更新の自動確認）に「変更を反映するには入力方式を切り替え直すかアプリを開き直してください」のバッジが出る
-  - 範囲外の値（例: ライブ変換の待ち時間に 99999）で、その項目の下にコアのメッセージが出て、`config.toml` は変わらない。`config.toml` を壊した状態で開くと、画面上部にエラーが出て値は書き込まれない
-  - 「config.toml を直接開く」でメモ帳、「ユーザー辞書フォルダを開く」でエクスプローラーが開く。「学習データを全削除…」で確認ダイアログが出て、キャンセルでは消えない・「削除する」で `learning.tsv` の内容が消える
-  - タブを閉じると数秒後に `nagi-settings.exe` と子の `imserver.exe` が消える。再読み込み（F5）では終了しない。15 分放置で終了する。`nagi-settings.exe` をタスクマネージャーで強制終了しても子の `imserver.exe` が残らない（`--parent-pid`）。2 つ同時に開いても別ポートで動く
-  - **トークンなしのアクセスの拒否**（PowerShell。設定画面を開いたまま）: ポートを調べる `$p = (Get-Process nagi-settings | Select-Object -First 1).Id; $port = (Get-NetTCPConnection -OwningProcess $p -State Listen).LocalPort`。次はどれも 403 になる: `Invoke-WebRequest "http://127.0.0.1:$port/" -UseBasicParsing`（トークンなし。`-SkipHttpErrorCheck` が使える PowerShell 7 か、5.1 なら try/catch で `$_.Exception.Response.StatusCode`）、`Invoke-WebRequest "http://127.0.0.1:$port/?t=wrong" -UseBasicParsing`、`Invoke-WebRequest "http://127.0.0.1:$port/api/settings" -Method Post -ContentType application/json -Body '{}' -UseBasicParsing`（ヘッダーなし）、`Invoke-WebRequest "http://127.0.0.1:$port/" -Headers @{Host='evil.example'} -UseBasicParsing`（5.1 は Host を上書きできないので `curl.exe -H "Host: evil.example" http://127.0.0.1:$port/` で確認）。ブラウザのアドレスバーのトークンつき URL は 200。別のサイトのページから `fetch("http://127.0.0.1:<port>/api/settings", {method:"POST"})` が失敗する（CORS ヘッダーなし）
-  - Edge / Chrome / Firefox で表示が崩れず、DevTools のコンソールに CSP 違反が出ない。`<dialog>` の確認が出る。日本語が文字化けしない
+- [ ] **設定画面（H-97 → H-104 でネイティブの Win32 ウィンドウに変更。`nagi-settings.exe`。Linux ではモデル・レイアウト・ワーカーの単体テストと HTTP 版の統合テストのみ。Windows 実機で一度も動かしていない。`--web` で従来のブラウザ版）**:
+  - ウィンドウが開く: 右クリック → 「設定…」（スタートメニューの「Nagi 設定」も）で「Nagi 設定」ウィンドウが開く（ブラウザは開かない。黒いコンソール窓が出ない。ウィンドウが先に出て、最初は「読み込み中…」→ 項目が並ぶ）。タスクマネージャーに `nagi-settings.exe` と、その子の `imserver.exe` が 1 つずつ。`nagi-settings.exe` が無いと「設定…」が灰色。起動に失敗したら `tsf.log` に `[menu] open failed kind=settings_gui code=…`。`imserver.exe` を退避して開くと「設定を読み込めませんでした」+「再試行」（戻すと再試行で読み込める）。アイコン・最小サイズ・リサイズが自然。タイトルバーがシステムのライト/ダークに追従
+  - DPI 150%（と 100%/200%、別 DPI のモニター間の移動）でレイアウトが崩れない: 文字が切れない・説明が折り返す・ボタンが重ならない・フォントがぼやけない。最小サイズまで縮めても入力欄とボタンが隠れない。縦スクロール（ホイール・つまみ）と Tab での移動で、フォーカスした項目が見える位置まで動く。コンボボックスの上でホイールを回しても値が変わらない
+  - 項目: 左の一覧にカテゴリが並び、「詳細設定を表示」で項目数が変わる（カテゴリごと消えるものがある）。iOS 専用の項目（濁点の循環順・タッチ座標の利用・グライド入力）が出ない
+  - 項目の変更が反映される: トグル・数値・選択・テキストを変えると（Enter / フォーカス喪失 / 選択時）ステータス行に「保存しました」が出て `%APPDATA%\Nagi\config.toml` に反映される（メモ帳で開いて確認。コメントと他の項目が保たれる）。変更が実際の入力にも反映される（例: ライブ変換のオン/オフ。入力方式を切り替え直さずに）。「既定に戻す」で明示指定が消える（ボタンも消える）。全角数字（「２２８」）も入る。空欄で既定に戻る
+  - 再起動バッジ: `requires_restart` の項目（例: 更新の自動確認）のラベルに「（再起動後に反映）」が付く
+  - エラー: 範囲外の値（例: ライブ変換の待ち時間に 99999）・数字でない文字で、その項目の下に赤字が出て、値が元に戻り、`config.toml` は変わらない。`config.toml` を壊した状態で開くと、各ページの上部にエラーが出て値は書き込まれない
+  - 更新ページ: 現在の版が出る。「更新を確認」で「確認しています…」（ボタンは無効）→ 結果（最新です / 新しい版 X があります / 取得しました / エラー理由）。取得済みのときだけ「更新を適用…」が出る（押すと新しいコンソール + UAC）。リリースノートの URL があれば「リリースノートを開く」が出て既定のブラウザで開く。右クリックの「更新を確認…」・スタートメニューの「Nagi 更新の確認」（`--section update --auto-check`）で更新ページが開いて確認が自動で走る
+  - データ・ファイルページ: 「config.toml を開く」でメモ帳、「設定フォルダを開く」「ユーザー辞書フォルダを開く」でエクスプローラーが開く。「学習データを全削除…」で確認のダイアログが出て、「いいえ」では消えない・「はい」で `learning.tsv` の内容が消える
+  - 多重起動: 開いたまま「設定…」をもう一度選ぶと、2 つ目は起動せず、開いているウィンドウが前面に出る（最小化していても復元される）
+  - 閉じたあと: ×・Esc・Alt+F4 のどれでもウィンドウがすぐ消え、数秒以内に `nagi-settings.exe` と子の `imserver.exe` がタスクマネージャーから消える。`nagi-settings.exe` を強制終了しても子の `imserver.exe` が残らない（`--parent-pid`）。更新確認の最中に閉じても、確認の子プロセス（`imserver.exe --check-update`）が残らない
+  - キーボード操作: Tab / Shift+Tab で左の一覧 →「詳細設定を表示」→ 各項目へ移れる。Enter で入力欄が確定する。矢印キーで一覧・コンボボックスが動く。チェックボックスは Space。ラベルが読み上げられる（ナレーターで入力欄・チェックボックスの名前が分かるか。「既定に戻す」ボタンは項目名が付かない既知の課題）
+  - `--web`: `nagi-settings.exe --web` で従来のブラウザ版が開く（H-97 の確認項目と同じ。トークンなしの 403 など）
   - 設定画面を開いたまま `install.ps1`（更新）を実行しても、`nagi-settings.exe` が `.old` に退避されて置き換わる。`uninstall.ps1` が開いている設定画面を止めて削除できる
 - [ ] `GetReconversion`: `ITfFnReconversion` を呼ぶアプリ（Office 等）で再変換の候補一覧が出て、選ぶと範囲が置き換わりキャレットが末尾に来る。複数文節の範囲で、選んだ候補以外の部分（残りの文節）が失われない。アプリが文書ロックを持つ最中に呼んだ場合に失敗して固まらない。呼んだ後にコアが変換中のまま残らない（直後の入力が通常どおり）。選択が空・200 文字超・入力中は失敗する。待ちきれないとき（初回の逆引き索引）の通知
 - [ ] `THIRD_PARTY_LICENSES_WINDOWS.md`（112 crates。設定画面 `nagi-settings-ui` の依存を含む）が実際の Windows のビルド（MSVC・`--features llama`）の依存と一致する（`cargo tree --target x86_64-pc-windows-msvc` を Windows 上で実行して比較。llama.cpp のビルド用の crate が漏れていないか）。zip の `THIRD_PARTY_LICENSES.md` が Windows 用になっている

@@ -79,7 +79,7 @@ Phase 1 は `engine` / `romaji` / `dict` / `infer` / `protocol` / `server` か�
 ```
 nagi/
 ├── core/            # Rust workspace（engine, romaji, dict, infer, protocol, server, xtask, ...）
-│   ├── settings-ui/  # nagi-settings.exe（ローカル Web の設定画面）
+│   ├── settings-ui/  # nagi-settings.exe（ネイティブ Win32 の設定画面。`--web` で従来のローカル Web 版。H-104）
 │   └── parent-watch/ # nagi-parent-watch（imserver の親プロセス監視）
 ├── frontend-macos/  # Swift + IMKit
 ├── frontend-windows/# Windows フロントの OS 非依存ロジック（nagi-windows）+ dist/（install.ps1 等）

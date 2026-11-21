@@ -436,6 +436,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "embed-manifest"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba92c8f4591bf29f89716b45e5f5f56577adbb81426e5620c6e994da7c88bb7a"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1120,11 +1126,13 @@ dependencies = [
 name = "nagi-settings-ui"
 version = "0.1.15"
 dependencies = [
+ "embed-manifest",
  "getrandom 0.3.4",
  "nagi-protocol",
  "serde",
  "serde_json",
  "tiny_http",
+ "windows",
 ]
 
 [[package]]
