@@ -212,8 +212,9 @@ jobs:
             echo "CC_aarch64_pc_windows_msvc=clang-cl"
             echo "CXX_aarch64_pc_windows_msvc=clang-cl"
             # clang-cl は既定で C++ 例外が無効（cl.exe と違い cc クレートが /EHsc を足さない）。llama-cpp-sys-2 の
-            # wrapper_common.cpp が try/throw を使うため明示する
-            echo "CXXFLAGS_aarch64_pc_windows_msvc=/EHsc"
+            # wrapper_common.cpp が try/throw を使うため明示する。`/EHsc` と書くと MSYS の bash がパスとみなして
+            # `C:/Program Files/Git/EHsc` に書き換えるので、clang-cl が受け付ける `-EHsc` の形で渡す
+            echo "CXXFLAGS_aarch64_pc_windows_msvc=-EHsc"
           } >> "$GITHUB_ENV"
           "$(cygpath -u "$LIBCLANG_PATH")/clang-cl.exe" --version
           command -v ninja || { echo "::error::ninja が見つかりません"; exit 1; }
