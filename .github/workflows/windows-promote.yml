@@ -1,0 +1,44 @@
+# Windows 版の prerelease を公開版に切り替える（実機で確認できた版を自動更新の配信に載せる。H-113）。
+#
+# windows-release.yml は同じタグのリリースを作り直せないため、prerelease で出した版を実機で確認したあとは
+# これを手動で実行する。prerelease を外して「最新」にし、web.yml を起動してサイトの
+# /updates/windows/latest.json・latest-arm64.json を更新する（web.yml は prerelease を取り込まない）。
+#
+#   gh workflow run windows-promote.yml --ref main -f version=0.1.17
+name: windows-promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "公開版にする版（例: 0.1.17。タグは windows-v<版>）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: windows-v${{ inputs.version }}
+    steps:
+      - name: リリースの確認
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::版の形式が違います: ${{ inputs.version }}"; exit 1
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease,isDraft,assets \
+            --jq '{tag: .tagName, prerelease: .isPrerelease, draft: .isDraft, assets: [.assets[].name]}'
+          # 自動更新が参照する manifest が揃っていないと、公開しても配信できない
+          for a in latest.json "Nagi-windows-${{ inputs.version }}.zip"; do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx "$a" \
+              || { echo "::error::$TAG に $a がありません"; exit 1; }
+          done
+      - name: prerelease を外して最新にする
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+      - name: サイトの latest.json を更新（web ワークフローを起動）
+        run: gh workflow run web.yml --repo "$GITHUB_REPOSITORY" --ref main
