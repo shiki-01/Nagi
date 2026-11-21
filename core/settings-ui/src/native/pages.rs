@@ -6,6 +6,7 @@
 //! `window.rs` の `on_command` に処理を足す。
 
 use super::state::{Model, Phase, Role};
+use crate::native_diag::{self, PlanRow};
 use crate::native_layout::{Gap, RowKind, gap_between};
 use crate::native_model::{FieldView, Page, ids};
 
@@ -14,6 +15,8 @@ pub(super) struct BtnDef {
     pub id: i32,
     pub text: &'static str,
     pub enabled: bool,
+    /// 読み上げ用の名前（同じ文字のボタンが並ぶとき、項目名つきで区別する）
+    pub accessible_name: Option<String>,
 }
 
 /// 1 行の定義
@@ -49,7 +52,12 @@ pub(super) fn desc(text: impl Into<String>) -> RowDef {
 
 /// ボタンを 1 つだけ置く行
 pub(super) fn button_row(id: i32, text: &'static str, enabled: bool) -> RowDef {
-    RowDef::Buttons(vec![BtnDef { id, text, enabled }])
+    RowDef::Buttons(vec![BtnDef {
+        id,
+        text,
+        enabled,
+        accessible_name: None,
+    }])
 }
 
 /// ページの定義（サイドバーの 1 項目）
@@ -73,6 +81,11 @@ pub(super) const PAGES: &[PageDef] = &[
         page: Page::Data,
         title: "データ・ファイル",
         build: data_rows,
+    },
+    PageDef {
+        page: Page::Extra(native_diag::PAGE_ID),
+        title: native_diag::PAGE_TITLE,
+        build: diag_rows,
     },
 ];
 
@@ -120,12 +133,14 @@ fn update_rows(model: &Model) -> Vec<RowDef> {
         id: ids::UPDATE_CHECK,
         text: "更新を確認",
         enabled: !model.update.busy,
+        accessible_name: None,
     }];
     if model.update.can_apply {
         buttons.push(BtnDef {
             id: ids::UPDATE_APPLY,
             text: "更新を適用…",
             enabled: !model.update.busy,
+            accessible_name: None,
         });
     }
     rows.push(RowDef::Buttons(buttons));
@@ -162,6 +177,29 @@ fn data_rows(model: &Model) -> Vec<RowDef> {
     rows.push(desc("変換の学習結果をすべて削除します。元に戻せません。"));
     rows.push(button_row(ids::CLEAR_LEARNING, "学習データを全削除…", true));
     rows
+}
+
+/// 「動作確認」ページ（行の中身は OS 非依存の `native_diag::plan_rows` が決める）
+fn diag_rows(model: &Model) -> Vec<RowDef> {
+    native_diag::plan_rows(&model.diag)
+        .into_iter()
+        .map(|row| match row {
+            PlanRow::Section(text) => section(text),
+            PlanRow::Text(text) => text_row(Role::Title, text),
+            PlanRow::Desc(text) => desc(text),
+            PlanRow::Buttons(buttons) => RowDef::Buttons(
+                buttons
+                    .into_iter()
+                    .map(|b| BtnDef {
+                        id: b.id,
+                        text: b.text,
+                        enabled: b.enabled,
+                        accessible_name: b.accessible_name,
+                    })
+                    .collect(),
+            ),
+        })
+        .collect()
 }
 
 /// 設定を読み込めるまで（読み込み中・失敗）の「設定」ページ

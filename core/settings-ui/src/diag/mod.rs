@@ -21,6 +21,7 @@ pub mod input;
 pub mod manual;
 pub mod pe;
 pub mod report;
+pub mod service;
 pub mod sha256;
 pub mod sys;
 #[cfg(test)]

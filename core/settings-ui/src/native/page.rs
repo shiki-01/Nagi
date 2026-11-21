@@ -295,9 +295,13 @@ impl Builder<'_> {
             }
             RowDef::Buttons(buttons) => {
                 for b in buttons {
-                    if let Some(hwnd) = self.button(Role::Button, b.text, b.id, None, BUTTON_W)
-                        && !b.enabled
-                    {
+                    let Some(hwnd) = self.button(Role::Button, b.text, b.id, None, BUTTON_W) else {
+                        continue;
+                    };
+                    if let Some(name) = &b.accessible_name {
+                        set_accessible_name(hwnd, name);
+                    }
+                    if !b.enabled {
                         let _ = unsafe { EnableWindow(hwnd, false) };
                     }
                 }
@@ -347,7 +351,10 @@ pub(super) fn rebuild_page(st: &State) {
     };
     let old = std::mem::take(&mut st.ui.borrow_mut().ctls);
     for c in old {
-        if matches!(c.role, Role::Edit | Role::Combo | Role::Reset) {
+        if matches!(
+            c.role,
+            Role::Edit | Role::Combo | Role::Reset | Role::Button
+        ) {
             clear_accessible_name(c.hwnd);
         }
         let _ = unsafe { DestroyWindow(c.hwnd) };

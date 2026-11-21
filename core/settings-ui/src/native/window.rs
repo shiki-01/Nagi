@@ -14,8 +14,9 @@ use super::page::{
     scroll_state, scroll_to,
 };
 use super::pages;
-use super::state::{Phase, Role, State, UpdateUi};
+use super::state::{Ident, Phase, Role, State, UpdateUi};
 use crate::http::{is_safe_notes_url, user_dict_dir};
+use crate::native_diag;
 use crate::native_layout::{
     Rect, control_height, frame_layout, initial_client_size, min_client_size, sidebar_item_height,
     sidebar_item_parts, wheel_step,
@@ -194,7 +195,7 @@ fn run_inner(options: NativeOptions) -> Result<(), String> {
             )
         };
     });
-    let worker = WorkerHandle::start(options.factory, notify);
+    let worker = WorkerHandle::start(options.factory, options.diag, notify);
     worker.send(Command::Connect);
     *st.worker.borrow_mut() = Some(worker);
 
@@ -221,6 +222,8 @@ fn run_inner(options: NativeOptions) -> Result<(), String> {
     // 後始末: imserver を終了する（間に合わなければ放置。`--parent-pid` で親の終了とともに止まる）
     // SAFETY: ウィンドウは破棄済みで、プロシージャはもう呼ばれない
     let st = unsafe { Box::from_raw(state) };
+    // 実行中の診断があれば止める（ワーカーが次の項目へ進まず、終了の要求にすぐ応えられるように）
+    st.model.borrow().diag.cancel_for_close();
     let worker = st.worker.borrow_mut().take();
     if let Some(mut worker) = worker {
         worker.shutdown(SHUTDOWN_WAIT);
@@ -860,6 +863,18 @@ fn on_command(st: &State, id: i32, code: u32) {
             send_command(st, Command::Connect);
             rebuild_sidebar(st);
         }
+        ids::DIAG_RUN_ALL if code == BN_CLICKED => start_diag_all(st),
+        ids::DIAG_CANCEL if code == BN_CLICKED => {
+            st.model.borrow_mut().diag.request_cancel();
+            rebuild_if_diag(st);
+        }
+        ids::DIAG_COPY if code == BN_CLICKED => export_diag(st, false),
+        ids::DIAG_SAVE if code == BN_CLICKED => export_diag(st, true),
+        id if code == BN_CLICKED && native_diag::item_from_button_id(id).is_some() => {
+            if let Some(item) = native_diag::item_from_button_id(id) {
+                start_diag_one(st, item);
+            }
+        }
         id if id >= ids::DYNAMIC_BASE => on_field_command(st, id, code),
         _ => {}
     }
@@ -1072,6 +1087,90 @@ fn confirm_clear_learning(st: &State) {
     }
 }
 
+// ---- 動作確認のページ ----
+
+/// 動作確認のページを開いているときだけ作り直す（他のページの入力中の欄を壊さない）
+fn rebuild_if_diag(st: &State) {
+    if st.model.borrow().page == Page::Extra(native_diag::PAGE_ID) {
+        request_rebuild(st);
+    }
+}
+
+fn start_diag_all(st: &State) {
+    let flag = st.model.borrow_mut().diag.begin_all();
+    let Some(cancel) = flag else { return };
+    set_status(st, "動作確認を始めました", false);
+    send_command(st, Command::DiagRunAll { cancel });
+    rebuild_if_diag(st);
+}
+
+fn start_diag_one(st: &State, id: crate::diag::ItemId) {
+    let flag = st.model.borrow_mut().diag.begin_one(id);
+    let Some(cancel) = flag else { return };
+    send_command(st, Command::DiagRunOne { id, cancel });
+    rebuild_if_diag(st);
+}
+
+/// レポートのコピー（`save` が偽）・保存（真）をワーカーに頼む
+fn export_diag(st: &State, save: bool) {
+    let report = {
+        let model = st.model.borrow();
+        if !model.diag.can_export() {
+            return;
+        }
+        model.diag.report().cloned()
+    };
+    let Some(report) = report else { return };
+    if save {
+        set_status(st, "レポートを保存しています…", false);
+        send_command(
+            st,
+            Command::DiagSave {
+                report: Box::new(report),
+            },
+        );
+    } else {
+        set_status(st, "レポートをコピーしています…", false);
+        send_command(
+            st,
+            Command::DiagCopy {
+                text: report.to_text(),
+            },
+        );
+    }
+}
+
+/// 状態表示（ページ内の行と、フッターのステータス）を更新する
+fn diag_note(st: &State, text: String, is_error: bool) {
+    st.model.borrow_mut().diag.set_note(text.clone(), is_error);
+    if is_error {
+        set_status(st, &format!("エラー: {text}"), true);
+    } else {
+        set_status(st, &text, false);
+    }
+    rebuild_if_diag(st);
+}
+
+/// 実行が終わったあと、押して外れたボタン（無効になった「中止」など）の代わりに
+/// 「すべて確認」へフォーカスを戻す
+fn diag_finished(st: &State) {
+    {
+        let mut model = st.model.borrow_mut();
+        if model
+            .wanted_focus
+            .as_ref()
+            .is_none_or(|w| w.id == ids::DIAG_CANCEL)
+        {
+            model.wanted_focus = Some(Ident {
+                role: Role::Button,
+                key: None,
+                id: ids::DIAG_RUN_ALL,
+            });
+        }
+    }
+    rebuild_if_diag(st);
+}
+
 // ---- ワーカーの返信 ----
 
 fn drain_replies(st: &State) {
@@ -1163,6 +1262,43 @@ fn on_reply(st: &State, reply: Reply) {
                 };
             }
             rebuild_page(st);
+        }
+        Reply::DiagProgress(progress) => {
+            st.model.borrow_mut().diag.on_progress(&progress);
+            rebuild_if_diag(st);
+        }
+        Reply::DiagAllDone(result) => {
+            let failed = result.is_err();
+            st.model.borrow_mut().diag.finish_all(result);
+            let note = st.model.borrow().diag.note().cloned();
+            if let Some(note) = note {
+                set_status(st, &note.text, failed);
+            }
+            diag_finished(st);
+        }
+        Reply::DiagOneDone { id, result } => {
+            let failed = result.is_err();
+            let status = result.as_ref().ok().map(|r| r.status.label());
+            st.model.borrow_mut().diag.finish_one(id, result);
+            if failed {
+                let note = st.model.borrow().diag.note().cloned();
+                if let Some(note) = note {
+                    set_status(st, &note.text, true);
+                }
+            } else if let Some(label) = status {
+                set_status(st, &format!("{}: {label}", id.title()), false);
+            }
+            diag_finished(st);
+        }
+        Reply::DiagCopied(Ok(())) => diag_note(st, "レポートをコピーしました".to_owned(), false),
+        Reply::DiagCopied(Err(e)) => {
+            diag_note(st, format!("レポートをコピーできませんでした: {e}"), true)
+        }
+        Reply::DiagSaved(Ok(path)) => {
+            diag_note(st, format!("レポートを保存しました: {path}"), false)
+        }
+        Reply::DiagSaved(Err(e)) => {
+            diag_note(st, format!("レポートを保存できませんでした: {e}"), true)
         }
         Reply::UpdateApplied(result) => {
             {

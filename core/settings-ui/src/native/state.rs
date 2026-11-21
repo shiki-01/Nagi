@@ -4,6 +4,7 @@
 //! 可変な値は `Cell` / `RefCell` に入れ、借用は短くして、借用中に Win32 を呼ばない。
 
 use super::dpi::Fonts;
+use crate::native_diag::DiagModel;
 use crate::native_layout::{Gap, PanelLayout, RowSpec};
 use crate::native_model::{Page, SettingsView};
 use crate::native_worker::WorkerHandle;
@@ -116,6 +117,8 @@ pub(super) struct Model {
     /// 項目ごとのエラー（キー → メッセージ）
     pub errors: HashMap<String, String>,
     pub update: UpdateUi,
+    /// 「動作確認」ページ
+    pub diag: DiagModel,
     pub wanted_focus: Option<Ident>,
 }
 
@@ -159,6 +162,7 @@ impl State {
                 sidebar: Vec::new(),
                 errors: HashMap::new(),
                 update: UpdateUi::default(),
+                diag: DiagModel::default(),
                 wanted_focus: None,
             }),
             ui: RefCell::new(PageUi::default()),

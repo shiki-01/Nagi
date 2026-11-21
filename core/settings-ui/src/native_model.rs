@@ -423,13 +423,23 @@ pub mod ids {
     pub const CLEAR_LEARNING: i32 = 213;
     /// 「再試行」
     pub const RETRY: i32 = 220;
+    /// 動作確認: 「すべて確認」
+    pub const DIAG_RUN_ALL: i32 = 300;
+    /// 動作確認: 「中止」
+    pub const DIAG_CANCEL: i32 = 301;
+    /// 動作確認: 「レポートをコピー」
+    pub const DIAG_COPY: i32 = 302;
+    /// 動作確認: 「レポートを保存」
+    pub const DIAG_SAVE: i32 = 303;
+    /// 動作確認: 項目ごとの「この項目だけ確認」の ID の起点（以降は `ItemId::ALL` の順に連番）
+    pub const DIAG_ITEM_BASE: i32 = 320;
     /// 設定項目のコントロールの ID の起点（以降は連番）
     pub const DYNAMIC_BASE: i32 = 1000;
     /// ステータス行を消すタイマー
     pub const TIMER_STATUS: usize = 1;
 
     /// 固定の ID すべて
-    pub const FIXED: [i32; 15] = [
+    pub const FIXED: [i32; 19] = [
         LIST,
         DETAIL_CHECK,
         STATUS,
@@ -445,6 +455,10 @@ pub mod ids {
         OPEN_USER_DICT,
         CLEAR_LEARNING,
         RETRY,
+        DIAG_RUN_ALL,
+        DIAG_CANCEL,
+        DIAG_COPY,
+        DIAG_SAVE,
     ];
 }
 

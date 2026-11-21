@@ -91,6 +91,9 @@ fn run_native(args: &Args) -> Result<(), String> {
     });
     run(NativeOptions {
         factory,
+        diag: std::sync::Arc::new(nagi_settings_ui::diag::service::ArgsDiagService::new(
+            args.clone(),
+        )),
         open_update: args.opens_update_page(),
         auto_check: args.auto_check,
     })

@@ -12,12 +12,16 @@ mod pages;
 mod state;
 mod window;
 
+use crate::diag::service::DiagService;
 use crate::native_worker::Factory;
+use std::sync::Arc;
 
 /// ネイティブ設定ウィンドウの起動条件
 pub struct NativeOptions {
     /// バックエンド（`imserver`）を作る関数。ワーカースレッドで呼ばれる（起動に最大 60 秒）
     pub factory: Factory,
+    /// 「動作確認」ページが使う診断（ワーカースレッドで呼ばれる）
+    pub diag: Arc<dyn DiagService>,
     /// 更新ページを開いた状態で始める（`--section update`）
     pub open_update: bool,
     /// 開いたら更新の確認を自動で実行する（`--auto-check`。更新ページを開く）
