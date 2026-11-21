@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(m.result(ItemId::EnvUser).unwrap().status, Status::Ok);
         let report = m.report().unwrap();
         assert_eq!(report.get(ItemId::EnvUser).unwrap().detail, "直った");
-        assert_eq!(report.summary().ng, 28);
+        assert_eq!(report.summary().ng, 29);
         assert!(m.note().is_none());
     }
 
