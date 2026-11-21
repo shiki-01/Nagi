@@ -51,7 +51,7 @@ pub fn to_utf16(s: &str) -> Vec<u16> {
 }
 
 /// 応答から編集計画を作る。`candidates` / `mode` / `reconvert_selection` はここでは扱わない
-/// （候補ウィンドウ・言語バー・`ITfFnReconversion` は未実装。`lib.rs` の TODO 参照）
+/// （候補ウィンドウ・言語バー・再変換は `candidate_window` / `langbar` / `ITfFnReconversion` の実装が受け持つ）
 pub fn plan_from_result(result: &ProcessKeyResult) -> EditPlan {
     EditPlan {
         delete_before: result.delete_before.filter(|n| *n > 0),

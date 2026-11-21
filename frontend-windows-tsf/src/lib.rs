@@ -32,14 +32,15 @@
 //! # 未実装（TODO）
 //! - 複数のホストプロセスでエンジンを共有する仕組み（現状はホストプロセスごとに imserver を起動する）
 //! - 候補ウィンドウのマウス操作（v1 の非目標）
-//! - ARM64 / 32bit ホスト用の DLL
+//! - 32bit ホスト用の DLL、ARM64X（ARM64 + ARM64EC。x64 エミュレーションのアプリで使うため。ARM64 ネイティブ版の配布は H-106 で対応済み）
 //!
 //! 自動更新（H-95）: imserver が `--stage-updates` で取得・検証して保存し、適用は `apply-update.ps1`
 //! （UAC 1 回）。右クリックメニューの「更新を適用」から起動する。
 //!
 //! # 検証状況
 //! Linux ホストでの `cargo check/clippy --target x86_64-pc-windows-gnu`（型・シグネチャの確認）と、
-//! OS 非依存部のテストのみ。**Windows 実機での動作（登録・キー入力・composition の描画）は未確認**。
+//! OS 非依存部のテストのみ。Windows 実機では 0.1.14 で基本動作（登録・キー入力・composition・候補ウィンドウ）を確認済み
+//! （`docs/real-hardware-checklist.md` §8）。それ以降の追加分は実機未確認。
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
