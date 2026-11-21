@@ -7,7 +7,7 @@
 //!   セットアップ・ショートカットなど、モードを持たない場所のアイコン。16〜256 px。
 //!   小さい大きさ（24 px 以下）では、線と波を太くして波の振れ幅を大きくする（SVG のままだと 16 px で潰れる）。
 //! - **モード表示つきのアイコン**（[`render_status`]）: タスクバーの入力インジケーター・言語バー用。
-//!   ロゴの「太陽」の位置に、現在のモードの文字（あ / A）を置く。カラー（ロゴの色）と、
+//!   現在のモードの文字（あ / A）だけを大きく描く（水平線・波は描かない）。カラー（ロゴの色の背景に生成り色）と、
 //!   システムのテーマに合わせて白または黒で描くモノクロ（背景なし）がある。
 //!
 //! ファイルに書き出した `frontend-windows/assets/nagi.ico` はコミットしてあり（設定アプリ・imserver の
@@ -50,7 +50,7 @@ pub enum ModeGlyph {
 /// モード表示つきアイコンの配色
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
-    /// ロゴの色（藍のグラデーションの角丸の四角に、白と生成りの図形）
+    /// ロゴの色（藍のグラデーションの角丸の四角に、生成り色の文字）
     Color,
     /// 背景なしの単色（図形を `Rgb` で描く。濃淡は透明度で表す）
     Mono(Rgb),
@@ -249,57 +249,20 @@ fn glyph_strokes(glyph: ModeGlyph, x: f32, y: f32, w: f32, h: f32) -> Vec<Vec<Pt
         .collect()
 }
 
-/// モード表示つきアイコンの図形（文字・水平線・波）
+/// モード表示つきアイコンの図形（文字だけ。水平線・波は描かない）。
+/// 文字は外接の四角（線の太さを含めて）を背景いっぱいに広げる。カラーは角丸の背景の内側に収め、
+/// モノクロは背景がないので端まで使う
 fn status_shapes(glyph: ModeGlyph, small: bool, tone: Tone) -> Vec<Shape> {
-    let paint = |c: Rgb| match tone {
-        Tone::Color => c,
-        Tone::Mono(m) => m,
+    let (color, (gx, gy, gw, gh), stroke) = match (tone, small) {
+        (Tone::Color, true) => (SUN, (200.0, 190.0, 624.0, 640.0), 100.0),
+        (Tone::Color, false) => (SUN, (200.0, 190.0, 624.0, 640.0), 88.0),
+        (Tone::Mono(m), true) => (m, (130.0, 120.0, 764.0, 780.0), 110.0),
+        (Tone::Mono(m), false) => (m, (130.0, 120.0, 764.0, 780.0), 96.0),
     };
-    let (gx, gy, gw, gh, stroke) = if small {
-        (200.0, 50.0, 624.0, 520.0, 92.0)
-    } else {
-        (232.0, 70.0, 560.0, 450.0, 58.0)
-    };
-    let mut shapes: Vec<Shape> = glyph_strokes(glyph, gx, gy, gw, gh)
+    glyph_strokes(glyph, gx, gy, gw, gh)
         .into_iter()
-        .map(|pts| Shape::new(pts, stroke, paint(SUN), 1.0))
-        .collect();
-    if small {
-        shapes.push(line(
-            (130.0, 696.0),
-            (894.0, 696.0),
-            84.0,
-            paint(WHITE),
-            1.0,
-        ));
-        shapes.push(Shape::new(
-            wave((190.0, 872.0), 161.0, 100.0, 5),
-            72.0,
-            paint(WHITE),
-            0.85,
-        ));
-    } else {
-        shapes.push(line(
-            (170.0, 640.0),
-            (854.0, 640.0),
-            48.0,
-            paint(WHITE),
-            1.0,
-        ));
-        shapes.push(Shape::new(
-            wave((236.0, 760.0), 138.0, 44.0, 4),
-            44.0,
-            paint(WHITE),
-            0.7,
-        ));
-        shapes.push(Shape::new(
-            wave((376.0, 880.0), 136.0, 40.0, 2),
-            44.0,
-            paint(WHITE),
-            0.42,
-        ));
-    }
-    shapes
+        .map(|pts| Shape::new(pts, stroke, color, 1.0))
+        .collect()
 }
 
 /// 角丸の四角の内側か（1024 座標）
@@ -542,7 +505,7 @@ mod tests {
                 let b = render_status(size, ModeGlyph::Alphanumeric, tone);
                 assert_eq!(a.len(), (size * size * 4) as usize);
                 assert_ne!(a, b, "{size} {tone:?}: あ と A が同じ絵");
-                // 文字の上半分（太陽の位置）に、モードごとの違いが十分ある（16px で数画素以上）
+                // モードごとの違いが十分ある（16px で数画素以上）
                 let diff = a
                     .chunks_exact(4)
                     .zip(b.chunks_exact(4))
@@ -561,7 +524,7 @@ mod tests {
         let top = pixel(&px, size, 16, 0);
         assert_eq!(top[3], 255);
         assert!(top[2] > top[0]);
-        assert!(has_bright(&px), "文字・線が白系で描かれている");
+        assert!(has_bright(&px), "文字が明るい色で描かれている");
     }
 
     #[test]
@@ -587,7 +550,7 @@ mod tests {
 
     #[test]
     fn small_sizes_are_legible_not_blank() {
-        // 16px でも文字と線の分だけ、明るい画素が十分にある
+        // 16px でも文字の分だけ、明るい画素が十分にある
         let px = render_status(16, ModeGlyph::Hiragana, Tone::Color);
         let bright = px
             .chunks_exact(4)
