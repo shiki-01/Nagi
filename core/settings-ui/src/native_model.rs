@@ -377,6 +377,54 @@ pub fn describe_update(check: &UpdateCheck) -> UpdateOutcome {
     }
 }
 
+/// 設定カテゴリのページの、見出しの下の説明（表示している項目数。`detail` は詳細設定を含むか）
+pub fn category_subtitle(visible: usize, detail: bool) -> String {
+    if detail {
+        format!("{visible} 件の設定項目（詳細設定を含む）")
+    } else {
+        format!("{visible} 件の設定項目")
+    }
+}
+
+/// 更新ページの結果の見出し（状態のバッジ + 短い見出し）。詳しい文言は `text` をそのまま別に出す
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateHeadline {
+    /// 色分け
+    pub badge: crate::native_diag::BadgeKind,
+    /// バッジの文字（色に頼らず文字でも示す）
+    pub label: &'static str,
+    /// 見出し
+    pub title: &'static str,
+}
+
+/// 更新ページの状態（確認中・結果の文言）から、カードに出す見出しを決める。何も無ければ `None`。
+/// 文言は [`describe_update`] などが作るもので、ここでは先頭の言い回しで種類を判断する
+pub fn update_headline(busy: bool, text: &str) -> Option<UpdateHeadline> {
+    use crate::native_diag::BadgeKind::{Info, Neutral, Ng, Ok, Warn};
+    let (badge, label, title) = if busy {
+        (Info, "確認中", "更新を確認しています")
+    } else if text.is_empty() {
+        return None;
+    } else if text.starts_with("最新です") {
+        (Ok, "最新", "最新の版です")
+    } else if text.starts_with("新しい版") && text.contains("取得しました") {
+        (Warn, "適用待ち", "新しい版を適用できます")
+    } else if text.starts_with("新しい版") {
+        (Info, "更新あり", "新しい版があります")
+    } else if text.starts_with("更新の適用を開始") {
+        (Info, "適用中", "更新を適用しています")
+    } else if text.contains("できませんでした") {
+        (Ng, "失敗", "更新に失敗しました")
+    } else {
+        (Neutral, "お知らせ", "更新の状態")
+    };
+    Some(UpdateHeadline {
+        badge,
+        label,
+        title,
+    })
+}
+
 /// ウィンドウメッセージの番号（`WM_APP` = 0x8000 以降）。Win32 層が使う
 pub mod messages {
     /// `WM_APP`
@@ -407,6 +455,8 @@ pub mod ids {
     pub const SIDEBAR_RULE: i32 = 105;
     /// フッターの上の横線
     pub const FOOTER_RULE: i32 = 106;
+    /// サイドバー上部のブランド領域（ロゴ + ワードマーク。オーナードロー）
+    pub const BRAND: i32 = 107;
     /// 「更新を確認」
     pub const UPDATE_CHECK: i32 = 200;
     /// 「更新を適用…」
@@ -439,7 +489,7 @@ pub mod ids {
     pub const TIMER_STATUS: usize = 1;
 
     /// 固定の ID すべて
-    pub const FIXED: [i32; 19] = [
+    pub const FIXED: [i32; 20] = [
         LIST,
         DETAIL_CHECK,
         STATUS,
@@ -447,6 +497,7 @@ pub mod ids {
         CLOSE,
         SIDEBAR_RULE,
         FOOTER_RULE,
+        BRAND,
         UPDATE_CHECK,
         UPDATE_APPLY,
         UPDATE_NOTES,
@@ -468,6 +519,52 @@ mod tests {
     use nagi_protocol::settings::{
         ChoiceOptions, FloatRange, IntRange, SettingChoice, SettingPlatforms,
     };
+
+    #[test]
+    fn category_subtitle_counts_items() {
+        assert_eq!(category_subtitle(5, false), "5 件の設定項目");
+        assert!(category_subtitle(9, true).contains("詳細設定"));
+    }
+
+    #[test]
+    fn update_headline_follows_the_outcome_text() {
+        use crate::native_diag::BadgeKind;
+        let h = |busy, text: &str| update_headline(busy, text);
+        assert_eq!(h(false, ""), None);
+        assert_eq!(h(true, "").map(|x| x.badge), Some(BadgeKind::Info));
+        assert_eq!(
+            h(false, "最新です（0.1.19）。").map(|x| x.badge),
+            Some(BadgeKind::Ok)
+        );
+        assert_eq!(
+            h(false, "新しい版 0.2.0 があります。").map(|x| x.label),
+            Some("更新あり")
+        );
+        assert_eq!(
+            h(
+                false,
+                "新しい版 0.2.0 を取得しました。「更新を適用…」で入れ替えられます。"
+            )
+            .map(|x| x.badge),
+            Some(BadgeKind::Warn)
+        );
+        assert_eq!(
+            h(false, "更新を確認できませんでした: x").map(|x| x.badge),
+            Some(BadgeKind::Ng)
+        );
+        assert_eq!(
+            h(false, "更新を適用できませんでした: x").map(|x| x.badge),
+            Some(BadgeKind::Ng)
+        );
+        assert_eq!(
+            h(false, "更新の適用を開始しました。").map(|x| x.label),
+            Some("適用中")
+        );
+        // 確認中は結果の文言より優先
+        assert_eq!(h(true, "最新です").map(|x| x.label), Some("確認中"));
+        // 文字（ラベル）は必ずある。色だけに頼らない
+        assert!(h(false, "??").is_some_and(|x| !x.label.is_empty()));
+    }
 
     fn item(key: &str, group: &str, kind: SettingKind) -> SettingItem {
         SettingItem {

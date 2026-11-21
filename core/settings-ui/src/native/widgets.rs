@@ -1,5 +1,9 @@
-//! 自前で描くコントロール: トグルスイッチ（チェックボックス）・ボタン・サイドバー・診断の結果のバッジ・
+//! 自前で描くコントロール: トグルスイッチ（チェックボックス）・ボタン・サイドバー・ブランド・診断の結果のバッジ・
 //! ステータス・カードの背景。色と形は OS 非依存の `native_theme`、パレットは `theme`。
+//!
+//! **ちらつき対策**: 部品はすべてメモリ上のバッファに描いてから 1 回の転送で画面に出す（[`buffered`]）。
+//! 標準の `STATIC` / `LISTBOX` も `WM_ERASEBKGND`（背景だけを先に塗る → 文字を重ねる、の 2 段階が見える）を
+//! 止めてサブクラスで描く。
 //!
 //! チェックボックスとボタンは **標準の `BUTTON` クラスのまま**（`BS_AUTOCHECKBOX` / `BS_PUSHBUTTON`）で、
 //! サブクラス化して `WM_PAINT` だけを自前で描く。役割（チェックボックス・ボタン）・名前・状態（チェック）・
@@ -12,6 +16,7 @@ use super::state::State;
 use super::theme::{self, Surface};
 use crate::native_diag::BadgeKind;
 use crate::native_layout::{self as layout, Rect, scale};
+use crate::native_model::ids;
 use crate::native_theme::{
     BADGE_GAP, BADGE_RADIUS, BADGE_W, BUTTON_RADIUS, ButtonStyle, CARD_RADIUS, NAV_RADIUS, Palette,
     Rgb, StatusKind, radius_px, toggle_geometry,
@@ -20,26 +25,34 @@ use std::cell::Cell;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, DrawTextW, EndPaint, GetTextMetricsW, HDC, HFONT, HGDIOBJ, InvalidateRect,
-    PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TEXTMETRICW, TRANSPARENT,
+    DT_WORDBREAK, DrawTextW, EndPaint, FillRect, GetTextMetricsW, HBRUSH, HDC, HFONT, HGDIOBJ,
+    InvalidateRect, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TEXTMETRICW, TRANSPARENT,
 };
-use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::System::SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS};
+use windows::Win32::UI::Controls::{
+    DRAWITEMSTRUCT, ODA_DRAWENTIRE, ODS_FOCUS, ODS_SELECTED, ODT_LISTBOX, ODT_STATIC, WM_MOUSELEAVE,
+};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, IsWindowEnabled, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BM_GETSTATE, BM_SETCHECK, BM_SETSTATE, BST_PUSHED, GetClientRect, LB_GETITEMRECT,
-    LB_ITEMFROMPOINT, SendMessageW, UISF_HIDEFOCUS, WM_ENABLE, WM_ERASEBKGND, WM_GETFONT,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT,
-    WM_QUERYUISTATE, WM_SETFOCUS, WM_UPDATEUISTATE,
+    BM_GETCHECK, BM_GETSTATE, BM_SETCHECK, BM_SETSTATE, BST_PUSHED, DI_NORMAL, DefWindowProcW,
+    DrawIconEx, GWL_STYLE, GetClientRect, GetDlgCtrlID, GetParent, GetWindowLongPtrW, HICON,
+    IMAGE_ICON, LB_GETCARETINDEX, LB_GETCOUNT, LB_GETCURSEL, LB_GETITEMRECT, LB_GETTOPINDEX,
+    LB_ITEMFROMPOINT, LR_SHARED, LoadImageW, SendMessageW, UISF_HIDEFOCUS, WM_CTLCOLORSTATIC,
+    WM_DRAWITEM, WM_ENABLE, WM_ERASEBKGND, WM_GETFONT, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WM_QUERYUISTATE, WM_SETFOCUS, WM_SETTEXT,
+    WM_UPDATEUISTATE,
 };
 
 /// ボタンのサブクラスの識別（コンボボックスのサブクラスとは別の `(関数, ID)` の組なので衝突しない）
 const BUTTON_SUBCLASS_ID: usize = 0x4E41_4731;
 /// サイドバーのサブクラスの識別
 const LIST_SUBCLASS_ID: usize = 0x4E41_4732;
+/// 文字・オーナードローの STATIC のサブクラスの識別
+const STATIC_SUBCLASS_ID: usize = 0x4E41_4733;
 
 thread_local! {
     /// 今マウスが乗っているボタン（0 = なし）
@@ -479,12 +492,12 @@ unsafe extern "system" fn list_proc(
     _data: usize,
 ) -> LRESULT {
     match msg {
-        WM_ERASEBKGND => {
-            let hdc = HDC(std::ptr::without_provenance_mut(wparam.0));
-            let mut rc = RECT::default();
-            let _ = unsafe { GetClientRect(hwnd, &mut rc) };
-            fill_rect(hdc, rect_of(&rc), theme::surface_rgb(Surface::Sidebar));
-            return LRESULT(1);
+        // 背景は塗らない（先に地だけが見えて、次に項目が描かれる、というちらつきになる）。
+        // 全体を `WM_PAINT` で、バッファにまとめて描く
+        WM_ERASEBKGND => return LRESULT(1),
+        WM_PAINT => {
+            paint_list(hwnd);
+            return LRESULT(0);
         }
         WM_MOUSEMOVE => {
             // 下位ワード = 項目の添字、上位ワードが 0 なら領域の内側
@@ -526,6 +539,74 @@ unsafe extern "system" fn list_proc(
         _ => {}
     }
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// サイドバーを描く: 地を塗り、見えている項目ごとに親へ `WM_DRAWITEM` を送る（描く先はバッファ）
+fn paint_list(hwnd: HWND) {
+    let mut ps = PAINTSTRUCT::default();
+    let target = unsafe { BeginPaint(hwnd, &mut ps) };
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut rc) };
+    let r = rect_of(&rc);
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+    let send = |m: u32, w: usize| unsafe { SendMessageW(hwnd, m, Some(WPARAM(w)), None) }.0;
+    let count = send(LB_GETCOUNT, 0) as i32;
+    let top = send(LB_GETTOPINDEX, 0) as i32;
+    let current = send(LB_GETCURSEL, 0) as i32;
+    let caret = send(LB_GETCARETINDEX, 0) as i32;
+    // キーボードで操作していない間は、フォーカスの輪郭を隠す（標準と同じ）
+    let show_focus = unsafe { GetFocus() } == hwnd
+        && (unsafe { SendMessageW(hwnd, WM_QUERYUISTATE, None, None) }.0 as u32 & UISF_HIDEFOCUS)
+            == 0;
+    buffered(target, r.w, r.h, |hdc| {
+        fill_rect(
+            hdc,
+            Rect { x: 0, y: 0, ..r },
+            theme::surface_rgb(Surface::Sidebar),
+        );
+        for index in top.max(0)..count {
+            let mut item = RECT::default();
+            let got = unsafe {
+                SendMessageW(
+                    hwnd,
+                    LB_GETITEMRECT,
+                    Some(WPARAM(index as usize)),
+                    Some(LPARAM(std::ptr::from_mut(&mut item) as isize)),
+                )
+            }
+            .0;
+            if got < 0 || item.top >= rc.bottom {
+                break;
+            }
+            let mut state = 0;
+            if index == current {
+                state |= ODS_SELECTED.0;
+            }
+            if show_focus && index == caret {
+                state |= ODS_FOCUS.0;
+            }
+            let dis = DRAWITEMSTRUCT {
+                CtlType: ODT_LISTBOX,
+                CtlID: ids::LIST as u32,
+                itemID: index as u32,
+                itemAction: ODA_DRAWENTIRE,
+                itemState: windows::Win32::UI::Controls::ODS_FLAGS(state),
+                hwndItem: hwnd,
+                hDC: hdc,
+                rcItem: item,
+                itemData: 0,
+            };
+            unsafe {
+                SendMessageW(
+                    parent,
+                    WM_DRAWITEM,
+                    Some(WPARAM(ids::LIST as usize)),
+                    Some(LPARAM(std::ptr::from_ref(&dis) as isize)),
+                )
+            };
+        }
+    });
+    let _ = unsafe { EndPaint(hwnd, &ps) };
 }
 
 /// マウスが乗っているサイドバーの項目の添字
@@ -596,6 +677,200 @@ pub(super) fn draw_nav_item(hdc: HDC, item: Rect, dpi: u32, fonts: &Fonts, nav: 
             scale(2, dpi).max(1),
         );
     }
+}
+
+// ---- STATIC（文字・オーナードロー）----
+
+/// `STATIC` を、バッファに描くサブクラスにする。`owner_draw` は `SS_OWNERDRAW`（親へ `WM_DRAWITEM` を
+/// 送って描かせる）。そうでなければ文字の STATIC（背景と文字色は親の `WM_CTLCOLORSTATIC` が決める）
+pub(super) fn install_static(hwnd: HWND, owner_draw: bool) {
+    // SAFETY: `static_proc` は 'static。ウィンドウの破棄（WM_NCDESTROY）で外す
+    let _ = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(static_proc),
+            STATIC_SUBCLASS_ID,
+            usize::from(owner_draw),
+        )
+    };
+}
+
+unsafe extern "system" fn static_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    data: usize,
+) -> LRESULT {
+    match msg {
+        // 背景だけを先に塗らない（ちらつきの原因）。`WM_PAINT` が全面を描く
+        WM_ERASEBKGND => return LRESULT(1),
+        WM_PAINT => {
+            paint_static(hwnd, data != 0);
+            return LRESULT(0);
+        }
+        // 標準の STATIC は文字が変わると自分で直接描き直す（バッファを通らない）ので、文字の保存だけを
+        // 既定の処理に任せ、描き直しは `WM_PAINT` に回す
+        WM_SETTEXT => {
+            let result = unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            invalidate(hwnd);
+            return result;
+        }
+        WM_NCDESTROY => {
+            let _ = unsafe { RemoveWindowSubclass(hwnd, Some(static_proc), STATIC_SUBCLASS_ID) };
+        }
+        _ => {}
+    }
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+fn paint_static(hwnd: HWND, owner_draw: bool) {
+    let mut ps = PAINTSTRUCT::default();
+    let target = unsafe { BeginPaint(hwnd, &mut ps) };
+    let mut rc = RECT::default();
+    let _ = unsafe { GetClientRect(hwnd, &mut rc) };
+    let r = rect_of(&rc);
+    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+    buffered(target, r.w, r.h, |hdc| {
+        if owner_draw {
+            let id = unsafe { GetDlgCtrlID(hwnd) };
+            let dis = DRAWITEMSTRUCT {
+                CtlType: ODT_STATIC,
+                CtlID: id as u32,
+                itemID: 0,
+                itemAction: ODA_DRAWENTIRE,
+                itemState: windows::Win32::UI::Controls::ODS_FLAGS(0),
+                hwndItem: hwnd,
+                hDC: hdc,
+                rcItem: rc,
+                itemData: 0,
+            };
+            unsafe {
+                SendMessageW(
+                    parent,
+                    WM_DRAWITEM,
+                    Some(WPARAM(id as usize)),
+                    Some(LPARAM(std::ptr::from_ref(&dis) as isize)),
+                )
+            };
+            return;
+        }
+        // 背景のブラシ・文字色は親に問い合わせる（標準の STATIC と同じ手順。文字色・透過は `hdc` に設定される）
+        let brush = unsafe {
+            SendMessageW(
+                parent,
+                WM_CTLCOLORSTATIC,
+                Some(WPARAM(hdc.0 as usize)),
+                Some(LPARAM(hwnd.0 as isize)),
+            )
+        }
+        .0;
+        if brush != 0 {
+            let b = HBRUSH(std::ptr::without_provenance_mut(brush as usize));
+            unsafe {
+                FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: r.w,
+                        bottom: r.h,
+                    },
+                    b,
+                )
+            };
+        }
+        let font = {
+            let f = unsafe { SendMessageW(hwnd, WM_GETFONT, None, None) }.0;
+            (f != 0).then(|| HFONT(std::ptr::without_provenance_mut(f as usize)))
+        };
+        let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32;
+        let mut flags = DT_NOPREFIX.0;
+        if style & SS_CENTERIMAGE.0 != 0 {
+            flags |= DT_SINGLELINE.0 | DT_VCENTER.0;
+        } else {
+            flags |= DT_WORDBREAK.0;
+        }
+        if style & SS_ENDELLIPSIS.0 != 0 {
+            flags |= DT_END_ELLIPSIS.0;
+        }
+        let text = get_text(hwnd);
+        if text.is_empty() {
+            return;
+        }
+        let mut buf: Vec<u16> = text.encode_utf16().collect();
+        let mut area = win_rect(Rect { x: 0, y: 0, ..r });
+        with_font(hdc, font, || unsafe {
+            DrawTextW(
+                hdc,
+                &mut buf,
+                &mut area,
+                windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(flags),
+            );
+        });
+    });
+    let _ = unsafe { EndPaint(hwnd, &ps) };
+}
+
+// ---- ブランド ----
+
+/// exe に埋め込んだ Nagi のロゴ（リソース ID 1）を `px` 四方で読む。共有アイコンなので破棄しない。
+/// 埋め込まれていなければ `None`（ロゴを描かない）
+fn logo_icon(px: i32) -> Option<HICON> {
+    // MAKEINTRESOURCE(1)
+    let id = windows::core::PCWSTR(std::ptr::without_provenance::<u16>(1));
+    let handle = unsafe {
+        LoadImageW(
+            Some(super::controls::instance()),
+            id,
+            IMAGE_ICON,
+            px,
+            px,
+            LR_SHARED,
+        )
+    }
+    .ok()?;
+    Some(HICON(handle.0))
+}
+
+/// サイドバー上部のブランド領域: Nagi のロゴ + ワードマーク + 補足（「設定 v…」）
+pub(super) fn draw_brand(hdc: HDC, area: Rect, dpi: u32, fonts: &Fonts, caption: &str) {
+    let pal = theme::palette();
+    fill_rect(hdc, area, theme::surface_rgb(Surface::Sidebar));
+    let parts = layout::brand_parts(Rect { x: 0, y: 0, ..area }, dpi);
+    if let Some(icon) = logo_icon(parts.icon.w) {
+        // SAFETY: `icon` は有効な共有アイコン。`hdc` は描画中の有効な DC
+        let _ = unsafe {
+            DrawIconEx(
+                hdc,
+                parts.icon.x,
+                parts.icon.y,
+                icon,
+                parts.icon.w,
+                parts.icon.h,
+                0,
+                None,
+                DI_NORMAL,
+            )
+        };
+    }
+    draw_text(
+        hdc,
+        Some(fonts.section),
+        "Nagi",
+        parts.title,
+        theme::rgb(pal.text),
+        SINGLE,
+    );
+    draw_text(
+        hdc,
+        Some(fonts.normal),
+        caption,
+        parts.caption,
+        theme::rgb(pal.text_secondary),
+        SINGLE,
+    );
 }
 
 // ---- 線・バッジ・ステータス ----
@@ -716,6 +991,27 @@ pub(super) fn draw_status(
 
 // ---- パネル（カードの背景） ----
 
+/// カードのやわらかい影: 少しずつ大きく・薄くした角丸を、下へずらして重ねる（カードの背景はこの上に塗る）
+fn draw_card_shadow(canvas: &Canvas, card: Rect, radius: i32, dpi: u32, alpha: u8) {
+    let black = Rgb(0, 0, 0);
+    // (広がり dp, 下へのずれ dp, 不透明度の割合 /8)
+    for (grow, dy, weight) in [(3, 2, 2u32), (2, 2, 3), (1, 1, 4), (0, 1, 8)] {
+        let g = scale(grow, dpi);
+        let a = (u32::from(alpha) * weight / 8).min(255) as u8;
+        canvas.fill_round_alpha(
+            Rect {
+                x: card.x - g,
+                y: card.y - g + scale(dy, dpi),
+                w: card.w + 2 * g,
+                h: card.h + 2 * g,
+            },
+            radius + g,
+            black,
+            a,
+        );
+    }
+}
+
 /// パネルの `WM_PAINT`: ページの地・カード（薄い枠 + 角丸）・カード内の項目の区切り線。
 /// 部品（STATIC など）は子ウィンドウが自分で描くので、ここは背景だけ
 pub(super) fn paint_panel(st: &State, hwnd: HWND) {
@@ -726,12 +1022,18 @@ pub(super) fn paint_panel(st: &State, hwnd: HWND) {
     let r = rect_of(&rc);
     let dpi = st.dpi.get();
     // 描画中に借用が重なったら（再入）カード無しで描く。次の再描画で直る
-    let (cards, dividers, scroll) = match st.ui.try_borrow() {
+    let (cards, dividers, hero, markers, scroll) = match st.ui.try_borrow() {
         Ok(ui) => match &ui.layout {
-            Some(l) => (l.cards.clone(), l.dividers.clone(), ui.scroll),
-            None => (Vec::new(), Vec::new(), 0),
+            Some(l) => (
+                l.cards.clone(),
+                l.dividers.clone(),
+                l.hero_bar_y,
+                l.markers.clone(),
+                ui.scroll,
+            ),
+            None => (Vec::new(), Vec::new(), None, Vec::new(), 0),
         },
-        Err(_) => (Vec::new(), Vec::new(), 0),
+        Err(_) => (Vec::new(), Vec::new(), None, Vec::new(), 0),
     };
     buffered(target, r.w, r.h, |hdc| {
         let pal = theme::palette();
@@ -744,6 +1046,23 @@ pub(super) fn paint_panel(st: &State, hwnd: HWND) {
         let canvas = Canvas::new(hdc);
         let radius = radius_px(CARD_RADIUS, dpi, pal.decorative);
         let line = scale(1, dpi).max(1);
+        // ページの見出しの上のアクセントの線・節の見出しの左の印
+        let accent = theme::rgb(pal.accent);
+        if let Some(y) = hero {
+            let bar = layout::hero_bar_rect(&cols, y - scroll, dpi);
+            canvas.fill_round(bar, radius_px(bar.h / 2, 96, pal.decorative), accent);
+        }
+        for span in &markers {
+            let mark = layout::section_marker_rect(&cols, *span, dpi);
+            let mark = Rect {
+                y: mark.y - scroll,
+                ..mark
+            };
+            if mark.y + mark.h < 0 || mark.y > r.h {
+                continue;
+            }
+            canvas.fill_round(mark, radius_px(mark.w / 2, 96, pal.decorative), accent);
+        }
         for card in &cards {
             let rect = Rect {
                 x: cols.card_x,
@@ -753,6 +1072,9 @@ pub(super) fn paint_panel(st: &State, hwnd: HWND) {
             };
             if rect.y + rect.h < 0 || rect.y > r.h {
                 continue;
+            }
+            if pal.shadow_alpha > 0 {
+                draw_card_shadow(&canvas, rect, radius, dpi, pal.shadow_alpha);
             }
             canvas.fill_round(rect, radius, theme::rgb(pal.card_bg));
             canvas.stroke_round(rect, radius, theme::rgb(pal.card_border), line);

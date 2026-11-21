@@ -12,16 +12,18 @@ use nagi_windows::theme::{Rgb, SystemColors, ThemeInput};
 use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
-    COLOR_WINDOW, COLOR_WINDOWTEXT, CreateCompatibleDC, CreateFontW, DEFAULT_CHARSET,
-    DEFAULT_PITCH, DeleteDC, DeleteObject, EnumDisplayMonitors, FF_DONTCARE, FW_NORMAL, GetDC,
-    GetMonitorInfoW, GetSysColor, GetTextExtentPoint32W, HDC, HFONT, HGDIOBJ, HMONITOR,
-    MONITORINFO, OUT_DEFAULT_PRECIS, ReleaseDC, SYS_COLOR_INDEX, SelectObject,
+    COLOR_WINDOW, COLOR_WINDOWTEXT, ClientToScreen, CreateCompatibleDC, CreateFontW,
+    DEFAULT_CHARSET, DEFAULT_PITCH, DeleteDC, DeleteObject, EnumDisplayMonitors, FF_DONTCARE,
+    FW_NORMAL, GetDC, GetMonitorInfoW, GetSysColor, GetTextExtentPoint32W, HDC, HFONT, HGDIOBJ,
+    HMONITOR, MONITORINFO, OUT_DEFAULT_PRECIS, ReleaseDC, SYS_COLOR_INDEX, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, GetCursorPos, HCURSOR, HICON, MONITORINFOF_PRIMARY, RegisterClassExW,
+    DefWindowProcW, GUITHREADINFO, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
+    GetWindowRect, HCURSOR, HICON, IsIconic, MONITORINFOF_PRIMARY, RegisterClassExW,
     SPI_GETHIGHCONTRAST, SPI_SETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     SystemParametersInfoW, UnregisterClassW, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WNDCLASS_STYLES,
     WNDCLASSEXW, WNDPROC,
@@ -55,14 +57,65 @@ pub fn from_rect(r: Rect) -> RECT {
     }
 }
 
-/// マウスカーソルの位置（スクリーン座標）。取れなければ原点
-pub fn cursor_position() -> Point {
-    let mut p = POINT::default();
-    if unsafe { GetCursorPos(&mut p) }.is_ok() {
-        Point { x: p.x, y: p.y }
-    } else {
-        Point::default()
+/// このスレッド（なければフォアグラウンドのスレッド）の GUI スレッド情報
+fn gui_thread_info() -> Option<GUITHREADINFO> {
+    for thread in [unsafe { GetCurrentThreadId() }, 0] {
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetGUIThreadInfo(thread, &mut info) }.is_ok() {
+            return Some(info);
+        }
     }
+    None
+}
+
+/// フォーカスウィンドウのキャレット（`GetGUIThreadInfo` の `rcCaret`。クラシックなアプリ向け）の
+/// スクリーン座標の矩形。取れなければ（キャレットを持たないアプリ・ゼロ矩形）`None`
+pub fn gui_caret_rect() -> Option<Rect> {
+    let info = gui_thread_info()?;
+    let hwnd = info.hwndCaret;
+    let rc = info.rcCaret;
+    if hwnd.is_invalid() || (rc.left == rc.right && rc.top == rc.bottom) {
+        return None;
+    }
+    let mut top_left = POINT {
+        x: rc.left,
+        y: rc.top,
+    };
+    let mut bottom_right = POINT {
+        x: rc.right,
+        y: rc.bottom,
+    };
+    // rcCaret は hwndCaret のクライアント座標
+    let ok = unsafe { ClientToScreen(hwnd, &mut top_left) }.as_bool()
+        && unsafe { ClientToScreen(hwnd, &mut bottom_right) }.as_bool();
+    ok.then_some(Rect {
+        left: top_left.x,
+        top: top_left.y,
+        right: bottom_right.x,
+        bottom: bottom_right.y,
+    })
+}
+
+/// フォーカス（なければアクティブ・フォアグラウンド）のウィンドウの矩形（スクリーン座標）。
+/// 最小化されている・取れなければ `None`
+pub fn focus_window_rect() -> Option<Rect> {
+    let info = gui_thread_info();
+    let candidates = [
+        info.map(|i| i.hwndFocus),
+        info.map(|i| i.hwndActive),
+        Some(unsafe { GetForegroundWindow() }),
+    ];
+    candidates.into_iter().flatten().find_map(|hwnd| {
+        if hwnd.is_invalid() || unsafe { IsIconic(hwnd) }.as_bool() {
+            return None;
+        }
+        let mut rc = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut rc) }.ok()?;
+        Some(to_rect(rc))
+    })
 }
 
 /// マウスカーソルの位置（スクリーン座標）。取れなければ `None`

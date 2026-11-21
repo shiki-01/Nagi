@@ -7,8 +7,8 @@
 
 use super::state::{Model, Phase, Role};
 use crate::native_diag::{self, BadgeKind, PlanRow};
-use crate::native_layout::{Gap, RowKind, gap_between, row_in_card};
-use crate::native_model::{FieldView, Page, ids};
+use crate::native_layout::{Gap, RowKind, RowStyle, gap_between, row_in_card};
+use crate::native_model::{FieldView, Page, ids, update_headline};
 
 /// ボタン 1 つの定義（幅は [`crate::native_layout::BUTTON_W`] で全ボタン共通）
 pub(super) struct BtnDef {
@@ -72,6 +72,8 @@ pub(super) struct PageDef {
     pub page: Page,
     /// サイドバーの表示名（ページの見出しにもなる）
     pub title: &'static str,
+    /// 見出しの下の 1 行の説明
+    pub subtitle: &'static str,
     /// 見出しより下の行を組み立てる
     pub build: fn(&Model) -> Vec<RowDef>,
 }
@@ -81,16 +83,19 @@ pub(super) const PAGES: &[PageDef] = &[
     PageDef {
         page: Page::Update,
         title: "更新",
+        subtitle: "Nagi を最新の状態に保ちます。",
         build: update_rows,
     },
     PageDef {
         page: Page::Data,
         title: "データ・ファイル",
+        subtitle: "設定ファイルの場所と、変換の学習データを管理します。",
         build: data_rows,
     },
     PageDef {
         page: Page::Extra(native_diag::PAGE_ID),
         title: native_diag::PAGE_TITLE,
+        subtitle: "この PC での入力・変換・更新の動作を、ボタン一つで確認します。",
         build: diag_rows,
     },
 ];
@@ -105,6 +110,22 @@ pub(super) fn find_page(page: Page) -> Option<&'static PageDef> {
     PAGES.iter().find(|p| p.page == page)
 }
 
+/// 行の見た目の役割。先頭のページの見出しは [`RowStyle::Hero`]（アクセントの線が付く）、節の見出しは
+/// [`RowStyle::Section`]（左にアクセントの印が付く）
+pub(super) fn style_of(row: usize, def: &RowDef) -> RowStyle {
+    match def {
+        RowDef::Text {
+            role: Role::Heading,
+            ..
+        } if row == 0 => RowStyle::Hero,
+        RowDef::Text {
+            role: Role::Section,
+            ..
+        } => RowStyle::Section,
+        _ => RowStyle::Plain,
+    }
+}
+
 /// 行の種類（空きの決定用）
 fn kind_of(def: &RowDef) -> RowKind {
     match def {
@@ -113,8 +134,10 @@ fn kind_of(def: &RowDef) -> RowKind {
         RowDef::Result { .. } => RowKind::Text,
         RowDef::Text { role, .. } => match role {
             Role::Heading => RowKind::Heading,
+            Role::Subtitle => RowKind::Subtitle,
             Role::Section => RowKind::Section,
-            Role::Desc => RowKind::Desc,
+            // 値は直前のラベルに付属する行（説明と同じ詰めた間隔）
+            Role::Desc | Role::Value => RowKind::Desc,
             Role::Error => RowKind::Error,
             _ => RowKind::Text,
         },
@@ -134,10 +157,8 @@ pub(super) fn gap_before(prev: Option<&RowDef>, this: &RowDef) -> Gap {
 fn update_rows(model: &Model) -> Vec<RowDef> {
     let mut rows = vec![
         section("バージョン"),
-        text_row(
-            Role::Title,
-            format!("現在の版: {}", env!("CARGO_PKG_VERSION")),
-        ),
+        text_row(Role::Label, "現在の版"),
+        text_row(Role::Value, env!("CARGO_PKG_VERSION")),
         section("更新"),
     ];
     // 幅の狭いウィンドウでも収まるよう、主要な 2 つを 1 行、リリースノートは次の行に置く
@@ -159,13 +180,16 @@ fn update_rows(model: &Model) -> Vec<RowDef> {
     if model.update.notes_url.is_some() {
         rows.push(button_row(ids::UPDATE_NOTES, "リリースノートを開く", true));
     }
-    let result = if model.update.busy {
-        "確認しています…".to_owned()
-    } else {
-        model.update.text.clone()
-    };
-    if !result.is_empty() {
-        rows.push(text_row(Role::Title, result));
+    // 結果は状態のバッジ（文字つき）+ 見出しにし、詳しい文言は下に説明として添える
+    if let Some(head) = update_headline(model.update.busy, &model.update.text) {
+        rows.push(RowDef::Result {
+            badge: head.badge,
+            label: head.label.to_owned(),
+            title: head.title.to_owned(),
+        });
+        if !model.update.busy && !model.update.text.is_empty() {
+            rows.push(desc(model.update.text.clone()));
+        }
     }
     rows
 }

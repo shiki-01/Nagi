@@ -32,6 +32,8 @@ pub struct LogAnalysis {
     pub uiless: bool,
     /// `dropped non-JSON line`
     pub dropped_non_json: bool,
+    /// インストール・更新の時刻（+120 秒）以前だったため数えなかったエンジン停止の事象の数
+    pub ignored_by_install: usize,
     /// 証拠の行（マーカーに合ったもののうち問題のあるもの。最大 8 行・各 200 文字）
     pub evidence: Vec<String>,
 }
@@ -49,12 +51,41 @@ fn clip(line: &str) -> String {
 
 /// ログ全文を解析する
 pub fn analyze(text: &str) -> LogAnalysis {
+    analyze_with(text, None)
+}
+
+/// インストール・更新の影響期間（インストール時刻の後この秒数まで）
+pub const INSTALL_GRACE_SECS: i64 = 120;
+
+/// `ignore_until`（UNIX 秒）以前のエンジン起動失敗・停止・降格の行を数えずに解析する
+pub fn analyze_with(text: &str, ignore_until: Option<i64>) -> LogAnalysis {
     let mut a = LogAnalysis::default();
     let mut problems: Vec<String> = Vec::new();
     let mut last_stop_ts: Option<&str> = None;
+    let mut last_ignored_ts: Option<&str> = None;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         a.lines += 1;
         let mut problem = false;
+        let is_engine_line = line.contains("launch failed")
+            || line.contains("entering minimal profile")
+            || line.contains("stopped (crash or start failure)");
+        if is_engine_line
+            && let Some(limit) = ignore_until
+            && line
+                .split_whitespace()
+                .next()
+                .and_then(parse_utc)
+                .is_some_and(|t| t <= limit)
+        {
+            if line.contains("stopped (crash or start failure)") {
+                let ts = line.split_whitespace().next().unwrap_or("");
+                if last_ignored_ts != Some(ts) {
+                    a.ignored_by_install += 1;
+                }
+                last_ignored_ts = Some(ts);
+            }
+            continue;
+        }
         if line.contains("[tsf] Activate done") {
             a.activate_done = true;
             if line.contains("langbar=false") {
@@ -110,6 +141,33 @@ pub fn analyze(text: &str) -> LogAnalysis {
     let skip = problems.len().saturating_sub(MAX_EVIDENCE);
     a.evidence = problems.into_iter().skip(skip).collect();
     a
+}
+
+const ENGINE_LOG_MARKERS: [&str; 9] = [
+    "panic",
+    "error",
+    "failed",
+    "異常終了",
+    "loadlibrary",
+    "モデル",
+    "cannot load",
+    "fatal",
+    "exit code",
+];
+
+/// imserver のログから、エラー・起動失敗らしい行を末尾側から最大 `max` 行取り出す。
+/// 既知のマーカーに合う行だけを返す（それ以外は入力内容を含みうるので出さない）
+pub fn engine_log_evidence(text: &str, max: usize) -> Vec<String> {
+    let hits: Vec<String> = text
+        .lines()
+        .filter(|l| {
+            let low = l.to_lowercase();
+            ENGINE_LOG_MARKERS.iter().any(|m| low.contains(m))
+        })
+        .map(clip)
+        .collect();
+    let skip = hits.len().saturating_sub(max);
+    hits.into_iter().skip(skip).collect()
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` を UNIX 秒にする
@@ -195,5 +253,35 @@ mod tests {
         assert_eq!(parse_utc("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_utc("2026-11-21T00:00:00Z"), Some(1_795_219_200));
         assert_eq!(parse_utc("bad"), None);
+    }
+
+    #[test]
+    fn install_time_filters_engine_events() {
+        let text = "\
+2026-11-21T10:34:18Z pid=37280 [engine] stopped (crash or start failure) attempt=20 retry_in_ms=10000
+2026-11-21T10:34:21Z pid=2988 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+2026-11-21T10:34:24Z pid=28992 [engine] entering minimal profile after restarts=5
+2026-11-21T11:13:48Z pid=11484 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+";
+        let all = analyze(text);
+        assert_eq!((all.stopped, all.minimal_entries), (3, 1));
+        let inst = parse_utc("2026-11-21T10:34:30Z").unwrap();
+        let a = analyze_with(text, Some(inst + INSTALL_GRACE_SECS));
+        assert_eq!(
+            (a.stopped, a.minimal_entries, a.ignored_by_install),
+            (1, 0, 2)
+        );
+        assert_eq!(a.evidence.len(), 1);
+        let a = analyze_with(text, Some(parse_utc("2026-11-21T11:13:48Z").unwrap()));
+        assert_eq!((a.stopped, a.ignored_by_install), (0, 3));
+    }
+
+    #[test]
+    fn engine_log_evidence_picks_marker_lines_only() {
+        let text = "hello 私の入力文\nthread panicked at x\nLoadLibrary failed 126\nok\n";
+        let e = engine_log_evidence(text, 10);
+        assert_eq!(e.len(), 2);
+        assert_eq!(engine_log_evidence(text, 1), vec![e[1].clone()]);
+        assert!(engine_log_evidence("nothing", 10).is_empty());
     }
 }

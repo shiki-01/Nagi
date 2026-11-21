@@ -12,10 +12,10 @@ use windows::Win32::Graphics::Gdi::{
     SelectObject,
 };
 use windows::Win32::Graphics::GdiPlus::{
-    FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath,
-    GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath,
-    GdipDeletePen, GdipDrawPath, GdipDrawRectangle, GdipFillEllipse, GdipFillPath,
-    GdipFillRectangle, GdipSetPixelOffsetMode, GdipSetSmoothingMode, GdiplusShutdown,
+    FillModeAlternate, FlushIntentionFlush, GdipAddPathArc, GdipClosePathFigure, GdipCreateFromHDC,
+    GdipCreatePath, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics,
+    GdipDeletePath, GdipDeletePen, GdipDrawPath, GdipDrawRectangle, GdipFillEllipse, GdipFillPath,
+    GdipFillRectangle, GdipFlush, GdipSetPixelOffsetMode, GdipSetSmoothingMode, GdiplusShutdown,
     GdiplusStartup, GdiplusStartupInput, GdiplusStartupOutput, GpBrush, GpGraphics, GpPath, GpPen,
     GpSolidFill, SmoothingModeAntiAlias, Status, UnitPixel,
 };
@@ -81,19 +81,35 @@ impl Canvas {
         Self { hdc, graphics }
     }
 
+    /// GDI+ の描画をその場で反映する。GDI+ は描画をためることがあり、続けて GDI（文字）を同じ `HDC` に
+    /// 描くと順序が入れ替わって、文字が塗りに隠れたりちらついたりするため、描くたびに流す
+    fn flush(&self) {
+        if !self.graphics.is_null() {
+            // SAFETY: `new` で作った有効なグラフィックス
+            unsafe { GdipFlush(self.graphics, FlushIntentionFlush) };
+        }
+    }
+
     /// 塗りつぶし（角丸。`radius` 0 で四角）
     pub fn fill_round(&self, r: Rect, radius: i32, color: Rgb) {
+        self.fill_round_alpha(r, radius, color, 0xFF);
+    }
+
+    /// 不透明度つきの塗りつぶし（影など。GDI+ が無いときは何も描かない）。`alpha` 255 は不透明
+    pub fn fill_round_alpha(&self, r: Rect, radius: i32, color: Rgb, alpha: u8) {
         if r.w <= 0 || r.h <= 0 {
             return;
         }
         if self.graphics.is_null() {
-            self.gdi_round(r, radius, color, color);
+            if alpha == 0xFF {
+                self.gdi_round(r, radius, color, color);
+            }
             return;
         }
         // SAFETY: GDI+ のオブジェクトはこの関数の中で作って壊す
         unsafe {
             let mut fill: *mut GpSolidFill = std::ptr::null_mut();
-            if GdipCreateSolidFill(color.argb(), &mut fill) != Status(0) {
+            if GdipCreateSolidFill(color.argb_alpha(alpha), &mut fill) != Status(0) {
                 return;
             }
             let brush = fill.cast::<GpBrush>();
@@ -112,6 +128,7 @@ impl Canvas {
             }
             GdipDeleteBrush(brush);
         }
+        self.flush();
     }
 
     /// 枠線（`r` の内側に `width` px の線）。角丸・`radius` 0 で四角
@@ -145,6 +162,7 @@ impl Canvas {
             }
             GdipDeletePen(pen);
         }
+        self.flush();
     }
 
     /// 円・楕円の塗りつぶし
@@ -173,6 +191,7 @@ impl Canvas {
             );
             GdipDeleteBrush(brush);
         }
+        self.flush();
     }
 
     // ---- GDI への代替 ----

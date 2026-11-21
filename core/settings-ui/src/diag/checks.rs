@@ -1066,6 +1066,19 @@ pub fn check_function_provider(ctx: &Ctx) -> ItemResult {
 
 /// `tsf.log` を判定する
 pub fn judge_tsf_log(a: &tsflog::LogAnalysis, now_unix: i64) -> ItemResult {
+    judge_tsf_log_at(a, now_unix, None, None)
+}
+
+/// 更新直後に出ることがある旨の案内を出す期間（インストールからの秒数）
+const FRESH_INSTALL_SECS: i64 = 600;
+
+/// `install_unix` はインストール・更新の時刻、`engine_log` は imserver ログの該当行（`None` は未取得）
+pub fn judge_tsf_log_at(
+    a: &tsflog::LogAnalysis,
+    now_unix: i64,
+    install_unix: Option<i64>,
+    engine_log: Option<&[String]>,
+) -> ItemResult {
     let id = ItemId::TsfLog;
     let mut lines = vec![format!("読んだ行数: {}", a.lines)];
     lines.push(format!(
@@ -1080,6 +1093,14 @@ pub fn judge_tsf_log(a: &tsflog::LogAnalysis, now_unix: i64) -> ItemResult {
         "UILess（アプリ側の候補表示）の記録: {}",
         if a.uiless { "あり" } else { "なし" }
     ));
+    if let Some(t) = install_unix {
+        lines.push(format!(
+            "インストール・更新から {} 秒経過。その影響期間（+{} 秒）に起きたエンジン停止の事象: {} 回（数えていません）",
+            (now_unix - t).max(0),
+            tsflog::INSTALL_GRACE_SECS,
+            a.ignored_by_install
+        ));
+    }
     lines.extend(a.evidence.iter().cloned());
     let mut ng: Vec<String> = Vec::new();
     let mut warn: Vec<String> = Vec::new();
@@ -1125,11 +1146,27 @@ pub fn judge_tsf_log(a: &tsflog::LogAnalysis, now_unix: i64) -> ItemResult {
     if a.dropped_non_json {
         warn.push("エンジンの出力に JSON 以外の行が混ざった記録があります".to_owned());
     }
+    let fresh = install_unix.is_some_and(|t| (0..=FRESH_INSTALL_SECS).contains(&(now_unix - t)));
+    let fresh_note = if fresh {
+        " 更新直後は一時的に出ることがあります。Nagi を選び直して数文字入力してから、もう一度診断してください。"
+    } else {
+        ""
+    };
+    if !ng.is_empty() || !warn.is_empty() {
+        match engine_log {
+            Some([]) => lines.push("imserver ログのエラー行: 該当なし".to_owned()),
+            Some(l) => {
+                lines.push("imserver ログのエラー行（末尾）:".to_owned());
+                lines.extend(l.iter().cloned());
+            }
+            None => {}
+        }
+    }
     if !ng.is_empty() {
         return ItemResult::ng(
             id,
             ng.into_iter().chain(warn).collect::<Vec<_>>().join(" / "),
-            "imserver の起動項目（engine.start）と VC++ ランタイム・辞書の項目を確認してください。%LOCALAPPDATA%\\Nagi\\logs の imserver-*.log に理由があります。",
+            format!("imserver の起動項目（engine.start）と VC++ ランタイム・辞書の項目を確認してください。%LOCALAPPDATA%\\Nagi\\logs の imserver-*.log に理由があります。{fresh_note}"),
         )
         .with_evidence(lines);
     }
@@ -1137,7 +1174,7 @@ pub fn judge_tsf_log(a: &tsflog::LogAnalysis, now_unix: i64) -> ItemResult {
         return ItemResult::warn(
             id,
             warn.join(" / "),
-            "再現するときは、Nagi を選び直して数文字入力し、もう一度診断してください。続く場合は tsf.log の該当行を報告してください。",
+            format!("再現するときは、Nagi を選び直して数文字入力し、もう一度診断してください。続く場合は tsf.log の該当行を報告してください。{fresh_note}"),
         )
         .with_evidence(lines);
     }
@@ -1151,6 +1188,50 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+fn mtime_unix(path: &std::path::Path) -> Option<i64> {
+    let m = std::fs::metadata(path).ok()?.modified().ok()?;
+    let d = m.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(d.as_secs() as i64)
+}
+
+/// インストール・更新の時刻（VERSION・TSF DLL の更新時刻の新しい方。取れなければ `None`）
+fn install_unix(ctx: &Ctx) -> Option<i64> {
+    ["VERSION", "nagi_windows_tsf.dll"]
+        .iter()
+        .filter_map(|n| mtime_unix(&ctx.install_dir.join(n)))
+        .max()
+}
+
+/// imserver-*.log（最新 2 ファイル）の末尾から、エラーらしい行を最大 10 行（パスはユーザー名を置換）
+fn read_engine_log_evidence(ctx: &Ctx) -> Option<Vec<String>> {
+    let dir = ctx.log_dir.as_ref()?;
+    let mut files: Vec<(i64, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+            n.starts_with("imserver-") && n.ends_with(".log")
+        })
+        .filter_map(|e| Some((mtime_unix(&e.path())?, e.path())))
+        .collect();
+    files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+    let mut text = String::new();
+    // 古い方から連結して、末尾側（最新）を残す
+    for (_, p) in files.iter().take(2).rev() {
+        if let Ok(b) = std::fs::read(p) {
+            let start = b.len().saturating_sub(64 * 1024);
+            text += &String::from_utf8_lossy(&b[start..]);
+            text.push('\n');
+        }
+    }
+    Some(
+        tsflog::engine_log_evidence(&text, 10)
+            .into_iter()
+            .map(|l| ctx.redact(&l))
+            .collect(),
+    )
+}
+
 /// `tsf.log` 項目
 pub fn check_tsf_log(ctx: &Ctx) -> ItemResult {
     let id = ItemId::TsfLog;
@@ -1158,7 +1239,12 @@ pub fn check_tsf_log(ctx: &Ctx) -> ItemResult {
         return ItemResult::skipped(id, WINDOWS_ONLY);
     }
     match read_tsf_log(ctx) {
-        Some(text) => judge_tsf_log(&tsflog::analyze(&text), now_unix()),
+        Some(text) => {
+            let install = install_unix(ctx);
+            let a = tsflog::analyze_with(&text, install.map(|t| t + tsflog::INSTALL_GRACE_SECS));
+            let engine_log = read_engine_log_evidence(ctx);
+            judge_tsf_log_at(&a, now_unix(), install, engine_log.as_deref())
+        }
         None => ItemResult::warn(
             id,
             "tsf.log がありません（Nagi をまだ一度も選んでいない）",
@@ -1522,6 +1608,46 @@ mod tests {
             judge_tsf_log(&tsflog::analyze(&text), now + 3 * 86400).status,
             Status::Ok
         );
+    }
+
+    #[test]
+    fn tsf_log_real_report_and_install_time() {
+        let text = "\
+2026-11-21T10:34:18Z pid=37280 [engine] stopped (crash or start failure) attempt=20 retry_in_ms=10000
+2026-11-21T10:34:21Z pid=2988 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+2026-11-21T10:34:22Z pid=4100 [engine] stopped (crash or start failure) attempt=3 retry_in_ms=800
+2026-11-21T10:34:24Z pid=28992 [engine] stopped (crash or start failure) attempt=5 retry_in_ms=3200
+2026-11-21T10:34:24Z pid=28992 [engine] entering minimal profile after restarts=5
+2026-11-21T11:13:48Z pid=11484 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+";
+        let now = tsflog::parse_utc("2026-11-21T11:17:00Z").unwrap();
+        // 従来: NG
+        let r = judge_tsf_log(&tsflog::analyze(text), now);
+        assert_eq!(r.status, Status::Ng);
+        // インストール時刻が 11:13:40 → 全事象が影響期間内 → OK、件数は根拠に出る
+        let inst = tsflog::parse_utc("2026-11-21T11:13:40Z").unwrap();
+        let a = tsflog::analyze_with(text, Some(inst + tsflog::INSTALL_GRACE_SECS));
+        let r = judge_tsf_log_at(&a, now, Some(inst), Some(&[]));
+        assert_eq!(r.status, Status::Ok, "{r:?}");
+        assert!(r.evidence.iter().any(|l| l.contains("事象: 5 回")), "{r:?}");
+        // インストールが 10:30 なら 10:34 以降の事象は数える（NG・更新直後ではない）
+        let inst = tsflog::parse_utc("2026-11-21T10:30:00Z").unwrap();
+        let a = tsflog::analyze_with(text, Some(inst + tsflog::INSTALL_GRACE_SECS));
+        let log = vec!["thread panicked".to_owned()];
+        let r = judge_tsf_log_at(&a, now, Some(inst), Some(&log));
+        assert_eq!(r.status, Status::Ng);
+        assert!(!r.advice.as_deref().unwrap().contains("更新直後"));
+        assert!(r.evidence.iter().any(|l| l == "thread panicked"));
+        // 直前（5 分前）のインストールで NG が残る場合は案内が付く
+        let inst = now - 300;
+        let r = judge_tsf_log_at(&tsflog::analyze(text), now, Some(inst), Some(&[]));
+        assert!(
+            r.advice
+                .as_deref()
+                .unwrap()
+                .contains("更新直後は一時的に出ることがあります")
+        );
+        assert!(r.evidence.iter().any(|l| l.contains("該当なし")));
     }
 
     #[test]

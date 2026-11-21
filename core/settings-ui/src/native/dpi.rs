@@ -5,8 +5,8 @@ use crate::native_layout::Rect;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DEFAULT_CHARSET, DeleteObject, GetDC, GetTextFaceW, HFONT, HGDIOBJ,
-    LOGFONTW, ReleaseDC, SelectObject,
+    CLEARTYPE_QUALITY, CreateFontIndirectW, DEFAULT_CHARSET, DeleteObject, GetDC, GetTextFaceW,
+    HFONT, HGDIOBJ, LOGFONTW, ReleaseDC, SelectObject,
 };
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
@@ -31,10 +31,12 @@ use windows::core::PCWSTR;
 pub(super) struct Fonts {
     /// 本文（システムのメッセージフォント。Segoe UI 9pt 相当）
     pub normal: HFONT,
-    /// ページの見出し（本文の 1.6 倍・セミボールド）
+    /// ページの見出し（本文の 1.8 倍・ボールド）
     pub heading: HFONT,
-    /// 節（グループ）の見出し（本文の 1.2 倍・セミボールド）
+    /// 節（グループ）の見出し・値の強調（本文の 1.2 倍・セミボールド）
     pub section: HFONT,
+    /// 設定項目の名前（本文と同じ大きさ・セミボールド）
+    pub label: HFONT,
     /// サイドバーのアイコン（Segoe Fluent Icons / Segoe MDL2 Assets。どちらも無ければ `None`）
     pub icon: Option<HFONT>,
 }
@@ -42,7 +44,7 @@ pub(super) struct Fonts {
 impl Fonts {
     /// 破棄する（コントロールから外してから呼ぶこと）
     pub fn destroy(self) {
-        for f in [self.normal, self.heading, self.section]
+        for f in [self.normal, self.heading, self.section, self.label]
             .into_iter()
             .chain(self.icon)
         {
@@ -122,7 +124,7 @@ pub(super) fn create_fonts(dpi: u32) -> Fonts {
         )
     }
     .is_ok();
-    let normal_font: LOGFONTW = if got && metrics.lfMessageFont.lfHeight != 0 {
+    let mut normal_font: LOGFONTW = if got && metrics.lfMessageFont.lfHeight != 0 {
         metrics.lfMessageFont
     } else {
         LOGFONTW {
@@ -134,19 +136,24 @@ pub(super) fn create_fonts(dpi: u32) -> Fonts {
             ..Default::default()
         }
     };
+    // 文字のなめらかさを明示する。システムのメッセージフォントの `lfQuality` は既定（0）のことがあり、
+    // その場合は描く先（メモリ DC・オーナードロー）によって ClearType が効かずギザギザになりうる
+    normal_font.lfQuality = CLEARTYPE_QUALITY;
     // 見出しは本文と同じ書体（Segoe UI / Segoe UI Variable の既定）の大きさと太さだけを変える
-    let derive = |num: i32, den: i32| -> LOGFONTW {
+    let derive = |num: i32, den: i32, weight: i32| -> LOGFONTW {
         let mut f = normal_font;
         f.lfHeight = (normal_font.lfHeight * num / den).min(-1);
-        f.lfWeight = 600;
+        f.lfWeight = weight;
         f
     };
-    let heading_font = derive(8, 5);
-    let section_font = derive(6, 5);
+    let heading_font = derive(9, 5, 700);
+    let section_font = derive(6, 5, 600);
+    let label_font = derive(1, 1, 600);
     Fonts {
         normal: unsafe { CreateFontIndirectW(&normal_font) },
         heading: unsafe { CreateFontIndirectW(&heading_font) },
         section: unsafe { CreateFontIndirectW(&section_font) },
+        label: unsafe { CreateFontIndirectW(&label_font) },
         icon: create_icon_font(dpi),
     }
 }
@@ -160,6 +167,7 @@ fn create_icon_font(dpi: u32) -> Option<HFONT> {
             lfHeight: -((16 * dpi as i32 + 48) / 96),
             lfWeight: 400,
             lfCharSet: DEFAULT_CHARSET,
+            lfQuality: CLEARTYPE_QUALITY,
             lfFaceName: face_name(face),
             ..Default::default()
         };

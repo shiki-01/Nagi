@@ -27,7 +27,12 @@ impl Rgb {
 
     /// GDI+ の ARGB（不透明）
     pub const fn argb(self) -> u32 {
-        0xFF00_0000 | ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | self.2 as u32
+        self.argb_alpha(0xFF)
+    }
+
+    /// GDI+ の ARGB（不透明度 `alpha`: 0 = 透明、255 = 不透明）。影など、下の色に重ねる描画に使う
+    pub const fn argb_alpha(self, alpha: u8) -> u32 {
+        ((alpha as u32) << 24) | ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | self.2 as u32
     }
 
     /// 相対輝度（WCAG 2.x）
@@ -254,6 +259,8 @@ pub struct Palette {
     pub toggle_off: Color,
     /// フォーカスの輪郭
     pub focus: Color,
+    /// カードの影の濃さ（黒の不透明度 0..=255。0 = 影なし。HC は 0）
+    pub shadow_alpha: u8,
 }
 
 impl Palette {
@@ -298,6 +305,7 @@ impl Palette {
             danger: Color::hex(0xB3261E),
             toggle_off: Color::hex(0x6B6B6B),
             focus: Color::hex(0x1A1A1A),
+            shadow_alpha: 22,
         }
     }
 
@@ -333,6 +341,7 @@ impl Palette {
             danger: Color::hex(0xFF99A4),
             toggle_off: Color::hex(0xA0A0A0),
             focus: Color::hex(0xF2F2F2),
+            shadow_alpha: 90,
         }
     }
 
@@ -368,6 +377,7 @@ impl Palette {
             danger: s(ButtonText),
             toggle_off: s(WindowText),
             focus: s(WindowText),
+            shadow_alpha: 0,
         }
     }
 
@@ -437,6 +447,8 @@ impl Palette {
             ("focus/sidebar", self.focus, self.sidebar_bg, UI),
             ("toggle_off/card", self.toggle_off, self.card_bg, UI),
             ("accent/card", self.accent, self.card_bg, UI),
+            // ページの見出しの下の線・節の見出しの印
+            ("accent/page", self.accent, self.page_bg, UI),
             ("accent/sidebar", self.accent, self.sidebar_bg, UI),
         ];
         for (n, name) in ["normal", "hover", "pressed"].into_iter().enumerate() {
@@ -636,6 +648,19 @@ mod tests {
         let c = Rgb::hex(0x112233);
         assert_eq!(c.colorref(), 0x0033_2211);
         assert_eq!(c.argb(), 0xFF11_2233);
+        assert_eq!(c.argb_alpha(0x40), 0x4011_2233);
+        assert_eq!(c.argb_alpha(0), 0x0011_2233);
+    }
+
+    #[test]
+    fn shadow_is_subtle_and_disabled_in_high_contrast() {
+        let l = Palette::for_theme(ThemeKind::Light);
+        let d = Palette::for_theme(ThemeKind::Dark);
+        let h = Palette::for_theme(ThemeKind::HighContrast);
+        // 見えるが目立たない（0 < alpha <= 25%）。暗い地では黒の影が見えにくいので濃くする
+        assert!(l.shadow_alpha > 0 && l.shadow_alpha <= 64);
+        assert!(d.shadow_alpha > l.shadow_alpha && d.shadow_alpha <= 128);
+        assert_eq!(h.shadow_alpha, 0);
     }
 
     #[test]

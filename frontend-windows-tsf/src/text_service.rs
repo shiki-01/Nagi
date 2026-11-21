@@ -19,11 +19,14 @@ use std::time::{Instant, SystemTime};
 use nagi_protocol::{
     CandidatesView, InputMode, KeyKind, ProcessKeyResult, StatusResult, TouchAction,
 };
-use nagi_windows::anchor_wait::{AnchorWait, ShowDecision, TimerOutcome};
+use nagi_windows::anchor_wait::{
+    AnchorWait, Anchors, LastKnown, LogGate, Placement, ShowDecision, Source, TimerOutcome,
+    tolerance_px, window_corner_anchor,
+};
 use nagi_windows::candidate_style::{
     CandidateStyle, FOCUS_REFRESH_INTERVAL, ModePopupPosition, RefreshGate, SHOW_REFRESH_INTERVAL,
 };
-use nagi_windows::candidates::{CandidatePage, Point, Rect};
+use nagi_windows::candidates::{AnchorSource, CandidatePage, Point, Rect};
 use nagi_windows::context::{build_context, should_report_before_key};
 use nagi_windows::environment::{
     EnvironmentReporter, OverridingProbe, ResumeDetector, ResumeSource,
@@ -271,10 +274,16 @@ pub(crate) struct Core {
     last_rect: Rc<Cell<Option<Rect>>>,
     /// 編集セッション完了後の再測定待ち（`edit::Env::remeasure_pending`）
     remeasure_pending: Rc<Cell<bool>>,
-    /// 候補の表示保留のタイムアウト（H-102 の緩和）
+    /// `caret` の由来（`edit::Env::caret_source`）
+    caret_source: Rc<Cell<Option<AnchorSource>>>,
+    /// composition を始める直前の挿入点（`edit::Env::pre_caret`）
+    pre_caret: Rc<Cell<Option<Rect>>>,
+    /// 候補ウィンドウの位置決めと表示保留（H-102・H-117・H-123）
     anchor_wait: RefCell<AnchorWait>,
-    /// 最後に候補の基準にできた矩形（保留がタイムアウトしたときの表示位置。フォーカスを失うと捨てる）
-    last_anchor: Cell<Option<Rect>>,
+    /// 最後に測れた位置（有効期間つき。composition をまたいで 1 文字目に使う。フォーカス移動で捨てる）
+    last_known: RefCell<LastKnown>,
+    /// 候補の位置のログの間引き
+    anchor_log: RefCell<LogGate>,
     handoff: RefCell<HandoffCache<KeyOutcome>>,
     candidate_window: CandidateWindow,
     toast: ToastWindow,
@@ -354,8 +363,11 @@ impl Core {
             caret: Rc::new(Cell::new(None)),
             last_rect: Rc::new(Cell::new(None)),
             remeasure_pending: Rc::new(Cell::new(false)),
+            caret_source: Rc::new(Cell::new(None)),
+            pre_caret: Rc::new(Cell::new(None)),
             anchor_wait: RefCell::new(AnchorWait::new()),
-            last_anchor: Cell::new(None),
+            last_known: RefCell::new(LastKnown::new()),
+            anchor_log: RefCell::new(LogGate::new()),
             handoff: RefCell::new(HandoffCache::new()),
             candidate_window: CandidateWindow::new(),
             toast: ToastWindow::new(),
@@ -394,14 +406,14 @@ impl Core {
             sink: self.composition_sink.borrow().clone()?,
             atoms: self.atoms.get(),
             caret: Rc::clone(&self.caret),
+            caret_source: Rc::clone(&self.caret_source),
+            pre_caret: Rc::clone(&self.pre_caret),
             client_id: self.client_id.get(),
             last_rect: Rc::clone(&self.last_rect),
             remeasure_pending: Rc::clone(&self.remeasure_pending),
             on_remeasured: Rc::new(move || {
                 if let Some(core) = me.upgrade() {
-                    core.anchor_wait.borrow_mut().finish();
-                    core.note_anchor();
-                    core.candidate_window.reposition(core.caret.get());
+                    core.on_remeasured();
                 }
             }),
             on_composition_change: {
@@ -890,31 +902,109 @@ impl Core {
         };
         // UILess: アプリが自前で描くと答えたら、自前の候補ウィンドウは出さない
         if !self.sync_ui_element(data, &page) {
+            self.anchor_wait.borrow_mut().reset();
             self.candidate_window.hide();
             return;
         }
-        self.note_anchor();
-        // 位置が未確定で再測定待ちなら、マウス位置に出してから動くのを避けて保留する。
-        // ただし期限（`DEFER_TIMEOUT`）を過ぎたら、最後に測れた位置（無ければマウス位置）で出す
+        self.present(&page);
+    }
+
+    /// 候補ウィンドウを出す（位置が測れるまで保留する場合もある）
+    fn present(&self, page: &CandidatePage) {
+        // 位置は `nagi_windows::anchor_wait` が決める（測れた位置 → 最後の既知位置 → GUI キャレット →
+        // フォーカスウィンドウ。マウス位置は使わない）。測れるまでは保留し、上限（`MAX_DEFER`）で出す
+        let anchors = self.anchors();
         let decision = self.anchor_wait.borrow_mut().on_show_request(
             monotonic_now(),
-            self.caret.get(),
+            &anchors,
             self.remeasure_pending.get(),
-            self.last_anchor.get(),
+            self.move_tolerance(),
         );
         match decision {
-            ShowDecision::Show(anchor) => self.candidate_window.show(&page, anchor),
+            ShowDecision::Show(placement) => {
+                self.log_placement(&placement);
+                self.candidate_window.show(page, placement.rect);
+            }
             ShowDecision::Defer { wake_after } => {
-                self.candidate_window.defer(&page);
+                self.candidate_window.defer(page);
                 self.arm_defer_timer(wake_after);
             }
         }
     }
 
-    /// 測れた基準位置を「最後の既知位置」として覚える
-    fn note_anchor(&self) {
-        if let Some(rect) = self.caret.get() {
-            self.last_anchor.set(Some(rect));
+    /// 暫定位置から動かさない差（px）
+    fn move_tolerance(&self) -> i32 {
+        tolerance_px(self.candidate_window.dpi())
+    }
+
+    /// 位置決めの材料を集める。測れた位置があれば、それを最後の既知位置として覚える。
+    /// 測れていないときだけ、暫定位置と最終手段（`GetGUIThreadInfo`・ウィンドウの矩形）を調べる
+    fn anchors(&self) -> Anchors {
+        let now = monotonic_now();
+        let measured = self
+            .caret
+            .get()
+            .zip(self.caret_source.get().and_then(Source::from_measure));
+        let mut anchors = Anchors {
+            measured: measured.map(|(rect, source)| (source, rect)),
+            ..Anchors::default()
+        };
+        if let Some((source, rect)) = anchors.measured {
+            if source.is_measured() {
+                self.last_known.borrow_mut().remember(now, rect);
+            }
+            return anchors;
+        }
+        anchors.last_known = self.last_known.borrow().get(now);
+        anchors.gui_caret = win::gui_caret_rect();
+        anchors.focus_window = win::focus_window_rect().and_then(window_corner_anchor);
+        anchors.screen = win::work_areas()
+            .first()
+            .copied()
+            .and_then(window_corner_anchor);
+        anchors
+    }
+
+    /// 位置のログ（`[cand] anchor=<取得元> …`。1 行 1 事象。最初の表示と取得元の変化だけ。
+    /// 同じ取得元の繰り返しは間引く。矩形の値は出さない）
+    fn log_placement(&self, placement: &Placement) {
+        if !placement.is_event() {
+            return;
+        }
+        let measure = self.caret_source.get().map_or("none", AnchorSource::as_str);
+        let source = placement.source;
+        if !self
+            .anchor_log
+            .borrow_mut()
+            .should_log(monotonic_now(), source)
+        {
+            return;
+        }
+        let detail = match (placement.first_ms, placement.from) {
+            (Some(ms), _) => format!("first_ms={ms}"),
+            (None, from) => format!(
+                "from={} moved={}",
+                from.map_or("none", Source::as_str),
+                placement.moved
+            ),
+        };
+        crate::tsf_log::log(
+            "cand",
+            &format!("anchor={} {detail} measure={measure}", source.as_str()),
+        );
+    }
+
+    /// 再測定の完了。保留中の候補を出す・暫定位置から測れた位置へ（必要なときだけ）動かす
+    fn on_remeasured(&self) {
+        let anchors = self.anchors();
+        let placement = self.anchor_wait.borrow_mut().on_remeasured(
+            monotonic_now(),
+            &anchors,
+            self.move_tolerance(),
+        );
+        if let Some(placement) = placement {
+            self.log_placement(&placement);
+            self.candidate_window.reposition(placement.rect);
         }
     }
 
@@ -926,35 +1016,28 @@ impl Core {
         }
     }
 
-    /// 表示保留のタイマーが鳴った。期限切れなら保留中の候補を最後の既知位置（無ければマウス位置）で出す
+    /// 表示保留のタイマーが鳴った。暫定位置・最終手段の時間になっていれば、保留中の候補を出す
     fn on_defer_timeout(&self) {
-        let outcome = self
-            .anchor_wait
-            .borrow_mut()
-            .on_timer(monotonic_now(), self.last_anchor.get());
+        let anchors = self.anchors();
+        let outcome = self.anchor_wait.borrow_mut().on_timer(
+            monotonic_now(),
+            &anchors,
+            self.remeasure_pending.get(),
+            self.move_tolerance(),
+        );
         match outcome {
             TimerOutcome::Idle => {}
             TimerOutcome::Rearm { wake_after } => self.arm_defer_timer(wake_after),
-            TimerOutcome::Show(anchor) => {
-                crate::tsf_log::log(
-                    "cand",
-                    &format!(
-                        "defer timeout fallback={}",
-                        if anchor.is_some() {
-                            "last-known"
-                        } else {
-                            "mouse"
-                        }
-                    ),
-                );
-                self.candidate_window.reposition(anchor);
+            TimerOutcome::Show(placement) => {
+                self.log_placement(&placement);
+                self.candidate_window.reposition(placement.rect);
             }
         }
     }
 
     /// 候補を閉じる（自前のウィンドウと、UILess の要素）
     fn hide_candidates(&self) {
-        self.anchor_wait.borrow_mut().finish();
+        self.anchor_wait.borrow_mut().reset();
         self.end_ui_element();
         self.candidate_window.hide();
     }
@@ -1023,7 +1106,7 @@ impl Core {
             return;
         };
         if visible {
-            self.candidate_window.show(&page, self.caret.get());
+            self.present(&page);
         } else {
             self.candidate_window.hide();
         }
@@ -1464,6 +1547,7 @@ impl Core {
     }
 
     fn enter_focus(&self) {
+        self.last_known.borrow_mut().clear();
         self.focused.set(true);
         // アプリ別の位置の補正（手編集されるので、フォーカスのたびに読み直す）
         let offset = load_window_offset();
@@ -1482,6 +1566,8 @@ impl Core {
     /// 文書が分からないときの反映先
     fn leave_focus(&self, fallback: Option<ITfContext>) {
         self.focused.set(false);
+        // 最後の既知位置は別の入力欄・別のウィンドウでは意味がない（フォーカス移動で捨てる。H-123）
+        self.last_known.borrow_mut().clear();
         self.ui_less.set(false);
         self.mode_popup.hide();
         crate::e2e_probe::record_event("set_focus", "foreground=false");
@@ -1501,7 +1587,8 @@ impl Core {
         // 前の矩形・再測定待ちを持ち越さない
         self.last_rect.set(None);
         self.remeasure_pending.set(false);
-        self.last_anchor.set(None);
+        self.caret_source.set(None);
+        self.pre_caret.set(None);
         let mut apply_failed = false;
         if let Ok(result) = self.engine.focus_out(&self.session_id) {
             let plan = render::plan_from_result(&result);
@@ -1712,27 +1799,13 @@ impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
 /// 問い合わせるので、`Activate` 前（`core` が無い状態）でも動くこと
 impl ITfFunction_Impl for TextService_Impl {
     fn GetDisplayName(&self) -> Result<BSTR> {
-        Ok(BSTR::from(format!(
-            "{} の設定",
-            crate::guids::PROFILE_DESCRIPTION
-        )))
+        Ok(crate::configure::display_name())
     }
 }
 
 impl ITfFnConfigure_Impl for TextService_Impl {
     fn Show(&self, _hwndparent: HWND, _langid: u16, _rguidprofile: *const GUID) -> Result<()> {
-        guarded(
-            || Err(E_FAIL.into()),
-            || {
-                crate::tsf_log::log("menu", "configure requested");
-                if langbar::open_settings_gui_from_module("configure") {
-                    Ok(())
-                } else {
-                    crate::tsf_log::log("menu", "configure failed (no settings exe)");
-                    Err(E_FAIL.into())
-                }
-            },
-        )
+        crate::configure::show()
     }
 }
 

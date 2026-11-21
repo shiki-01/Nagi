@@ -15,7 +15,7 @@ use std::cell::{Cell, RefCell};
 
 use nagi_windows::candidate_style::{CandidateStyle, row_colors};
 use nagi_windows::candidates::{
-    CandidatePage, LayoutOptions, Point, Rect, Size, WindowLayout, anchor_rect, layout_with,
+    CandidatePage, LayoutOptions, Point, Rect, Size, WindowLayout, layout_with,
     place_window_with_gap, scale_px,
 };
 use nagi_windows::placement::shift_rect;
@@ -41,8 +41,7 @@ use nagi_windows::candidates::FontRole;
 use nagi_windows::theme::Rgb;
 
 use crate::win::{
-    self, Fonts, WindowClass, cursor_position, drop_user_data, into_user_data, user_data_ref, wide,
-    work_areas,
+    self, Fonts, WindowClass, drop_user_data, into_user_data, user_data_ref, wide, work_areas,
 };
 
 /// 影なしのウィンドウクラス
@@ -82,6 +81,8 @@ pub struct CandidateWindow {
     offset: Cell<Point>,
     /// 設定から解決した見た目（次の表示から効く）
     style: Cell<CandidateStyle>,
+    /// 直近の表示で使った DPI（暫定位置から動かさない差の換算用。表示前は 96）
+    last_dpi: Cell<u32>,
     /// 今のウィンドウを影つきのクラスで作ったか
     shadow_class: Cell<bool>,
 }
@@ -102,6 +103,7 @@ impl CandidateWindow {
             deferred: RefCell::new(None),
             offset: Cell::new(Point::default()),
             style: Cell::new(CandidateStyle::default()),
+            last_dpi: Cell::new(96),
             shadow_class: Cell::new(false),
         }
     }
@@ -159,9 +161,14 @@ impl CandidateWindow {
         Some(hwnd)
     }
 
-    /// 候補を表示（または更新）する。`caret` はキャレット（composition）の矩形（スクリーン座標）。
-    /// 取れないときはマウス位置を使う
-    pub fn show(&self, page: &CandidatePage, caret: Option<Rect>) {
+    /// 直近の表示で使った DPI
+    pub fn dpi(&self) -> u32 {
+        self.last_dpi.get()
+    }
+
+    /// 候補を表示（または更新）する。`anchor` は基準にする矩形（スクリーン座標。キャレット・
+    /// composition・それに代わる位置。決め方は `nagi_windows::anchor_wait`。マウス位置は使わない）
+    pub fn show(&self, page: &CandidatePage, anchor: Rect) {
         // ハイコントラストはシステムの色を使い、半透明・角丸・影は使わない
         let mut style = self.style.get();
         if win::theme_input().high_contrast.is_some() {
@@ -171,7 +178,6 @@ impl CandidateWindow {
             return;
         };
         self.deferred.borrow_mut().take();
-        let anchor = anchor_rect(caret, cursor_position());
         // 先に基準位置へ動かして、そこのモニターの DPI を得る（Per-Monitor 対応のホスト向け）
         let _ = unsafe {
             SetWindowPos(
@@ -185,6 +191,7 @@ impl CandidateWindow {
             )
         };
         let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        self.last_dpi.set(dpi);
         // アプリ別の補正（キャレット位置を正しく測れないアプリ向け）。反転の判定も補正後の位置で行う
         let anchor = shift_rect(anchor, self.offset.get(), dpi);
 
@@ -253,7 +260,7 @@ impl CandidateWindow {
 
     /// 再測定で基準が更新された後に位置を合わせる。保留中の表示があればそれを出し、
     /// 表示中ならその位置だけ更新する。どちらでもなければ何もしない
-    pub fn reposition(&self, caret: Option<Rect>) {
+    pub fn reposition(&self, anchor: Rect) {
         let deferred = self.deferred.borrow_mut().take();
         let page = deferred.or_else(|| {
             if !self.visible.get() {
@@ -263,7 +270,7 @@ impl CandidateWindow {
             cell.borrow().as_ref().map(|p| p.page.clone())
         });
         if let Some(page) = page {
-            self.show(&page, caret);
+            self.show(&page, anchor);
         }
     }
 

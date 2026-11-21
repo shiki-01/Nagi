@@ -4,8 +4,10 @@
 //!
 //! 何を出すか・どう切り替えるかは `nagi_windows::status`（`menu_entries` / `toggled` / `button_text`）と
 //! `Core` が決める。ここは COM の受け口と、表示用の `HICON`（Nagi のロゴにモードの文字を載せたアイコン）だけ。
-//! 絵柄は `nagi_windows::icon::render_status`、カラー/モノクロの選択は設定 `windows.indicator_icon`
-//! （`nagi_windows::indicator`。H-115）。
+//! 絵柄は `nagi_windows::icon::compose_status`、カラー/モノクロの選択は設定 `windows.indicator_icon`
+//! （`nagi_windows::indicator`。H-115）。モードの文字は GDI でシステムの日本語 UI フォントの字形を
+//! カバレッジマスクに描いて渡し（`glyph_gdi`）、フォントが無い・GDI が失敗したときだけ手描きストローク
+//! （`icon::stroke_mask`）にする（H-122）。
 //! モードの正はコアで、切り替えは `mode_comp` のコンパートメントへ書く形に統一している
 //! （他のクライアントやトレイの操作と同じ経路。`Core::request_mode`）。
 //!
@@ -197,8 +199,14 @@ impl ITfLangBarItemButton_Impl for Button_Impl {
         // システム DPI に合わせた小アイコンの大きさ（100% で 16px）
         let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) }.max(16);
         let tone = indicator::tone(self.indicator_style(), system_uses_light_theme());
-        let rgba = icon::render_status(size as u32, indicator::glyph(self.mode()), tone);
-        make_icon(&rgba, size)
+        let size = size as u32;
+        let mask = glyph_gdi::render(status::button_text(self.mode()), size)
+            .map(|(hires, side)| {
+                icon::fit_coverage(&hires, side, side, size, icon::fill_ratio(tone))
+            })
+            .unwrap_or_else(|| icon::stroke_mask(size, indicator::glyph(self.mode()), tone));
+        let rgba = icon::compose_status(size, tone, &mask);
+        make_icon(&rgba, size as i32)
     }
 
     fn GetText(&self) -> Result<BSTR> {
@@ -265,6 +273,152 @@ fn system_uses_light_theme() -> Option<bool> {
         )
     };
     (err == ERROR_SUCCESS).then_some(data != 0)
+}
+
+/// モードの文字を、システムの日本語 UI フォントの字形で描く（GDI）。
+/// 結果はカバレッジマスク（0〜255）で、合成と位置決めは `nagi_windows::icon` が行う
+mod glyph_gdi {
+    use std::ffi::c_void;
+
+    use nagi_windows::icon::HIRES_SCALE;
+    use windows::Win32::Foundation::{COLORREF, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS,
+        CreateCompatibleDC, CreateDIBSection, CreateFontW, DEFAULT_PITCH, DIB_RGB_COLORS,
+        DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW,
+        FF_DONTCARE, FW_BOLD, GdiFlush, GetTextFaceW, HDC, HGDIOBJ, OUT_DEFAULT_PRECIS,
+        SHIFTJIS_CHARSET, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    };
+    use windows::core::PCWSTR;
+
+    /// 使うフォント（この順に、実際にその名前で選ばれたものを採る）。
+    /// GDI は無い名前を黙って別のフォントに置き換えるので、選択後に `GetTextFaceW` で確かめる
+    const FACES: [&str; 3] = ["Yu Gothic UI", "Meiryo UI", "MS UI Gothic"];
+
+    /// 破棄時に GDI オブジェクトと DC を解放する
+    struct Cleanup {
+        dc: HDC,
+        objects: Vec<HGDIOBJ>,
+        /// DC に選択していた元のオブジェクト（解放前に戻す）
+        restore: Vec<HGDIOBJ>,
+    }
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            unsafe {
+                // 選んだ順の逆に戻す（最後に元のビットマップが選ばれ、作ったものは全て解放できる）
+                while let Some(old) = self.restore.pop() {
+                    SelectObject(self.dc, old);
+                }
+                for object in self.objects.drain(..) {
+                    let _ = DeleteObject(object);
+                }
+                let _ = DeleteDC(self.dc);
+            }
+        }
+    }
+
+    /// `size` px のアイコン用に `text` を [`HIRES_SCALE`] 倍の大きさで描く。
+    /// 返すのは `(side × side のカバレッジ（行は上から下）, side)`。フォントが無い・GDI が失敗したら `None`
+    pub fn render(text: &str, size: u32) -> Option<(Vec<u8>, u32)> {
+        let side = size.checked_mul(HIRES_SCALE)?;
+        if side == 0 || text.is_empty() {
+            return None;
+        }
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            if dc.is_invalid() {
+                return None;
+            }
+            let mut cleanup = Cleanup {
+                dc,
+                objects: Vec::new(),
+                restore: Vec::new(),
+            };
+            let header = BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: side as i32,
+                biHeight: -(side as i32), // 上から下
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            };
+            let info = BITMAPINFO {
+                bmiHeader: header,
+                ..Default::default()
+            };
+            let mut bits: *mut c_void = std::ptr::null_mut();
+            let bitmap =
+                CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+            cleanup.objects.push(bitmap.into());
+            if bits.is_null() {
+                return None;
+            }
+            cleanup.restore.push(SelectObject(dc, bitmap.into()));
+
+            FACES
+                .iter()
+                .find_map(|face| select_face(&mut cleanup, face, side))?;
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, COLORREF(0x00FF_FFFF));
+            let mut wide: Vec<u16> = text.encode_utf16().collect();
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: side as i32,
+                bottom: side as i32,
+            };
+            if DrawTextW(
+                dc,
+                &mut wide,
+                &mut rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            ) == 0
+            {
+                return None;
+            }
+            let _ = GdiFlush();
+            // 黒地に白で描いたので、緑のチャネルがそのままカバレッジ（B, G, R, X の順）
+            let pixels = std::slice::from_raw_parts(bits.cast::<u8>(), (side * side * 4) as usize);
+            Some((pixels.chunks_exact(4).map(|p| p[1]).collect(), side))
+        }
+    }
+
+    /// `face` のフォントを作って DC へ選ぶ。実際にその名前で選ばれなければ（置き換えられたら）`None`
+    unsafe fn select_face(cleanup: &mut Cleanup, face: &str, side: u32) -> Option<()> {
+        let name: Vec<u16> = face.encode_utf16().chain(std::iter::once(0)).collect();
+        // 文字の高さは外接の四角に余裕を持たせた em の 8 割（位置と大きさは字形の外接で決め直す）
+        let height = -((side * 8 / 10) as i32);
+        let font = unsafe {
+            CreateFontW(
+                height,
+                0,
+                0,
+                0,
+                FW_BOLD.0 as i32,
+                0,
+                0,
+                0,
+                SHIFTJIS_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                ANTIALIASED_QUALITY,
+                DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+                PCWSTR(name.as_ptr()),
+            )
+        };
+        if font.is_invalid() {
+            return None;
+        }
+        cleanup.objects.push(font.into());
+        let old = unsafe { SelectObject(cleanup.dc, font.into()) };
+        cleanup.restore.push(old);
+        let mut actual = [0u16; 64];
+        let len = unsafe { GetTextFaceW(cleanup.dc, Some(&mut actual)) };
+        let actual = String::from_utf16_lossy(&actual[..(len.max(1) as usize - 1).min(63)]);
+        actual.eq_ignore_ascii_case(face).then_some(())
+    }
 }
 
 /// 非乗算の RGBA（行は上から下）から `HICON` を作る。呼び出し側（言語バー）が `DestroyIcon` する前提で、

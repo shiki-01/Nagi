@@ -6,7 +6,7 @@
 use super::dpi::Fonts;
 use crate::native_diag::BadgeKind;
 use crate::native_diag::DiagModel;
-use crate::native_layout::{Gap, PanelLayout, RowSpec};
+use crate::native_layout::{Gap, PanelLayout, RowSpec, RowStyle};
 use crate::native_model::{Page, SettingsView};
 use crate::native_ui_state::UiState;
 use crate::native_worker::WorkerHandle;
@@ -18,14 +18,20 @@ use windows::Win32::Foundation::HWND;
 /// コントロールの役割
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Role {
-    /// ページの見出し（STATIC・大きいセミボールド）
+    /// ページの見出し（STATIC・大きい太字）
     Heading,
-    /// 節（グループ）の見出し（STATIC・セミボールド）。直下のカードの見出し
+    /// ページの見出しの下の 1 行の説明（STATIC・グレー。カードの外）
+    Subtitle,
+    /// 節（グループ）の見出し（STATIC・セミボールド）。直下のカードの見出し。左にアクセントの印が付く
     Section,
     /// 診断項目の結果行（オーナードローの STATIC。状態のバッジ + 項目名。文字は `[状態] 項目名`）
     Result,
     /// 項目名・本文（STATIC）
     Title,
+    /// 設定項目の名前（STATIC・セミボールド）
+    Label,
+    /// 値の強調表示（STATIC・節の見出しと同じ大きさのセミボールド。更新ページの版など）
+    Value,
     /// 真偽値（チェックボックス。トグルスイッチとして描く。項目名を兼ねる）
     Check,
     /// 説明（STATIC・小さめ・グレー）
@@ -80,6 +86,8 @@ pub(super) struct RowFlags {
     pub in_card: bool,
     /// 前の行との間の空き
     pub gap: Gap,
+    /// 行の見た目の役割（見出し・節の見出し）
+    pub style: RowStyle,
 }
 
 /// 今のページのコントロールと配置
@@ -150,6 +158,7 @@ pub(super) struct State {
     pub close: Cell<HWND>,
     pub sidebar_rule: Cell<HWND>,
     pub footer_rule: Cell<HWND>,
+    pub brand: Cell<HWND>,
     pub dpi: Cell<u32>,
     pub fonts: Cell<Option<Fonts>>,
     pub worker: RefCell<Option<WorkerHandle>>,
@@ -179,6 +188,7 @@ impl State {
             close: Cell::default(),
             sidebar_rule: Cell::default(),
             footer_rule: Cell::default(),
+            brand: Cell::default(),
             dpi: Cell::new(96),
             fonts: Cell::new(None),
             worker: RefCell::new(None),

@@ -1,14 +1,14 @@
 //! 右のスクロールパネル: ページの組み立て・配置・スクロール。
 
 use super::controls::{
-    clear_accessible_name, create_child, get_text, send, send_text, set_accessible_name,
+    clear_accessible_name, create_child_hidden, get_text, send, send_text, set_accessible_name,
     set_dark_theme, set_font,
 };
 use super::dpi::Fonts;
 use super::pages::{self, RowDef, text_row};
 use super::state::{Ctl, Ident, Model, ResultInfo, Role, RowFlags, State};
 use super::theme;
-use super::widgets::{BtnKind, install_button};
+use super::widgets::{BtnKind, install_button, install_static};
 use crate::native_diag::BadgeKind;
 use crate::native_layout::{
     self as layout, BUTTON_W, Columns, RowSpec, button_row, clamp_scroll, control_height,
@@ -21,8 +21,8 @@ use crate::native_theme::{
 use nagi_protocol::settings::SettingKind;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    DT_CALCRECT, DT_NOPREFIX, DT_WORDBREAK, DrawTextW, GetDC, HDC, HGDIOBJ, InvalidateRect,
-    ReleaseDC, SelectObject,
+    DT_CALCRECT, DT_NOPREFIX, DT_WORDBREAK, DrawTextW, GetDC, HDC, HGDIOBJ, RDW_ALLCHILDREN,
+    RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, ReleaseDC, SelectObject,
 };
 use windows::Win32::System::SystemServices::{
     SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_LEFT, SS_NOPREFIX, SS_OWNERDRAW,
@@ -34,15 +34,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BM_SETCHECK, BS_AUTOCHECKBOX, BS_MULTILINE, BS_NOTIFY, BS_PUSHBUTTON, BeginDeferWindowPos,
     CB_ADDSTRING, CB_SETCURSEL, CBS_DROPDOWNLIST, DeferWindowPos, DestroyWindow, ES_AUTOHSCROLL,
     EndDeferWindowPos, GetClientRect, GetParent, SB_VERT, SCROLLINFO, SIF_DISABLENOSCROLL,
-    SIF_PAGE, SIF_POS, SIF_RANGE, SWP_NOACTIVATE, SWP_NOZORDER, WS_EX_CLIENTEDGE, WS_TABSTOP,
-    WS_VSCROLL,
+    SIF_PAGE, SIF_POS, SIF_RANGE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOZORDER, ShowWindow,
+    WM_SETREDRAW, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VSCROLL,
 };
 
 /// ロールごとのフォント
 pub(super) fn font_for(fonts: Fonts, role: Role) -> windows::Win32::Graphics::Gdi::HFONT {
     match role {
         Role::Heading => fonts.heading,
-        Role::Section => fonts.section,
+        Role::Section | Role::Value => fonts.section,
+        Role::Label => fonts.label,
         _ => fonts.normal,
     }
 }
@@ -60,9 +61,31 @@ fn page_title(model: &Model) -> String {
     }
 }
 
+/// いまのページの見出しの下の 1 行の説明（無ければ空）。固定ページは定義表の文言、設定カテゴリは項目数
+fn page_subtitle(model: &Model) -> String {
+    match model.page {
+        Page::Category(ci) => model
+            .view
+            .as_ref()
+            .and_then(|v| v.categories.get(ci))
+            .map_or_else(String::new, |c| {
+                crate::native_model::category_subtitle(
+                    c.visible_fields(model.detail).len(),
+                    model.detail,
+                )
+            }),
+        Page::Status => String::new(),
+        page => pages::find_page(page).map_or_else(String::new, |p| p.subtitle.to_owned()),
+    }
+}
+
 /// いまのページの行を作る（先頭はページの見出し）
 fn rows_for(model: &Model) -> Vec<RowDef> {
     let mut rows = vec![text_row(Role::Heading, page_title(model))];
+    let subtitle = page_subtitle(model);
+    if !subtitle.is_empty() {
+        rows.push(text_row(Role::Subtitle, subtitle));
+    }
     match model.page {
         Page::Category(ci) => {
             if let Some(view) = &model.view {
@@ -165,7 +188,11 @@ impl Builder<'_> {
             style |= SS_CENTERIMAGE.0 | SS_ENDELLIPSIS.0;
         }
         let id = self.fresh_id();
-        let hwnd = create_child(self.panel, "STATIC", text, style, 0, id, font);
+        let hwnd = create_child_hidden(self.panel, "STATIC", text, style, 0, id, font);
+        if let Some(hwnd) = hwnd {
+            // 背景と文字をバッファにまとめて描く（ちらつき防止）
+            install_static(hwnd, false);
+        }
         self.add(role, hwnd, id, key, text, 0);
     }
 
@@ -178,7 +205,7 @@ impl Builder<'_> {
     fn result(&mut self, badge: BadgeKind, label: &str, title: &str) {
         let heading = format!("[{label}] {title}");
         let id = self.fresh_id();
-        let hwnd = create_child(
+        let hwnd = create_child_hidden(
             self.panel,
             "STATIC",
             &heading,
@@ -187,6 +214,9 @@ impl Builder<'_> {
             id,
             self.fonts.normal,
         );
+        if let Some(hwnd) = hwnd {
+            install_static(hwnd, true);
+        }
         if self
             .add(Role::Result, hwnd, id, None, &heading, 0)
             .is_some()
@@ -208,7 +238,7 @@ impl Builder<'_> {
         key: Option<&str>,
         width_dp: i32,
     ) -> Option<HWND> {
-        let hwnd = create_child(
+        let hwnd = create_child_hidden(
             self.panel,
             "BUTTON",
             text,
@@ -236,14 +266,14 @@ impl Builder<'_> {
         if matches!(field.kind, SettingKind::Bool) {
             let id = self.fresh_id();
             let title = field.title();
-            let hwnd = create_child(
+            let hwnd = create_child_hidden(
                 self.panel,
                 "BUTTON",
                 &title,
                 BS_AUTOCHECKBOX as u32 | BS_MULTILINE as u32 | BS_NOTIFY as u32 | WS_TABSTOP.0,
                 0,
                 id,
-                self.fonts.normal,
+                self.fonts.label,
             );
             if let Some(hwnd) = hwnd {
                 // 標準のチェックボックスのまま、見た目だけトグルスイッチにする（役割・名前・状態は変わらない）
@@ -255,12 +285,12 @@ impl Builder<'_> {
                 send(hwnd, BM_SETCHECK, 1, 0);
             }
         } else {
-            self.text(Role::Title, &field.title(), Some(key));
+            self.text(Role::Label, &field.title(), Some(key));
             flags.has_input = true;
             let id = self.fresh_id();
             match &field.kind {
                 SettingKind::Choice(_) => {
-                    let hwnd = create_child(
+                    let hwnd = create_child_hidden(
                         self.panel,
                         "COMBOBOX",
                         "",
@@ -282,7 +312,7 @@ impl Builder<'_> {
                 }
                 _ => {
                     let value = field.display_text();
-                    let hwnd = create_child(
+                    let hwnd = create_child_hidden(
                         self.panel,
                         "EDIT",
                         &value,
@@ -397,16 +427,11 @@ pub(super) fn rebuild_page(st: &State) {
         }
         rows_for(&model)
     };
+    // 作り直している間は再描画を止める（壊してから作る途中の姿を見せない）。終わったら一度に描く
+    // 新しい部品は非表示で作り、フォント・位置・サイズが決まってから出す。古い部品は、新しいものを出したあとで壊す
+    let started = std::time::Instant::now();
+    send(panel, WM_SETREDRAW, 0, 0);
     let old = std::mem::take(&mut st.ui.borrow_mut().ctls);
-    for c in old {
-        if matches!(
-            c.role,
-            Role::Edit | Role::Combo | Role::Reset | Role::Button
-        ) {
-            clear_accessible_name(c.hwnd);
-        }
-        let _ = unsafe { DestroyWindow(c.hwnd) };
-    }
     let mut ctls = Vec::new();
     let mut flags = Vec::new();
     {
@@ -423,6 +448,7 @@ pub(super) fn rebuild_page(st: &State) {
             let mut f = builder.row(def);
             f.gap = pages::gap_before(row.checked_sub(1).map(|p| &defs[p]), def);
             f.in_card = pages::in_card(def);
+            f.style = pages::style_of(row, def);
             flags.push(f);
         }
     }
@@ -432,8 +458,52 @@ pub(super) fn rebuild_page(st: &State) {
         ui.flags = flags;
         ui.specs = vec![RowSpec::default(); defs.len()];
     }
+    let count = ctls_len(st);
     relayout(st);
+    // 位置・サイズが確定してから、ページ単位で一度だけ表示する
+    for c in &st.ui.borrow().ctls {
+        let _ = unsafe { ShowWindow(c.hwnd, SW_SHOWNA) };
+    }
+    for c in old {
+        if matches!(
+            c.role,
+            Role::Edit | Role::Combo | Role::Reset | Role::Button
+        ) {
+            clear_accessible_name(c.hwnd);
+        }
+        let _ = unsafe { DestroyWindow(c.hwnd) };
+    }
+    // フォーカスを戻す前に再描画を戻す（見えていないウィンドウにはフォーカスを移せない）
+    send(panel, WM_SETREDRAW, 1, 0);
+    redraw_panel(panel);
     restore_focus(st);
+    log_rebuild(count, started.elapsed());
+}
+
+fn ctls_len(st: &State) -> usize {
+    st.ui.borrow().ctls.len()
+}
+
+/// ページの再構築にかかった時間（デバッグ用。環境変数 `NAGI_SETTINGS_DEBUG` があるときだけ stderr へ。入力内容は含めない）
+fn log_rebuild(count: usize, elapsed: std::time::Duration) {
+    if std::env::var_os("NAGI_SETTINGS_DEBUG").is_some() {
+        eprintln!(
+            "[debug] settings page rebuilt: {count} controls, {:.1} ms",
+            elapsed.as_secs_f64() * 1000.0
+        );
+    }
+}
+
+/// パネルとその子を、その場で一度に描き直す
+fn redraw_panel(panel: HWND) {
+    let _ = unsafe {
+        RedrawWindow(
+            Some(panel),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+        )
+    };
 }
 
 fn restore_focus(st: &State) {
@@ -506,6 +576,7 @@ pub(super) fn relayout(st: &State) {
     let pad = scale(2, dpi);
     // 見出し・節の見出しはカードの外（カードの左端に揃え、カードの幅で折り返す）
     let outer_w = cols.card_w;
+    let section_w = cols.section_w;
     let hdc = unsafe { GetDC(Some(panel)) };
     {
         let mut ui = st.ui.borrow_mut();
@@ -513,19 +584,27 @@ pub(super) fn relayout(st: &State) {
         for (spec, flag) in specs.iter_mut().zip(&ui.flags) {
             spec.gap = flag.gap;
             spec.in_card = flag.in_card;
+            spec.style = flag.style;
         }
         for c in &ui.ctls {
             let flag = ui.flags[c.row];
             let spec = &mut specs[c.row];
             match c.role {
                 Role::Heading => spec.title_h = measure(hdc, fonts.heading, &c.text, outer_w) + pad,
-                Role::Section => spec.title_h = measure(hdc, fonts.section, &c.text, outer_w) + pad,
+                Role::Subtitle => spec.title_h = measure(hdc, fonts.normal, &c.text, outer_w) + pad,
+                Role::Section => {
+                    spec.title_h = measure(hdc, fonts.section, &c.text, section_w) + pad
+                }
+                Role::Value => {
+                    spec.title_h = measure(hdc, fonts.section, &c.text, cols.width) + pad
+                }
                 Role::Result => spec.title_h = control_h,
                 Role::Title => spec.title_h = measure(hdc, fonts.normal, &c.text, cols.width) + pad,
+                Role::Label => spec.title_h = measure(hdc, fonts.label, &c.text, cols.width) + pad,
                 Role::Check => {
                     let h = measure(
                         hdc,
-                        fonts.normal,
+                        fonts.label,
                         &c.text,
                         cols.check_w - toggle_label_offset(dpi),
                     );
@@ -592,14 +671,22 @@ fn place_all(st: &State) {
             let spec = specs[c.row];
             let flag = flags[c.row];
             let (x, y, w, h, content_h) = match c.role {
-                Role::Heading | Role::Section => (
+                Role::Heading | Role::Subtitle => (
                     cols.card_x,
                     rl.title_y,
                     cols.card_w,
                     spec.title_h,
                     spec.title_h,
                 ),
-                Role::Title | Role::Result => {
+                // 左に印を付けるぶん、カードの左端より内側から始める
+                Role::Section => (
+                    cols.section_x,
+                    rl.title_y,
+                    cols.section_w,
+                    spec.title_h,
+                    spec.title_h,
+                ),
+                Role::Title | Role::Label | Role::Value | Role::Result => {
                     (cols.x, rl.title_y, cols.width, spec.title_h, spec.title_h)
                 }
                 Role::Check => (cols.x, rl.title_y, cols.check_w, spec.title_h, spec.title_h),
@@ -666,8 +753,9 @@ fn place_all(st: &State) {
             nTrackPos: 0,
         };
         SetScrollInfo(panel, SB_VERT, &info, true);
-        let _ = InvalidateRect(Some(panel), None, true);
     }
+    // 背景（カード）と子の文字を、同じ回でまとめて描く（別々のタイミングで描くとちらつく）
+    redraw_panel(panel);
 }
 
 /// スクロール位置を設定する（範囲内に丸める）

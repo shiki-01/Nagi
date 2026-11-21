@@ -27,6 +27,7 @@
 //! - [`placement`] — アプリ単位の表示位置の補正（候補ウィンドウ・モード切替ポップアップ）
 //! - [`anchor_wait`] — 候補の表示保留（H-102）のタイムアウト付きステートマシン
 //! - [`process_memory`] — imserver の常駐メモリの診断（型・ログ文言。取得は TSF 層）
+//! - [`registration`] — COM サーバー登録に書く値（ThreadingModel など。H-124）
 //! - [`process`]: 子プロセス（imserver）の stdin/stdout を通信路にする実装
 
 #![warn(missing_docs)]
@@ -50,6 +51,7 @@ pub mod preedit_style;
 pub mod process;
 pub mod process_memory;
 pub mod reconvert;
+pub mod registration;
 pub mod revision;
 pub mod session;
 pub mod status;

@@ -53,6 +53,8 @@ pub mod tsf_log;
 #[cfg(windows)]
 mod candidate_window;
 #[cfg(windows)]
+mod configure;
+#[cfg(windows)]
 mod context_info;
 #[cfg(windows)]
 mod display_attr;

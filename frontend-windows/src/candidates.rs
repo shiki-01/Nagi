@@ -461,6 +461,8 @@ pub enum AnchorSource {
     Range,
     /// 選択範囲（キャレット）
     Caret,
+    /// composition を始める直前に測った挿入点（選択範囲を畳んだ点。1 文字目の位置に使う。H-123）
+    PreCaret,
     /// 今回は測れず、同じ composition で直前に測れた矩形
     Previous,
     /// いずれも測れず、マウス位置
@@ -474,6 +476,7 @@ impl AnchorSource {
             AnchorSource::Start => "start",
             AnchorSource::Range => "range",
             AnchorSource::Caret => "caret",
+            AnchorSource::PreCaret => "pre-caret",
             AnchorSource::Previous => "previous",
             AnchorSource::Mouse => "mouse",
         }
@@ -483,11 +486,14 @@ impl AnchorSource {
 /// 再測定（編集セッション完了後の読み取り）の最大回数。1 回の入力あたり
 pub const MAX_REMEASURE: u32 = 2;
 
-/// 測定の結果、編集セッション完了後に測り直すべきか。マウス位置にフォールバックしていて、
+/// 測定の結果、編集セッション完了後に測り直すべきか。何も測れていない（`Mouse`）か、
+/// composition の位置が測れず開始前の挿入点（`PreCaret`）で代用していて、
 /// composition が続いており、再測定が上限（`MAX_REMEASURE`）に達していないとき。
 /// `attempt` はこれまでの再測定の回数（最初の測定の直後は 0）
 pub fn needs_remeasure(source: AnchorSource, composing: bool, attempt: u32) -> bool {
-    source == AnchorSource::Mouse && composing && attempt < MAX_REMEASURE
+    matches!(source, AnchorSource::Mouse | AnchorSource::PreCaret)
+        && composing
+        && attempt < MAX_REMEASURE
 }
 
 /// 最初の候補表示を、再測定が済むまで遅らせるか。位置が未確定（測れていない）で
@@ -509,6 +515,25 @@ pub fn choose_anchor_or_previous(
             .filter(usable_rect)
             .map(|r| (AnchorSource::Previous, r))
     })
+}
+
+/// `choose_anchor_or_previous` に、composition 開始前の挿入点（`pre`）を足したもの。
+/// 優先順は 先頭の点範囲 → composition 全体 → 開始前の挿入点 → 現在の選択範囲 → 直前の矩形
+pub fn choose_anchor_with_pre(
+    start: Option<Rect>,
+    range: Option<Rect>,
+    pre: Option<Rect>,
+    caret: Option<Rect>,
+    previous: Option<Rect>,
+) -> Option<(AnchorSource, Rect)> {
+    choose_anchor(start, range, None)
+        .or_else(|| pre.filter(usable_rect).map(|r| (AnchorSource::PreCaret, r)))
+        .or_else(|| choose_anchor(None, None, caret))
+        .or_else(|| {
+            previous
+                .filter(usable_rect)
+                .map(|r| (AnchorSource::Previous, r))
+        })
 }
 
 /// 測った矩形として使えるか（ゼロ矩形や高さのない矩形は測定失敗とみなす。
@@ -1014,6 +1039,38 @@ mod tests {
     fn no_work_area_means_no_clamping() {
         let p = place_window(caret(5000, 5000), SIZE, &[]);
         assert_eq!(p.origin, Point { x: 5000, y: 5022 });
+    }
+
+    #[test]
+    fn pre_caret_sits_between_composition_and_current_selection() {
+        let r = |left| Rect {
+            left,
+            top: 20,
+            right: left,
+            bottom: 40,
+        };
+        let (start, pre, caret, prev) = (r(1), r(2), r(3), r(4));
+        assert_eq!(
+            choose_anchor_with_pre(Some(start), None, Some(pre), Some(caret), Some(prev)),
+            Some((AnchorSource::Start, start))
+        );
+        assert_eq!(
+            choose_anchor_with_pre(None, None, Some(pre), Some(caret), Some(prev)),
+            Some((AnchorSource::PreCaret, pre))
+        );
+        assert_eq!(
+            choose_anchor_with_pre(None, None, Some(Rect::default()), Some(caret), Some(prev)),
+            Some((AnchorSource::Caret, caret))
+        );
+        assert_eq!(
+            choose_anchor_with_pre(None, None, None, None, Some(prev)),
+            Some((AnchorSource::Previous, prev))
+        );
+        assert_eq!(choose_anchor_with_pre(None, None, None, None, None), None);
+        assert_eq!(AnchorSource::PreCaret.as_str(), "pre-caret");
+        // 開始前の挿入点で代用しているときは、composition の位置を測り直す
+        assert!(needs_remeasure(AnchorSource::PreCaret, true, 0));
+        assert!(!needs_remeasure(AnchorSource::PreCaret, false, 0));
     }
 
     #[test]

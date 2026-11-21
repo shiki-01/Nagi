@@ -53,17 +53,18 @@ use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_PUSHBUTTON, CB_GETCURSEL, CB_GETDROPPEDSTATE,
-    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW,
-    GetParent, GetScrollInfo, GetWindowLongPtrW, GetWindowRect, HICON, HMENU, IDC_ARROW, IDYES,
-    IsDialogMessageW, IsIconic, IsZoomed, KillTimer, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT,
-    LB_SETCURSEL, LB_SETITEMHEIGHT, LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY,
-    LBS_OWNERDRAWFIXED, LoadCursorW, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, MSG,
-    MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO,
-    SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWNORMAL, SWP_NOACTIVATE,
-    SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_PUSHBUTTON, BeginDeferWindowPos, CB_GETCURSEL,
+    CB_GETDROPPEDSTATE, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
+    DefWindowProcW, DeferWindowPos, DestroyWindow, DispatchMessageW, EndDeferWindowPos,
+    FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW, GetParent, GetScrollInfo,
+    GetWindowLongPtrW, GetWindowRect, HICON, HMENU, IDC_ARROW, IDYES, IsDialogMessageW, IsIconic,
+    IsZoomed, KillTimer, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LB_SETCURSEL,
+    LB_SETITEMHEIGHT, LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, LBS_OWNERDRAWFIXED,
+    LoadCursorW, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, MSG, MessageBoxW, MoveWindow,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO, SIF_TRACKPOS, SW_HIDE,
+    SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER,
+    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
     WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
     WM_ERASEBKGND, WM_GETMINMAXINFO, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_SETICON,
     WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_THEMECHANGED, WM_TIMER, WM_VSCROLL,
@@ -635,6 +636,16 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
         ids::FOOTER_RULE,
         font,
     );
+    // ブランド（ロゴ + ワードマーク）。文字は読み上げ用に持つ。Tab の対象にはならない
+    let brand = create_child(
+        hwnd,
+        "STATIC",
+        &brand_caption(),
+        SS_OWNERDRAW.0 | SS_NOPREFIX.0,
+        0,
+        ids::BRAND,
+        font,
+    );
     let (
         Some(list),
         Some(detail),
@@ -642,6 +653,7 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
         Some(close),
         Some(sidebar_rule),
         Some(footer_rule),
+        Some(brand),
         Ok(panel),
     ) = (
         list,
@@ -650,6 +662,7 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
         close,
         sidebar_rule,
         footer_rule,
+        brand,
         panel,
     )
     else {
@@ -661,10 +674,14 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
     st.close.set(close);
     st.sidebar_rule.set(sidebar_rule);
     st.footer_rule.set(footer_rule);
+    st.brand.set(brand);
     st.panel.set(panel);
 
     // 標準のコントロールのまま、見た目だけ自前で描く（役割・名前・キー操作は標準のまま）
     widgets::install_list(list);
+    for owner_draw in [status, sidebar_rule, footer_rule, brand] {
+        widgets::install_static(owner_draw, true);
+    }
     widgets::install_button(detail, BtnKind::Toggle, false);
     widgets::install_button(close, BtnKind::Push(ButtonStyle::Normal), false);
     if st.model.borrow().detail {
@@ -694,7 +711,8 @@ fn layout_main(st: &State) {
     let mut rect = RECT::default();
     let _ = unsafe { GetClientRect(hwnd, &mut rect) };
     let frame = frame_layout(rect.right - rect.left, rect.bottom - rect.top, st.dpi.get());
-    for (control, r) in [
+    let moves = [
+        (st.brand.get(), frame.brand),
         (st.list.get(), frame.list),
         (st.sidebar_rule.get(), frame.sidebar_rule),
         (st.panel.get(), frame.panel),
@@ -702,8 +720,33 @@ fn layout_main(st: &State) {
         (st.detail.get(), frame.detail_check),
         (st.status.get(), frame.status),
         (st.close.get(), frame.close),
-    ] {
-        let _ = unsafe { MoveWindow(control, r.x, r.y, r.w, r.h, true) };
+    ];
+    // 1 つずつ動かして 1 つずつ再描画すると、途中の状態が見えてちらつく。まとめて動かして一度に描き直す
+    unsafe {
+        let mut deferred = BeginDeferWindowPos(moves.len() as i32).ok();
+        for (control, r) in moves {
+            deferred = deferred.and_then(|h| {
+                DeferWindowPos(
+                    h,
+                    control,
+                    None,
+                    r.x,
+                    r.y,
+                    r.w,
+                    r.h,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+                .ok()
+            });
+        }
+        if let Some(h) = deferred {
+            let _ = EndDeferWindowPos(h);
+        } else {
+            // まとめて動かせなかったら、1 つずつ動かす
+            for (control, r) in moves {
+                let _ = MoveWindow(control, r.x, r.y, r.w, r.h, true);
+            }
+        }
     }
     relayout(st);
 }
@@ -804,6 +847,7 @@ fn on_ctl_color(st: &State, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let pal = theme::palette();
     let (color, surface) = match role_of(st, control) {
         Some(Role::Heading | Role::Section) => (pal.text, Surface::Page),
+        Some(Role::Subtitle) => (pal.text_secondary, Surface::Page),
         Some(Role::Desc | Role::Hint) => (pal.text_secondary, Surface::Card),
         Some(Role::Error) => (pal.error_text, Surface::Card),
         _ => (pal.text, Surface::Card),
@@ -910,6 +954,13 @@ fn draw_item(st: &State, item: &DRAWITEMSTRUCT) -> bool {
             widgets::draw_rule(hdc, area);
             true
         }
+        ids::BRAND => {
+            let Some(fonts) = st.fonts.get() else {
+                return false;
+            };
+            widgets::draw_brand(hdc, area, dpi, &fonts, &brand_caption());
+            true
+        }
         ids::STATUS => {
             let Some(fonts) = st.fonts.get() else {
                 return false;
@@ -942,6 +993,11 @@ fn draw_item(st: &State, item: &DRAWITEMSTRUCT) -> bool {
             true
         }
     }
+}
+
+/// ブランド領域の補足の文字（設定 + 版）
+fn brand_caption() -> String {
+    format!("設定  v{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn widget_text(hwnd: HWND) -> String {

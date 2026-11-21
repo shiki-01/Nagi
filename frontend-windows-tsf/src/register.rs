@@ -74,8 +74,9 @@ fn register_com_server(dll_path: &str) -> Result<()> {
     r?;
 
     let inproc = create_key(HKEY_CLASSES_ROOT, &format!("{base}\\InprocServer32"))?;
-    let r = set_string(inproc, None, dll_path)
-        .and_then(|()| set_string(inproc, Some("ThreadingModel"), "Apartment"));
+    let r = nagi_windows::registration::inproc_server_values(dll_path)
+        .iter()
+        .try_for_each(|(name, value)| set_string(inproc, *name, value));
     let _ = unsafe { RegCloseKey(inproc) };
     r
 }

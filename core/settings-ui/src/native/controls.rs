@@ -49,6 +49,48 @@ pub(super) fn create_child(
     id: i32,
     font: HFONT,
 ) -> Option<HWND> {
+    create_child_with(
+        parent,
+        class,
+        text,
+        style | WS_VISIBLE.0,
+        ex_style,
+        id,
+        font,
+    )
+}
+
+/// 子ウィンドウを非表示で作る。フォント・位置・サイズが決まってから `ShowWindow` で出す
+/// （作った瞬間に (0,0) の既定サイズで描かれて、左上に一瞬見えるのを防ぐ）
+pub(super) fn create_child_hidden(
+    parent: HWND,
+    class: &str,
+    text: &str,
+    style: u32,
+    ex_style: u32,
+    id: i32,
+    font: HFONT,
+) -> Option<HWND> {
+    create_child_with(
+        parent,
+        class,
+        text,
+        style & !WS_VISIBLE.0,
+        ex_style,
+        id,
+        font,
+    )
+}
+
+fn create_child_with(
+    parent: HWND,
+    class: &str,
+    text: &str,
+    style: u32,
+    ex_style: u32,
+    id: i32,
+    font: HFONT,
+) -> Option<HWND> {
     let class = wide(class);
     let text = wide(text);
     let menu = HMENU(std::ptr::without_provenance_mut::<c_void>(id as usize));
@@ -57,7 +99,7 @@ pub(super) fn create_child(
             WINDOW_EX_STYLE(ex_style),
             PCWSTR(class.as_ptr()),
             PCWSTR(text.as_ptr()),
-            WINDOW_STYLE(style | WS_CHILD.0 | WS_VISIBLE.0),
+            WINDOW_STYLE(style | WS_CHILD.0),
             0,
             0,
             10,

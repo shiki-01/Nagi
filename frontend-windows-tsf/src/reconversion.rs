@@ -16,8 +16,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::UI::TextServices::{
     CAND_FINALIZED, IEnumTfCandidates, IEnumTfCandidates_Impl, ITfCandidateList,
-    ITfCandidateList_Impl, ITfCandidateString, ITfCandidateString_Impl, ITfFnReconversion,
-    ITfFnReconversion_Impl, ITfFunction, ITfFunction_Impl, ITfFunctionProvider,
+    ITfCandidateList_Impl, ITfCandidateString, ITfCandidateString_Impl, ITfFnConfigure,
+    ITfFnReconversion, ITfFnReconversion_Impl, ITfFunction, ITfFunction_Impl, ITfFunctionProvider,
     ITfFunctionProvider_Impl, ITfRange, TfCandidateResult,
 };
 use windows::core::{BOOL, BSTR, GUID, IUnknown, Interface, OutRef, Ref, Result, implement};
@@ -238,6 +238,11 @@ impl ITfFunctionProvider_Impl for FunctionProvider_Impl {
             return Err(E_POINTER.into());
         }
         let wanted = unsafe { *riid };
+        // 言語のオプション（設定アプリ）の「オプション」。GUID_NULL / IID_ITfFnConfigure で問い合わせられる
+        if wanted == ITfFnConfigure::IID {
+            let function: ITfFnConfigure = crate::configure::ConfigureFunction.into();
+            return function.cast();
+        }
         if wanted == ITfFnReconversion::IID || wanted == ITfFunction::IID {
             let function: ITfFnReconversion = Reconversion {
                 core: self.core.clone(),

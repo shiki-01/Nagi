@@ -8,9 +8,9 @@
 //!
 //! ```text
 //! +----------+-+--------------------------------------+
-//! | サイドバー |R| パネル（見出し・項目。縦スクロール）      |
-//! |  (list)  |u|                                      |
-//! |          |l|                                      |
+//! | ブランド   |R| パネル（見出し・項目。縦スクロール）      |
+//! | サイドバー |u|                                      |
+//! |  (list)  |l|                                      |
 //! +----------+-+--------------------------------------+  <- フッターの区切り線
 //! | [詳細設定] 状態表示（ステータス）            [閉じる] |
 //! +-----------------------------------------------------+
@@ -55,8 +55,30 @@ pub const RULE_PX: i32 = 1;
 
 /// サイドバーの幅
 const SIDEBAR_W: i32 = 200;
-/// サイドバーの上の余白（項目の上端を見出しの上端に揃える）
-const SIDEBAR_TOP: i32 = 12;
+/// サイドバー上部のブランド領域（ロゴ + ワードマーク）の高さ。一覧はこの下から始まる
+const BRAND_H: i32 = 72;
+/// ブランド領域のロゴの一辺
+const BRAND_ICON: i32 = 32;
+/// ブランド領域の左余白
+const BRAND_PAD: i32 = 20;
+/// ロゴと文字の間隔
+const BRAND_GAP: i32 = 12;
+/// ブランドのワードマーク（Nagi）の行の高さ
+const BRAND_TITLE_H: i32 = 24;
+/// ブランドの補足（設定・版）の行の高さ
+const BRAND_CAPTION_H: i32 = 18;
+/// ページの見出しの上に引くアクセントの線の幅・高さ・見出しまでの間隔
+pub const HERO_BAR_W: i32 = 40;
+/// ページの見出しの上のアクセントの線の高さ
+pub const HERO_BAR_H: i32 = 4;
+/// アクセントの線と見出しの間隔
+const HERO_BAR_GAP: i32 = 12;
+/// 節の見出しの左に付ける印の幅
+pub const SECTION_MARK_W: i32 = 4;
+/// 節の見出しの印と文字の間隔
+const SECTION_MARK_GAP: i32 = 10;
+/// 節の見出しの印の最大の高さ
+const SECTION_MARK_H: i32 = 18;
 /// サイドバー 1 項目の高さ
 pub const SIDEBAR_ITEM_H: i32 = 36;
 /// サイドバー項目の外側の余白（選択の塗りと一覧の端の間）
@@ -133,6 +155,8 @@ pub enum RowKind {
     Heading,
     /// 節の見出し
     Section,
+    /// ページの見出しの下の 1 行の説明
+    Subtitle,
     /// 設定項目
     Field,
     /// 本文
@@ -148,10 +172,11 @@ pub enum RowKind {
 /// 前の行 `prev`（先頭なら `None`）との関係から、`this` の前の空きを決める。
 /// 見出しの直後・節の前・付属する行（見出しの下の説明やボタン、ボタンの連なり）を区別する
 pub fn gap_between(prev: Option<RowKind>, this: RowKind) -> Gap {
-    use RowKind::{Buttons, Desc, Error, Heading, Section, Text};
+    use RowKind::{Buttons, Desc, Error, Heading, Section, Subtitle, Text};
     match (prev, this) {
         (None, _) => Gap::Row,
-        (Some(Heading), _) => Gap::AfterHeading,
+        (Some(Heading), Subtitle) => Gap::Tight,
+        (Some(Heading | Subtitle), _) => Gap::AfterHeading,
         (_, Section) => Gap::Section,
         (Some(Section), _) => Gap::Tight,
         (Some(Text | Desc), Desc | Error) => Gap::Tight,
@@ -160,15 +185,20 @@ pub fn gap_between(prev: Option<RowKind>, this: RowKind) -> Gap {
     }
 }
 
-/// その種類の行をカード（薄い枠 + 角丸の背景）の中に置くか。見出しと節の見出しはカードの外
+/// その種類の行をカード（薄い枠 + 角丸の背景）の中に置くか。見出し・節の見出し・見出しの下の説明はカードの外
 pub fn row_in_card(kind: RowKind) -> bool {
-    !matches!(kind, RowKind::Heading | RowKind::Section)
+    !matches!(
+        kind,
+        RowKind::Heading | RowKind::Section | RowKind::Subtitle
+    )
 }
 
 /// ウィンドウ全体の部品の配置
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLayout {
-    /// 左のサイドバー（ページ一覧）
+    /// サイドバー上部のブランド領域（ロゴ + ワードマーク）
+    pub brand: Rect,
+    /// 左のサイドバー（ページ一覧。ブランド領域の下）
     pub list: Rect,
     /// サイドバーとパネルの間の縦線
     pub sidebar_rule: Rect,
@@ -191,7 +221,7 @@ pub fn frame_layout(client_w: i32, client_h: i32, dpi: u32) -> FrameLayout {
     let side_w = scale(SIDEBAR_W, dpi).min(client_w);
     let footer_h = scale(FOOTER_H, dpi).min(client_h);
     let footer_y = client_h - footer_h;
-    let top = scale(SIDEBAR_TOP, dpi).min(footer_y);
+    let top = scale(BRAND_H, dpi).min(footer_y);
     let rule = RULE_PX.min(client_w - side_w).max(0);
     let panel_x = side_w + rule;
     let ctl_h = control_height(dpi);
@@ -204,6 +234,12 @@ pub fn frame_layout(client_w: i32, client_h: i32, dpi: u32) -> FrameLayout {
     let status_x = (panel_x + scale(PANEL_PAD, dpi)).min(close_x);
     let status_w = (close_x - scale(FOOTER_GAP, dpi) - status_x).max(0);
     FrameLayout {
+        brand: Rect {
+            x: 0,
+            y: 0,
+            w: side_w,
+            h: top,
+        },
         list: Rect {
             x: 0,
             y: top,
@@ -249,6 +285,49 @@ pub fn frame_layout(client_w: i32, client_h: i32, dpi: u32) -> FrameLayout {
     }
 }
 
+/// ブランド領域の部品の位置（px。`brand` 内の座標ではなく `brand` と同じ座標系）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrandParts {
+    /// ロゴ（正方形）
+    pub icon: Rect,
+    /// ワードマーク（Nagi）の行
+    pub title: Rect,
+    /// 補足（設定・版）の行
+    pub caption: Rect,
+}
+
+/// ブランド領域 `brand` から、ロゴ・ワードマーク・補足の位置を求める。ロゴは縦中央、文字の 2 行は
+/// 縦中央に寄せて積む
+pub fn brand_parts(brand: Rect, dpi: u32) -> BrandParts {
+    let icon_px = scale(BRAND_ICON, dpi);
+    let x = brand.x + scale(BRAND_PAD, dpi);
+    let icon = Rect {
+        x,
+        y: brand.y + (brand.h - icon_px) / 2,
+        w: icon_px,
+        h: icon_px,
+    };
+    let text_x = icon.x + icon.w + scale(BRAND_GAP, dpi);
+    let (th, ch) = (scale(BRAND_TITLE_H, dpi), scale(BRAND_CAPTION_H, dpi));
+    let top = brand.y + (brand.h - th - ch) / 2;
+    let w = (brand.x + brand.w - text_x - scale(8, dpi)).max(0);
+    BrandParts {
+        icon,
+        title: Rect {
+            x: text_x,
+            y: top,
+            w,
+            h: th,
+        },
+        caption: Rect {
+            x: text_x,
+            y: top + th,
+            w,
+            h: ch,
+        },
+    }
+}
+
 /// パネル内の列の位置（パネルのクライアント幅から。スクロールバーを除いた幅を渡す）
 ///
 /// すべての項目で、入力欄は同じ左端・同じ幅、「既定に戻す」は同じ右端の列に揃える。
@@ -258,6 +337,10 @@ pub struct Columns {
     pub card_x: i32,
     /// カードの幅（見出しの折り返し幅）
     pub card_w: i32,
+    /// 節の見出しの文字の左端（左に印を付けるため、カードの左端より内側）
+    pub section_x: i32,
+    /// 節の見出しの折り返し幅
+    pub section_w: i32,
     /// 内容の左端（カードの内側）
     pub x: i32,
     /// 内容の幅（ラベル・説明・エラーの折り返し幅。カードの内側）
@@ -287,9 +370,13 @@ pub fn columns(panel_client_w: i32, dpi: u32) -> Columns {
     let gap = scale(HINT_GAP, dpi);
     let hint_x = pad + control_w + gap;
     let reset_x = (pad + width - reset_w).max(hint_x);
+    let card_w = width + 2 * card_pad;
+    let section_off = scale(SECTION_MARK_W, dpi) + scale(SECTION_MARK_GAP, dpi);
     Columns {
         card_x: outer,
-        card_w: width + 2 * card_pad,
+        card_w,
+        section_x: outer + section_off,
+        section_w: (card_w - section_off).max(0),
         x: pad,
         width,
         control_w,
@@ -301,9 +388,23 @@ pub fn columns(panel_client_w: i32, dpi: u32) -> Columns {
     }
 }
 
+/// 行の見た目の役割
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowStyle {
+    /// 通常の行
+    #[default]
+    Plain,
+    /// ページの見出し（先頭の行。上にアクセントの線を引く）
+    Hero,
+    /// 節の見出し（左にアクセントの印を付ける）
+    Section,
+}
+
 /// 1 行（項目 1 つ）の部品の高さ（px。無ければ 0）。折り返しの高さはウィンドウ側が測って渡す
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RowSpec {
+    /// 行の見た目の役割（見出し・節の見出しには装飾の分の余白・印の位置が付く）
+    pub style: RowStyle,
     /// 前の行との間の空き
     pub gap: Gap,
     /// カードの中の行か（連続する行が 1 枚のカードになる）
@@ -353,6 +454,10 @@ pub struct PanelLayout {
     pub cards: Vec<CardSpan>,
     /// カードの中の項目と項目の間に引く薄い区切りの y（項目の間の空きの中央）
     pub dividers: Vec<i32>,
+    /// ページの見出しの上のアクセントの線の上端（[`RowStyle::Hero`] の行があるときだけ）
+    pub hero_bar_y: Option<i32>,
+    /// 節の見出しの印の縦の範囲（[`RowStyle::Section`] の行ごと。内容座標）
+    pub markers: Vec<CardSpan>,
     /// 内容の高さ（上下の余白を含む。スクロール範囲の元）
     pub content_height: i32,
 }
@@ -368,8 +473,15 @@ pub fn layout_rows(rows: &[RowSpec], dpi: u32) -> PanelLayout {
     let mut out = Vec::with_capacity(rows.len());
     let mut cards: Vec<CardSpan> = Vec::new();
     let mut dividers = Vec::new();
+    let mut markers = Vec::new();
+    let mut hero_bar_y = None;
     let mut open: Option<i32> = None;
     for (n, spec) in rows.iter().enumerate() {
+        if n == 0 && spec.style == RowStyle::Hero {
+            // 見出しの上にアクセントの線を置く分だけ下げる
+            hero_bar_y = Some(y);
+            y += scale(HERO_BAR_H, dpi) + scale(HERO_BAR_GAP, dpi);
+        }
         if n > 0 {
             let gap = gap_px(spec.gap, dpi);
             if open.is_some() && spec.in_card {
@@ -397,6 +509,15 @@ pub fn layout_rows(rows: &[RowSpec], dpi: u32) -> PanelLayout {
             at
         };
         let title_y = place(spec.title_h);
+        if spec.style == RowStyle::Section && spec.title_h > 0 {
+            // 印は文字の行の中央に、最大 SECTION_MARK_H の高さで置く
+            let h = spec.title_h.min(scale(SECTION_MARK_H, dpi));
+            let top = title_y + (spec.title_h - h) / 2;
+            markers.push(CardSpan {
+                top,
+                bottom: top + h,
+            });
+        }
         let desc_y = place(spec.desc_h);
         let control_y = place(spec.control_h);
         let error_y = place(spec.error_h);
@@ -423,7 +544,29 @@ pub fn layout_rows(rows: &[RowSpec], dpi: u32) -> PanelLayout {
         rows: out,
         cards,
         dividers,
+        hero_bar_y,
+        markers,
         content_height: y + pad,
+    }
+}
+
+/// ページの見出しの上のアクセントの線（`y` は [`PanelLayout::hero_bar_y`]）
+pub fn hero_bar_rect(cols: &Columns, y: i32, dpi: u32) -> Rect {
+    Rect {
+        x: cols.card_x,
+        y,
+        w: scale(HERO_BAR_W, dpi),
+        h: scale(HERO_BAR_H, dpi),
+    }
+}
+
+/// 節の見出しの左の印（`span` は [`PanelLayout::markers`] の 1 つ）
+pub fn section_marker_rect(cols: &Columns, span: CardSpan, dpi: u32) -> Rect {
+    Rect {
+        x: cols.card_x,
+        y: span.top,
+        w: scale(SECTION_MARK_W, dpi),
+        h: span.bottom - span.top,
     }
 }
 
@@ -632,6 +775,7 @@ mod tests {
             for (w, h) in [(min_w, min_h), (scale(900, dpi), scale(700, dpi))] {
                 let f = frame_layout(w, h, dpi);
                 for r in [
+                    f.brand,
                     f.list,
                     f.sidebar_rule,
                     f.panel,
@@ -685,6 +829,7 @@ mod tests {
         for (w, h) in [(10, 10), (0, 0), (-5, -5), (300, 20)] {
             let f = frame_layout(w, h, 96);
             for r in [
+                f.brand,
                 f.list,
                 f.sidebar_rule,
                 f.panel,
@@ -706,7 +851,14 @@ mod tests {
         }
         for dp in [
             SIDEBAR_W,
-            SIDEBAR_TOP,
+            BRAND_H,
+            BRAND_ICON,
+            BRAND_GAP,
+            BRAND_PAD,
+            HERO_BAR_W,
+            HERO_BAR_H,
+            HERO_BAR_GAP,
+            SECTION_MARK_W,
             SIDEBAR_ITEM_H,
             SIDEBAR_ITEM_INSET,
             SIDEBAR_TEXT_PAD,
@@ -987,5 +1139,114 @@ mod tests {
             assert!(row_in_card(kind), "{kind:?}");
         }
         assert!(!row_in_card(Heading) && !row_in_card(Section));
+    }
+    #[test]
+    fn brand_sits_above_the_list_and_its_parts_fit() {
+        for dpi in DPIS {
+            let (w, h) = initial_client_size(dpi);
+            let f = frame_layout(w, h, dpi);
+            // ブランド領域は一覧の真上（同じ幅・隙間なし）
+            assert_eq!(f.brand.y, 0);
+            assert_eq!(f.brand.w, f.list.w);
+            assert_eq!(f.brand.y + f.brand.h, f.list.y);
+            let p = brand_parts(f.brand, dpi);
+            // ロゴ・2 行の文字は領域の中に収まり、重ならない
+            for r in [p.icon, p.title, p.caption] {
+                assert!(
+                    r.x >= f.brand.x && r.x + r.w <= f.brand.x + f.brand.w,
+                    "{r:?}"
+                );
+                assert!(
+                    r.y >= f.brand.y && r.y + r.h <= f.brand.y + f.brand.h,
+                    "{r:?}"
+                );
+            }
+            assert!(p.icon.x + p.icon.w < p.title.x);
+            assert_eq!(p.title.x, p.caption.x);
+            assert!(p.title.y + p.title.h <= p.caption.y);
+            // ロゴは正方形で縦中央
+            assert_eq!(p.icon.w, p.icon.h);
+            assert_eq!(
+                p.icon.y - f.brand.y,
+                f.brand.h - (p.icon.y - f.brand.y) - p.icon.h
+            );
+            // ブランドの左端は、サイドバー項目の帯の内側（アイコン欄）と揃う
+            let item = sidebar_item_parts(
+                Rect {
+                    x: 0,
+                    y: f.list.y,
+                    w: f.list.w,
+                    h: sidebar_item_height(dpi),
+                },
+                dpi,
+            );
+            assert!(p.icon.x >= item.fill.x);
+            assert!(p.icon.x <= item.icon.x);
+        }
+        let p = brand_parts(Rect::default(), 96);
+        assert!(p.title.w >= 0 && p.caption.w >= 0);
+    }
+
+    #[test]
+    fn hero_heading_reserves_room_for_the_accent_bar() {
+        for dpi in DPIS {
+            let mut rows = sample_rows(dpi);
+            let plain = layout_rows(&rows, dpi);
+            assert_eq!(plain.hero_bar_y, None);
+            rows[0].style = RowStyle::Hero;
+            let hero = layout_rows(&rows, dpi);
+            let y = hero.hero_bar_y.expect("線の位置");
+            let cols = columns(scale(700, dpi), dpi);
+            let bar = hero_bar_rect(&cols, y, dpi);
+            // 線は見出しの上に収まり、見出しとは重ならない。左端はカードの左端
+            assert_eq!(y, scale(PANEL_PAD, dpi));
+            assert!(bar.y + bar.h <= hero.rows[0].title_y);
+            assert_eq!(bar.x, cols.card_x);
+            // 全体はその分だけ下がる
+            assert_eq!(
+                hero.rows[0].top - plain.rows[0].top,
+                scale(HERO_BAR_H, dpi) + scale(HERO_BAR_GAP, dpi)
+            );
+            // 先頭の行以外の Hero は無視
+            let mut later = sample_rows(dpi);
+            later[2].style = RowStyle::Hero;
+            assert_eq!(layout_rows(&later, dpi).hero_bar_y, None);
+        }
+    }
+
+    #[test]
+    fn section_markers_sit_beside_the_section_title() {
+        for dpi in DPIS {
+            let mut rows = card_rows(dpi);
+            rows[0].style = RowStyle::Hero;
+            rows[1].style = RowStyle::Section;
+            rows[5].style = RowStyle::Section;
+            let l = layout_rows(&rows, dpi);
+            assert_eq!(l.markers.len(), 2);
+            let cols = columns(scale(700, dpi), dpi);
+            for (span, row) in l.markers.iter().zip([l.rows[1], l.rows[5]]) {
+                let spec_h = scale(16, dpi);
+                // 印は文字の行の中（縦中央）で、印の高さ > 0
+                assert!(span.top >= row.title_y && span.bottom <= row.title_y + spec_h);
+                assert!(span.bottom > span.top);
+                assert_eq!(span.top - row.title_y, row.title_y + spec_h - span.bottom);
+                let m = section_marker_rect(&cols, *span, dpi);
+                // 印は文字の左（重ならない）で、カードの左端に揃う
+                assert_eq!(m.x, cols.card_x);
+                assert!(m.x + m.w < cols.section_x);
+            }
+            assert!(l.markers[0].bottom < l.markers[1].top);
+            // 節の文字の幅はカードの幅から印の分だけ狭い
+            assert_eq!(cols.section_x + cols.section_w, cols.card_x + cols.card_w);
+        }
+    }
+
+    #[test]
+    fn subtitle_hugs_the_heading_and_stays_outside_cards() {
+        use RowKind::*;
+        assert_eq!(gap_between(Some(Heading), Subtitle), Gap::Tight);
+        assert_eq!(gap_between(Some(Subtitle), Section), Gap::AfterHeading);
+        assert_eq!(gap_between(Some(Subtitle), Field), Gap::AfterHeading);
+        assert!(!row_in_card(Subtitle));
     }
 }

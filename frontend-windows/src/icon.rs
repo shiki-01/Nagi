@@ -9,6 +9,9 @@
 //! - **モード表示つきのアイコン**（[`render_status`]）: タスクバーの入力インジケーター・言語バー用。
 //!   現在のモードの文字（あ / A）だけを大きく描く（水平線・波は描かない）。カラー（ロゴの色の背景に生成り色）と、
 //!   システムのテーマに合わせて白または黒で描くモノクロ（背景なし）がある。
+//!   文字は「カバレッジマスク（size × size の u8）」として受け取って合成する純粋関数（[`compose_status`]）。
+//!   マスクの供給元は、本番では TSF 層が GDI でシステムの日本語 UI フォントから描いたもの（[`fit_coverage`] で縮める）、
+//!   フォントが無い・GDI が失敗したときと Linux のテストでは手描きストローク（[`stroke_mask`]。H-122）。
 //!
 //! ファイルに書き出した `frontend-windows/assets/nagi.ico` はコミットしてあり（設定アプリ・imserver の
 //! exe リソースとセットアップ exe が参照する）、テストが [`encode_ico`] の出力と一致することを確かめる。
@@ -249,19 +252,12 @@ fn glyph_strokes(glyph: ModeGlyph, x: f32, y: f32, w: f32, h: f32) -> Vec<Vec<Pt
         .collect()
 }
 
-/// モード表示つきアイコンの図形（文字だけ。水平線・波は描かない）。
-/// 文字は外接の四角（線の太さを含めて）を背景いっぱいに広げる。カラーは角丸の背景の内側に収め、
-/// モノクロは背景がないので端まで使う
-fn status_shapes(glyph: ModeGlyph, small: bool, tone: Tone) -> Vec<Shape> {
-    let (color, (gx, gy, gw, gh), stroke) = match (tone, small) {
-        (Tone::Color, true) => (SUN, (200.0, 190.0, 624.0, 640.0), 100.0),
-        (Tone::Color, false) => (SUN, (200.0, 190.0, 624.0, 640.0), 88.0),
-        (Tone::Mono(m), true) => (m, (130.0, 120.0, 764.0, 780.0), 110.0),
-        (Tone::Mono(m), false) => (m, (130.0, 120.0, 764.0, 780.0), 96.0),
-    };
-    glyph_strokes(glyph, gx, gy, gw, gh)
+/// 手描きストロークのフォールバック用の図形（白。外接の四角は 1024 座標の (100, 100)〜(900, 900) 付近）。
+/// 線の太さは字形の外接の約 14%（小さい大きさでも潰れない太さ）。位置と大きさは [`fit_coverage`] が決める
+fn stroke_shapes(glyph: ModeGlyph) -> Vec<Shape> {
+    glyph_strokes(glyph, 100.0, 100.0, 800.0, 800.0)
         .into_iter()
-        .map(|pts| Shape::new(pts, stroke, color, 1.0))
+        .map(|pts| Shape::new(pts, 130.0, WHITE, 1.0))
         .collect()
 }
 
@@ -342,12 +338,134 @@ pub fn render_logo(size: u32) -> Vec<u8> {
     rasterize(size, true, &logo_shapes(size <= SMALL_MAX, Tone::Color))
 }
 
-/// モード表示つきアイコンの `size` px 四方の RGBA（行は上から下、非乗算）。
-/// 言語バー・入力インジケーター用で、`size` はシステムの小アイコンの大きさ（16〜）
+/// 文字のカバレッジマスクの作り直し（縮小）に使う、フォントでの描画の倍率（1 辺）。
+/// 供給元（GDI）はこの倍率の大きさで文字を描き、[`fit_coverage`] が `size` px に縮める
+pub const HIRES_SCALE: u32 = 8;
+
+/// 文字の外接の四角が背景（`size` px 四方）に占める割合の上限（長い方の辺）。
+/// カラーは角丸の背景の内側に余白を残し、モノクロは背景がないので少し大きく使う
+pub fn fill_ratio(tone: Tone) -> f32 {
+    match tone {
+        Tone::Color => 0.74,
+        Tone::Mono(_) => 0.78,
+    }
+}
+
+/// 文字の外接を求めるときに、字形とみなすカバレッジの下限（アンチエイリアスの薄い雑音を無視する）
+const BBOX_THRESHOLD: u8 = 16;
+
+/// 大きなカバレッジマスク（`width` × `height`、行は上から下）の字形を、`size` px 四方の
+/// カバレッジマスクに縮める。字形の外接の四角（[`BBOX_THRESHOLD`] 以上の画素）で位置を決める:
+/// 縦横比を保ったまま、長い方の辺が `size * fill` になるよう縮め、四角の中央に置く。
+/// 縮小は面積平均（ボックスフィルタ）。字形が無ければ全て 0
+pub fn fit_coverage(hires: &[u8], width: u32, height: u32, size: u32, fill: f32) -> Vec<u8> {
+    let (w, h, n) = (width as usize, height as usize, size as usize);
+    let mut out = vec![0u8; n * n];
+    if hires.len() < w * h || n == 0 {
+        return out;
+    }
+    // 字形の外接（半開区間）
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            if hires[y * w + x] >= BBOX_THRESHOLD {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return out;
+    }
+    let (bw, bh) = ((x1 - x0) as f32, (y1 - y0) as f32);
+    // 元の 1 画素が出力で何画素になるか
+    let scale = size as f32 * fill / bw.max(bh);
+    let offset_x = (size as f32 - bw * scale) / 2.0;
+    let offset_y = (size as f32 - bh * scale) / 2.0;
+    // 出力の画素 [p, p + 1) に対応する元の区間
+    let source_range = |p: usize, offset: f32, origin: usize| {
+        (
+            origin as f32 + (p as f32 - offset) / scale,
+            origin as f32 + (p as f32 + 1.0 - offset) / scale,
+        )
+    };
+    // 元の画素 i の区間 [i, i + 1) と [lo, hi) の重なり
+    let overlap = |i: usize, lo: f32, hi: f32| (hi.min(i as f32 + 1.0) - lo.max(i as f32)).max(0.0);
+    for py in 0..n {
+        let (sy0, sy1) = source_range(py, offset_y, y0);
+        let (iy0, iy1) = (sy0.floor().max(0.0) as usize, (sy1.ceil() as usize).min(h));
+        for px in 0..n {
+            let (sx0, sx1) = source_range(px, offset_x, x0);
+            let (ix0, ix1) = (sx0.floor().max(0.0) as usize, (sx1.ceil() as usize).min(w));
+            let mut acc = 0.0f32;
+            for iy in iy0..iy1 {
+                let wy = overlap(iy, sy0, sy1);
+                for ix in ix0..ix1 {
+                    acc += f32::from(hires[iy * w + ix]) * wy * overlap(ix, sx0, sx1);
+                }
+            }
+            let area = (sx1 - sx0) * (sy1 - sy0);
+            out[py * n + px] = (acc / area).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// 手描きストロークの字形のカバレッジマスク（`size` × `size`）。フォントが使えないときのフォールバックと、
+/// Linux 上のテストの供給元。[`fit_coverage`] を通すので、位置・大きさの規則はフォント版と同じ
+pub fn stroke_mask(size: u32, glyph: ModeGlyph, tone: Tone) -> Vec<u8> {
+    let big = size * HIRES_SCALE / 2;
+    let alpha: Vec<u8> = rasterize(big, false, &stroke_shapes(glyph))
+        .chunks_exact(4)
+        .map(|p| p[3])
+        .collect();
+    fit_coverage(&alpha, big, big, size, fill_ratio(tone))
+}
+
+/// 文字のカバレッジマスク（`size` × `size`、0〜255）から、モード表示つきアイコンの RGBA
+/// （行は上から下、非乗算）を作る。カラーは藍のグラデーションの角丸の背景に生成り色の文字、
+/// モノクロは背景なしで `Tone::Mono` の単色（濃淡はアルファだけで表す）
+pub fn compose_status(size: u32, tone: Tone, mask: &[u8]) -> Vec<u8> {
+    let pixels = (size * size) as usize;
+    let mut out = match tone {
+        Tone::Color => rasterize(size, true, &[]),
+        Tone::Mono(_) => vec![0u8; pixels * 4],
+    };
+    for (px, &cov) in out
+        .chunks_exact_mut(4)
+        .zip(mask.iter().chain(std::iter::repeat(&0)))
+    {
+        let a = f32::from(cov) / 255.0;
+        match tone {
+            Tone::Color => {
+                if cov == 0 {
+                    continue;
+                }
+                // 背景（非乗算の色 + アルファ）の上に、文字の色をカバレッジで重ねる
+                let bg_a = f32::from(px[3]) / 255.0;
+                let out_a = a + bg_a * (1.0 - a);
+                for (c, fg) in px[..3].iter_mut().zip(SUN) {
+                    let v = (f32::from(fg) * a + f32::from(*c) * bg_a * (1.0 - a)) / out_a;
+                    *c = v.round().clamp(0.0, 255.0) as u8;
+                }
+                px[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+            Tone::Mono(rgb) => {
+                px[..3].copy_from_slice(&rgb);
+                px[3] = cov;
+            }
+        }
+    }
+    out
+}
+
+/// モード表示つきアイコンの `size` px 四方の RGBA（行は上から下、非乗算）。手描きストロークの字形で描く
+/// （フォールバック）。実際のフォントの字形を使うときは、供給元が [`fit_coverage`] で作ったマスクを
+/// [`compose_status`] に渡す。言語バー・入力インジケーター用で、`size` はシステムの小アイコンの大きさ（16〜）
 pub fn render_status(size: u32, glyph: ModeGlyph, tone: Tone) -> Vec<u8> {
-    let small = size <= SMALL_MAX;
-    let shapes = status_shapes(glyph, small, tone);
-    rasterize(size, matches!(tone, Tone::Color), &shapes)
+    compose_status(size, tone, &stroke_mask(size, glyph, tone))
 }
 
 fn push_u16(out: &mut Vec<u8>, v: u16) {
@@ -557,6 +675,172 @@ mod tests {
             .filter(|p| p[3] == 255 && p[0] > 200 && p[1] > 200)
             .count();
         assert!(bright >= 20, "16px の明るい画素 {bright}");
+    }
+
+    /// `min` 以上の画素の外接（半開区間）。無ければ `None`
+    fn mask_bbox(mask: &[u8], size: u32, min: u8) -> Option<(u32, u32, u32, u32)> {
+        let mut b: Option<(u32, u32, u32, u32)> = None;
+        for (i, &v) in mask.iter().enumerate() {
+            if v < min {
+                continue;
+            }
+            let (x, y) = (i as u32 % size, i as u32 / size);
+            b = Some(match b {
+                None => (x, y, x + 1, y + 1),
+                Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+            });
+        }
+        b
+    }
+
+    /// 大きなマスクの `(x, y, w, h)` の長方形を 255 で塗ったもの（400 四方）
+    fn hires_rect(x: usize, y: usize, w: usize, h: usize) -> Vec<u8> {
+        let mut m = vec![0u8; 400 * 400];
+        for yy in y..y + h {
+            for xx in x..x + w {
+                m[yy * 400 + xx] = 255;
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn fit_centers_the_glyph_by_its_bounding_box() {
+        // 左上に偏った縦長の字形でも、外接の四角が中央に来る。長い方の辺が size * fill
+        for &size in &[16u32, 20, 24, 32] {
+            let hires = hires_rect(20, 40, 60, 160);
+            let mask = fit_coverage(&hires, 400, 400, size, 0.75);
+            let (x0, y0, x1, y1) = mask_bbox(&mask, size, 64).expect("字形がある");
+            // 左右・上下の余白は（半画素の誤差で）等しい
+            assert!(x0.abs_diff(size - x1) <= 1, "{size}: 左右 {x0} {x1}");
+            assert!(y0.abs_diff(size - y1) <= 1, "{size}: 上下 {y0} {y1}");
+            let h = (y1 - y0) as f32;
+            assert!(
+                (h - size as f32 * 0.75).abs() <= 1.5,
+                "{size}: 高さ {h} は {} 付近",
+                size as f32 * 0.75
+            );
+            // 縦横比は保たれる（60:160）
+            let w = (x1 - x0) as f32;
+            assert!((w / h - 0.375).abs() < 0.2, "{size}: 比 {}", w / h);
+        }
+    }
+
+    #[test]
+    fn fit_never_overflows_the_tile() {
+        // 全面が字形の四角でも、外周に余白が残る（はみ出さない）
+        for &size in &[16u32, 20, 24, 32, 48] {
+            for tone in [Tone::Color, Tone::Mono([255; 3])] {
+                let hires = vec![255u8; 400 * 400];
+                let mask = fit_coverage(&hires, 400, 400, size, fill_ratio(tone));
+                let (x0, y0, x1, y1) = mask_bbox(&mask, size, 64).unwrap();
+                let side = (x1 - x0).max(y1 - y0) as f32 / size as f32;
+                assert!(
+                    side <= fill_ratio(tone) + 1.5 / size as f32,
+                    "{size}: {side}"
+                );
+                assert!(side >= 0.70, "{size} {tone:?}: 小さすぎる {side}");
+                assert!(
+                    x0 >= 1 && y0 >= 1 && x1 < size && y1 < size,
+                    "{size}: 外周に触れる"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fit_of_an_empty_mask_is_empty() {
+        let mask = fit_coverage(&[0u8; 100], 10, 10, 16, 0.75);
+        assert_eq!(mask, vec![0u8; 256]);
+        // 長さが足りない入力でも落ちない
+        assert_eq!(fit_coverage(&[1, 2], 10, 10, 16, 0.75), vec![0u8; 256]);
+    }
+
+    #[test]
+    fn stroke_fallback_fits_the_same_rule() {
+        for &size in &[16u32, 20, 24, 32] {
+            for glyph in [ModeGlyph::Hiragana, ModeGlyph::Alphanumeric] {
+                for tone in [Tone::Color, Tone::Mono([0; 3])] {
+                    let mask = stroke_mask(size, glyph, tone);
+                    assert_eq!(mask.len(), (size * size) as usize);
+                    let (x0, y0, x1, y1) = mask_bbox(&mask, size, 64).unwrap();
+                    let side = (x1 - x0).max(y1 - y0) as f32 / size as f32;
+                    assert!(
+                        (0.68..=0.78 + 1.5 / size as f32).contains(&side),
+                        "{size} {glyph:?} {tone:?}: {side}"
+                    );
+                    let (a, b, c, d) = mask_bbox(&mask, size, 1).unwrap();
+                    assert!(a >= 1 && b >= 1 && c < size && d < size);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compose_color_blends_the_mask_over_the_tile() {
+        let size = 32;
+        let tile = rasterize(size, true, &[]);
+        // マスクが空なら背景そのまま
+        assert_eq!(compose_status(size, Tone::Color, &[0; 1024]), tile);
+        // 全面 255 なら、不透明な背景の部分は文字の色になる（角の透明は文字色の不透明になる）
+        let full = compose_status(size, Tone::Color, &[255; 1024]);
+        assert_eq!(pixel(&full, size, 16, 16), [0xFF, 0xF3, 0xD6, 0xFF]);
+        // 半分のカバレッジは背景と文字色の中間
+        let half = compose_status(size, Tone::Color, &[128; 1024]);
+        let (h, t) = (pixel(&half, size, 16, 4), pixel(&tile, size, 16, 4));
+        assert_eq!(h[3], 255);
+        assert!(h[0] > t[0] && h[0] < 0xFF, "{h:?} {t:?}");
+    }
+
+    #[test]
+    fn compose_mono_is_single_color_with_mask_as_alpha() {
+        let size = 16;
+        let mask: Vec<u8> = (0..256).map(|i| i as u8).collect();
+        for fg in [[0xFF, 0xFF, 0xFF], [0, 0, 0]] {
+            let px = compose_status(size, Tone::Mono(fg), &mask);
+            for (p, &m) in px.chunks_exact(4).zip(&mask) {
+                assert_eq!(p[3], m);
+                assert_eq!([p[0], p[1], p[2]], fg);
+            }
+        }
+    }
+
+    /// 目視確認用: `NAGI_ICON_FONT_DIR` に `<名前>.gray`（先頭 8 バイトが幅・高さの u32 LE、続いて 8bit グレースケール）が
+    /// あれば、[`fit_coverage`] → [`compose_status`] を通して `<名前>_<トーン>_<大きさ>.rgba` を `NAGI_ICON_DUMP_DIR` へ書く
+    /// （フォントで描いた字形の縮小と合成の確認。本番の供給元は TSF 層の GDI）
+    #[test]
+    fn dump_font_glyphs_for_visual_check() {
+        let (Some(src), Some(dst)) = (
+            std::env::var_os("NAGI_ICON_FONT_DIR"),
+            std::env::var_os("NAGI_ICON_DUMP_DIR"),
+        ) else {
+            return;
+        };
+        let dst = std::path::PathBuf::from(dst);
+        std::fs::create_dir_all(&dst).unwrap();
+        for entry in std::fs::read_dir(src).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "gray") {
+                continue;
+            }
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let data = std::fs::read(&path).unwrap();
+            let (w, h) = (u32_at(&data, 0), u32_at(&data, 4));
+            for &size in &[16u32, 20, 24, 32] {
+                for (tone_name, tone) in [
+                    ("color", Tone::Color),
+                    ("white", Tone::Mono([255; 3])),
+                    ("black", Tone::Mono([0; 3])),
+                ] {
+                    let mask = fit_coverage(&data[8..], w, h, size, fill_ratio(tone));
+                    std::fs::write(
+                        dst.join(format!("{name}_{tone_name}_{size}.rgba")),
+                        compose_status(size, tone, &mask),
+                    )
+                    .unwrap();
+                }
+            }
+        }
     }
 
     /// 書き出し済みの `assets/nagi.ico` が、いまの絵柄から生成したものと一致する。

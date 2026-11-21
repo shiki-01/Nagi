@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nagi_protocol::ProcessKeyResult;
-use nagi_windows::candidates::{AnchorSource, Rect, choose_anchor_or_previous, needs_remeasure};
+use nagi_windows::candidates::{AnchorSource, Rect, choose_anchor_with_pre, needs_remeasure};
 use nagi_windows::preedit_style::AttrRun;
 use nagi_windows::reconvert::{RECONVERT_READ_LIMIT, eligible_text};
 use windows::Win32::Foundation::{E_FAIL, FALSE, RECT};
@@ -42,6 +42,11 @@ pub struct Env {
     pub atoms: Option<AttrAtoms>,
     /// 直近に測った composition（なければキャレット）の矩形（スクリーン座標）。候補ウィンドウの基準
     pub caret: Rc<Cell<Option<Rect>>>,
+    /// `caret` の由来（測れていなければ `None`。候補の位置のログと取得元の判定に使う）
+    pub caret_source: Rc<Cell<Option<AnchorSource>>>,
+    /// composition を始める直前に測った挿入点（選択範囲を畳んだ点）。1 文字目の位置に使う（H-123）。
+    /// composition が無くなったら捨てる
+    pub pre_caret: Rc<Cell<Option<Rect>>>,
     /// TSF のクライアント ID（再測定の編集セッションを要求するのに使う）
     pub client_id: u32,
     /// 同じ composition で直前に測れた矩形。composition の開始・終了とフォーカスの変更で捨てる
@@ -323,9 +328,17 @@ pub fn measure_selection_rect(
     })
 }
 
+/// 選択範囲を先頭で畳んだ点（挿入点）の矩形。composition を始める直前の位置に使う
+fn collapsed_selection_rect(context: &ITfContext, ec: u32) -> Option<Rect> {
+    let point = selection_range(context, ec).ok()?;
+    unsafe { point.Collapse(ec, TF_ANCHOR_START) }.ok()?;
+    text_ext(context, ec, &point)
+}
+
 /// 候補ウィンドウの基準を測って `env.caret` に入れ、由来を返す。composition があれば入力部分の左端
-/// （先頭の点範囲 → composition 全体）、なければ（または測れなければ）選択範囲（キャレット）、
-/// それも測れなければ同じ composition で直前に測れた矩形。どれも無ければ `None`（マウス位置になる）
+/// （先頭の点範囲 → composition 全体）、測れなければ composition を始める直前の挿入点、
+/// 現在の選択範囲（キャレット）、同じ composition で直前に測れた矩形の順。
+/// どれも無ければ `Mouse`（測れていない。位置は呼び出し側が `anchor_wait` で決める）
 fn measure_caret(context: &ITfContext, ec: u32, env: &Env) -> AnchorSource {
     let current = env.composition.borrow().clone();
     let composing = current.is_some();
@@ -353,7 +366,8 @@ fn measure_caret(context: &ITfContext, ec: u32, env: &Env) -> AnchorSource {
     };
     // 直前の矩形は composition の間だけ有効
     let previous = if composing { env.last_rect.get() } else { None };
-    let chosen = choose_anchor_or_previous(start, range, caret, previous);
+    let pre = if composing { env.pre_caret.get() } else { None };
+    let chosen = choose_anchor_with_pre(start, range, pre, caret, previous);
     match chosen {
         Some((AnchorSource::Previous, _)) | None => {}
         Some((_, rect)) if composing => env.last_rect.set(Some(rect)),
@@ -361,9 +375,12 @@ fn measure_caret(context: &ITfContext, ec: u32, env: &Env) -> AnchorSource {
     }
     if !composing {
         env.last_rect.set(None);
+        env.pre_caret.set(None);
     }
     env.caret.set(chosen.map(|(_, rect)| rect));
-    chosen.map_or(AnchorSource::Mouse, |(source, _)| source)
+    let source = chosen.map_or(AnchorSource::Mouse, |(source, _)| source);
+    env.caret_source.set(chosen.map(|(source, _)| source));
+    source
 }
 
 /// 最初の測定がマウス位置になったとき、編集セッションの完了後（読み取り専用・非同期）に測り直す。
@@ -374,12 +391,6 @@ fn request_remeasure(context: &ITfContext, env: &Env, attempt: u32) {
     let (ctx, env2) = (context.clone(), env.clone());
     let result = run(context, env.client_id, Timing::Async, false, move |ec| {
         let source = measure_caret(&ctx, ec, &env2);
-        if attempt == 0 {
-            crate::tsf_log::log(
-                "cand",
-                &format!("anchor remeasure source={}", source.as_str()),
-            );
-        }
         let composing = env2.composition.borrow().is_some();
         if needs_remeasure(source, composing, attempt + 1) {
             request_remeasure(&ctx, &env2, attempt + 1);
@@ -392,16 +403,6 @@ fn request_remeasure(context: &ITfContext, env: &Env, attempt: u32) {
     if result.is_err() {
         env.remeasure_pending.set(false);
         (env.on_remeasured)();
-    }
-}
-
-/// 基準の由来が変わったときだけ診断ログに出す（矩形の値は書かない）
-fn log_anchor_source(source: AnchorSource) {
-    thread_local! {
-        static LAST: Cell<Option<AnchorSource>> = const { Cell::new(None) };
-    }
-    if LAST.with(|l| l.replace(Some(source))) != Some(source) {
-        crate::tsf_log::log("cand", &format!("anchor source={}", source.as_str()));
     }
 }
 
@@ -434,6 +435,14 @@ fn apply_plan_inner(
     if let Some(text) = &plan.commit {
         commit(context, ec, &env.composition, text)?;
     }
+    // composition を始める直前の挿入点を測る（開始直後は GetTextExt が失敗しやすい 1 文字目の位置に使う）。
+    // 再変換（`start_at`）は対象の範囲そのものが測れるので不要
+    if start_at.is_none()
+        && matches!(plan.preedit, PreeditUpdate::Set { .. })
+        && env.composition.borrow().is_none()
+    {
+        env.pre_caret.set(collapsed_selection_rect(context, ec));
+    }
     match &plan.preedit {
         PreeditUpdate::Keep => {}
         PreeditUpdate::Clear => clear_preedit(ec, &env.composition)?,
@@ -449,7 +458,6 @@ fn apply_plan_inner(
         env.last_rect.set(None);
     }
     let source = measure_caret(context, ec, env);
-    log_anchor_source(source);
     if needs_remeasure(source, env.composition.borrow().is_some(), 0) {
         // 開始直後などレイアウトが未反映で測れない。セッション完了後に測り直す
         request_remeasure(context, env, 0);
