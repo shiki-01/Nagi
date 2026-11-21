@@ -267,6 +267,19 @@ pub fn describe_secure_input(secure: bool, app: Option<&str>) -> String {
     format!("secure_input={secure} app={}", app.unwrap_or("unknown"))
 }
 
+/// ホストプロセス（この DLL を読んだアプリ）の実行ファイル名の行（`exe=chrome.exe`。タグは `host`）。
+/// 起動できないホストの切り分け用。パスは含めずファイル名だけ（空白は `_` にして 1 語にする）
+pub fn describe_host(exe_name: Option<&str>) -> String {
+    let name = exe_name
+        .map(|n| n.rsplit(['\\', '/']).next().unwrap_or(n))
+        .filter(|n| !n.is_empty())
+        .map_or_else(
+            || "unknown".to_owned(),
+            |n| n.replace(char::is_whitespace, "_"),
+        );
+    format!("exe={name}")
+}
+
 /// エンジンのイベントのログ文言。記録しないイベント（preedit・候補の更新）は `None`
 pub fn describe_event(event: &EngineEvent) -> Option<(&'static str, String)> {
     Some(match event {
@@ -294,6 +307,24 @@ pub fn describe_event(event: &EngineEvent) -> Option<(&'static str, String)> {
                 "launch failed: {} ({})",
                 launch_failure_kind(error),
                 describe_error(error)
+            ),
+        ),
+        EngineEvent::SpawnRetry {
+            code,
+            attempt,
+            delay,
+        } => (
+            "engine",
+            format!(
+                "spawn failed (os error {code}) attempt={attempt} retry_in_ms={}",
+                delay.as_millis()
+            ),
+        ),
+        EngineEvent::SpawnBlocked { code, recheck_in } => (
+            "engine",
+            format!(
+                "spawn blocked (os error {code}); giving up in this process (recheck once in {}s)",
+                recheck_in.as_secs()
             ),
         ),
         EngineEvent::Restored { .. } => ("engine", "session restored".into()),
@@ -327,6 +358,42 @@ pub fn describe_event(event: &EngineEvent) -> Option<(&'static str, String)> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn host_line_has_file_name_only() {
+        assert_eq!(
+            describe_host(Some("msedgewebview2.exe")),
+            "exe=msedgewebview2.exe"
+        );
+        assert_eq!(
+            describe_host(Some("C:\\Program Files\\a b.exe")),
+            "exe=a_b.exe"
+        );
+        assert_eq!(describe_host(None), "exe=unknown");
+        assert_eq!(describe_host(Some("")), "exe=unknown");
+        assert_eq!(
+            format_line(5, 7720, "host", &describe_host(Some("x.exe"))),
+            "1970-01-01T00:00:05Z pid=7720 [host] exe=x.exe\n"
+        );
+    }
+
+    #[test]
+    fn spawn_events_are_logged_once_per_kind() {
+        let (tag, text) = describe_event(&EngineEvent::SpawnBlocked {
+            code: 15623,
+            recheck_in: Duration::from_secs(300),
+        })
+        .unwrap();
+        assert_eq!(tag, "engine");
+        assert!(text.starts_with("spawn blocked (os error 15623); giving up in this process"));
+        let (_, retry) = describe_event(&EngineEvent::SpawnRetry {
+            code: 5,
+            attempt: 2,
+            delay: Duration::from_millis(400),
+        })
+        .unwrap();
+        assert_eq!(retry, "spawn failed (os error 5) attempt=2 retry_in_ms=400");
+    }
 
     #[test]
     fn timestamp_known_values() {

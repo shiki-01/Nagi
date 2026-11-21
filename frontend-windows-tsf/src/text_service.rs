@@ -213,6 +213,18 @@ fn toasts() -> &'static Mutex<ToastThrottle> {
     TOASTS.get_or_init(|| Mutex::new(ToastThrottle::default()))
 }
 
+/// ホストの実行ファイル名を 1 プロセスにつき 1 回だけ tsf.log に残す（`[host] exe=<name>`。
+/// imserver を起動できないホストの切り分け用。パスは含めない）
+fn log_host_once() {
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::tsf_log::log(
+            "host",
+            &nagi_windows::diag::describe_host(crate::context_info::app_id()),
+        );
+    }
+}
+
 /// Activate 中の失敗を tsf.log に残す（HRESULT のみ）
 fn log_failure(what: &str, error: &windows::core::Error) {
     crate::tsf_log::log(
@@ -431,6 +443,7 @@ impl Core {
 
     fn activate(self: &Rc<Self>, thread_mgr: ITfThreadMgr, client_id: u32) -> Result<()> {
         crate::tsf_log::log("tsf", &format!("Activate client_id={client_id}"));
+        log_host_once();
         self.client_id.set(client_id);
         *self.thread_mgr.borrow_mut() = Some(thread_mgr.clone());
 

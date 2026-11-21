@@ -40,9 +40,11 @@ pub fn toast_for(event: &EngineEvent) -> Option<String> {
         EngineEvent::EnteredMinimalMode { restarts } => Some(format!(
             "変換エンジンが {restarts} 回続けて停止したため、辞書のみで動作しています"
         )),
-        EngineEvent::LaunchFailed(_) => {
-            Some("変換エンジンを起動できません。再試行しています".to_owned())
-        }
+        // 直らない種類の起動失敗（このアプリでは子プロセスを作れない）は、利用者にできることが無く、
+        // 入力しないアプリ（ブラウザの子プロセス等）でも出うるので知らせない（ログのみ。H-125）
+        EngineEvent::LaunchFailed(error) => (crate::supervisor::spawn_error_code(error)
+            .is_none_or(|c| !crate::supervisor::is_unrecoverable_spawn_code(c)))
+        .then(|| "変換エンジンを起動できません。再試行しています".to_owned()),
         EngineEvent::RestoreFailed { .. } => Some(
             "変換エンジンの再起動で入力中の文字列を復元できなかったため、そのまま確定しました"
                 .to_owned(),
@@ -53,6 +55,8 @@ pub fn toast_for(event: &EngineEvent) -> Option<String> {
         | EngineEvent::UpdateCandidates(_)
         | EngineEvent::ProcessExited(_)
         | EngineEvent::MinimalSwitchReport { .. }
+        | EngineEvent::SpawnRetry { .. }
+        | EngineEvent::SpawnBlocked { .. }
         | EngineEvent::Diagnostic(_) => None,
     }
 }
@@ -667,6 +671,19 @@ mod tests {
                 .contains("5 回")
         );
         assert!(toast_for(&EngineEvent::LaunchFailed(ClientError::NotConnected)).is_some());
+        // 直らない起動失敗（os error 15623 等）は知らせない
+        let blocked = ClientError::SendFailed("spawn: x (os error 15623)".into());
+        assert_eq!(toast_for(&EngineEvent::LaunchFailed(blocked)), None);
+        assert_eq!(
+            toast_for(&EngineEvent::SpawnBlocked {
+                code: 15623,
+                recheck_in: Duration::from_secs(300)
+            }),
+            None
+        );
+        // 番号が直る種類でなければ従来どおり
+        let missing = ClientError::SendFailed("spawn: x (os error 2)".into());
+        assert!(toast_for(&EngineEvent::LaunchFailed(missing)).is_some());
     }
 
     #[test]

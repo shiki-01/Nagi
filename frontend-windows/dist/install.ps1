@@ -309,6 +309,22 @@ function Install-Data([string]$Dir) {
     return $false
 }
 
+# インストール先に「すべてのアプリケーション パッケージ」（S-1-15-2-1）と「すべての制限されたアプリケーション パッケージ」
+# （S-1-15-2-2）の読み取りと実行を継承つきで付ける。設定アプリ（言語のオプション）や UWP/AppContainer のアプリが
+# TIP の DLL・アイコンを読めるようにするため（Mozc のインストーラーも同じ付与をしている）。
+# %ProgramFiles% 配下なら通常は継承で付いているので冪等（付いていれば変わらない）。失敗しても導入は失敗にしない
+function Grant-AppContainerRead([string]$Dir) {
+    try {
+        $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+        & $icacls $Dir /grant '*S-1-15-2-1:(OI)(CI)(RX)' '*S-1-15-2-2:(OI)(CI)(RX)' /C /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Say "警告: アプリケーション パッケージ向けの読み取り権限を付けられませんでした（icacls の終了コード: $LASTEXITCODE）"
+        }
+    } catch {
+        Say "警告: アプリケーション パッケージ向けの読み取り権限を付けられませんでした: $($_.Exception.Message)"
+    }
+}
+
 # 管理者権限が要る手順: 配置・登録・「アプリと機能」への登録・スタートメニューのショートカット
 function Install-Privileged([string]$SourceDir) {
     Test-Payload $SourceDir
@@ -323,6 +339,8 @@ function Install-Privileged([string]$SourceDir) {
     # 前回までの退避ファイル（使用中でなくなったもの）を片付ける
     Get-ChildItem -LiteralPath $InstallDir -Filter '*.old' -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
+
+    Grant-AppContainerRead $InstallDir
 
     $dll = Join-Path $InstallDir $DllName
     $process = Start-Process -FilePath (Get-Regsvr32) -ArgumentList @('/s', ('"{0}"' -f $dll)) -Wait -PassThru

@@ -29,6 +29,8 @@ pub enum ItemId {
     TsfInterfaces,
     /// `ITfFunctionProvider` の登録（Activate の記録）と DLL を読んだホスト
     TsfFunctionProvider,
+    /// 言語のオプションに「オプション」「削除」が出ない原因の切り分け（登録値・ACL・MS-IME との差分）
+    TsfLanguageOptions,
     /// `tsf.log` の健全性（起動失敗・登録失敗の記録）
     TsfLog,
     /// imserver の起動・初期化・応答
@@ -103,6 +105,7 @@ impl ItemId {
         ItemId::TsfUserProfile,
         ItemId::TsfInterfaces,
         ItemId::TsfFunctionProvider,
+        ItemId::TsfLanguageOptions,
         ItemId::TsfLog,
         ItemId::EngineStart,
         ItemId::EngineMemory,
@@ -137,6 +140,7 @@ impl ItemId {
             ItemId::TsfUserProfile => "tsf.user_profile",
             ItemId::TsfInterfaces => "tsf.interfaces",
             ItemId::TsfFunctionProvider => "tsf.function_provider",
+            ItemId::TsfLanguageOptions => "tsf.language_options",
             ItemId::TsfLog => "tsf.log",
             ItemId::EngineStart => "engine.start",
             ItemId::EngineShutdown => "engine.shutdown",
@@ -177,6 +181,9 @@ impl ItemId {
             ItemId::TsfUserProfile => "このユーザーで Nagi が有効か",
             ItemId::TsfInterfaces => "TIP のインターフェイス（言語のオプション用 ITfFnConfigure）",
             ItemId::TsfFunctionProvider => "再変換の入口（ITfFunctionProvider）",
+            ItemId::TsfLanguageOptions => {
+                "言語のオプションのプローブ（オプション・削除が出ない原因）"
+            }
             ItemId::TsfLog => "tsf.log の記録",
             ItemId::EngineStart => "変換エンジン（imserver）の起動と応答",
             ItemId::EngineShutdown => "変換エンジンの終了",

@@ -97,6 +97,8 @@ pub fn route(event: &EngineEvent) -> Route<'_> {
         | EngineEvent::LaunchFailed(_)
         | EngineEvent::ProcessExited(_)
         | EngineEvent::MinimalSwitchReport { .. }
+        | EngineEvent::SpawnRetry { .. }
+        | EngineEvent::SpawnBlocked { .. }
         | EngineEvent::Diagnostic(_) => Route::Broadcast,
     }
 }

@@ -593,12 +593,12 @@ mod tests {
         assert!(m.is_running());
         assert!(m.begin_all().is_none(), "実行中は重ねて始めない");
         assert!(m.begin_one(ItemId::EnvArch).is_none());
-        assert_eq!(m.progress_line().as_deref(), Some("確認しています… 1/29"));
+        assert_eq!(m.progress_line().as_deref(), Some("確認しています… 1/30"));
         m.on_progress(&progress(0, ItemId::EnvArch, None));
         assert!(m.is_current(ItemId::EnvArch));
         assert_eq!(
             m.progress_line(),
-            Some(format!("確認しています… 1/29: {}", ItemId::EnvArch.title()))
+            Some(format!("確認しています… 1/30: {}", ItemId::EnvArch.title()))
         );
         let r = ItemResult::ok(ItemId::EnvArch, "良好");
         m.on_progress(&progress(0, ItemId::EnvArch, Some(r.clone())));
@@ -642,7 +642,7 @@ mod tests {
         m.finish_all(Ok(full_report(Status::Ng)));
         assert_eq!(
             m.note().unwrap().text,
-            "確認が終わりました: NG 29 / 要確認 0 / OK 0 / スキップ 0 / 手動確認 0"
+            "確認が終わりました: NG 30 / 要確認 0 / OK 0 / スキップ 0 / 手動確認 0"
         );
         m.begin_one(ItemId::EnvUser).unwrap();
         assert!(!m.can_export(), "実行中はコピー・保存できない");

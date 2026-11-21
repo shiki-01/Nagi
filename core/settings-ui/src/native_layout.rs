@@ -42,21 +42,21 @@ pub fn unscale(px: i32, dpi: u32) -> i32 {
 }
 
 /// 最小のクライアント領域の幅（dp）
-pub const MIN_CLIENT_W: i32 = 760;
+pub const MIN_CLIENT_W: i32 = 840;
 /// 最小のクライアント領域の高さ（dp）
-pub const MIN_CLIENT_H: i32 = 440;
+pub const MIN_CLIENT_H: i32 = 480;
 /// 初期のクライアント領域の幅（dp）
-pub const INITIAL_CLIENT_W: i32 = 880;
+pub const INITIAL_CLIENT_W: i32 = 960;
 /// 初期のクライアント領域の高さ（dp）
-pub const INITIAL_CLIENT_H: i32 = 620;
+pub const INITIAL_CLIENT_H: i32 = 680;
 
 /// 区切り線の太さ（px。DPI によらず 1px。オーナードローで描く）
 pub const RULE_PX: i32 = 1;
 
 /// サイドバーの幅
-const SIDEBAR_W: i32 = 200;
+const SIDEBAR_W: i32 = 232;
 /// サイドバー上部のブランド領域（ロゴ + ワードマーク）の高さ。一覧はこの下から始まる
-const BRAND_H: i32 = 72;
+const BRAND_H: i32 = 80;
 /// ブランド領域のロゴの一辺
 const BRAND_ICON: i32 = 32;
 /// ブランド領域の左余白
@@ -64,9 +64,9 @@ const BRAND_PAD: i32 = 20;
 /// ロゴと文字の間隔
 const BRAND_GAP: i32 = 12;
 /// ブランドのワードマーク（Nagi）の行の高さ
-const BRAND_TITLE_H: i32 = 24;
+const BRAND_TITLE_H: i32 = 28;
 /// ブランドの補足（設定・版）の行の高さ
-const BRAND_CAPTION_H: i32 = 18;
+const BRAND_CAPTION_H: i32 = 20;
 /// ページの見出しの上に引くアクセントの線の幅・高さ・見出しまでの間隔
 pub const HERO_BAR_W: i32 = 40;
 /// ページの見出しの上のアクセントの線の高さ
@@ -80,7 +80,7 @@ const SECTION_MARK_GAP: i32 = 10;
 /// 節の見出しの印の最大の高さ
 const SECTION_MARK_H: i32 = 18;
 /// サイドバー 1 項目の高さ
-pub const SIDEBAR_ITEM_H: i32 = 36;
+pub const SIDEBAR_ITEM_H: i32 = 40;
 /// サイドバー項目の外側の余白（選択の塗りと一覧の端の間）
 pub const SIDEBAR_ITEM_INSET: i32 = 8;
 /// サイドバー項目の文字の左余白（選択の塗りの左端から）
@@ -94,11 +94,11 @@ pub const SIDEBAR_BAR_W: i32 = 4;
 /// 選択中の項目の左端に付けるアクセントの印の高さ
 pub const SIDEBAR_BAR_H: i32 = 16;
 /// フッター（区切り線を含む）の高さ
-const FOOTER_H: i32 = 56;
+const FOOTER_H: i32 = 64;
 /// フッターの左右の余白
 const FOOTER_PAD: i32 = 16;
 /// 「閉じる」ボタンの幅
-const CLOSE_W: i32 = 96;
+const CLOSE_W: i32 = 112;
 /// フッターの部品の間隔
 const FOOTER_GAP: i32 = 16;
 /// パネル内の上下左右の余白
@@ -108,15 +108,15 @@ const LINE_GAP: i32 = 4;
 /// カード（項目グループの枠）の内側の余白（上下左右）
 pub const CARD_PAD: i32 = 16;
 /// 入力欄・ボタンの高さ
-pub const CONTROL_H: i32 = 28;
+pub const CONTROL_H: i32 = 32;
 /// 入力欄・コンボボックスの幅（すべての項目で同じ）
-const CONTROL_W: i32 = 240;
+const CONTROL_W: i32 = 280;
 /// 「既定に戻す」の幅
-const RESET_W: i32 = 104;
+const RESET_W: i32 = 120;
 /// 入力欄と範囲の案内などの間隔
 const HINT_GAP: i32 = 12;
 /// 動作ボタン（更新を確認・フォルダを開く等）の幅（すべて同じ）
-pub const BUTTON_W: i32 = 200;
+pub const BUTTON_W: i32 = 224;
 /// ボタン同士の横の間隔
 const BUTTON_GAP: i32 = 8;
 const SCROLL_STEP: i32 = 48;

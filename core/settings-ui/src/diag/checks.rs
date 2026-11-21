@@ -801,6 +801,10 @@ fn norm_path(p: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// `InprocServer32` の `ThreadingModel` の正（`frontend-windows/src/registration.rs` の `THREADING_MODEL` と
+/// 一致することをテストで検査する。nagi-windows には依存しない）
+pub const THREADING_MODEL: &str = "Both";
+
 /// TSF の COM 登録を判定する。`dll_exists` は登録されたパスのファイルが実在するかの問い合わせ
 pub fn judge_registration(
     f: &WinFacts,
@@ -830,9 +834,12 @@ pub fn judge_registration(
             f.clsid_inproc
         ));
     }
-    if !f.clsid_threading.eq_ignore_ascii_case("Apartment") {
+    let threading_ok = f.clsid_threading.eq_ignore_ascii_case(THREADING_MODEL);
+    if f.clsid_threading.eq_ignore_ascii_case("Apartment") {
+        warns.push("ThreadingModel が旧版の Apartment です（再登録で Both になります）".to_owned());
+    } else if !threading_ok {
         problems.push(format!(
-            "ThreadingModel が Apartment ではありません（{}）",
+            "ThreadingModel が {THREADING_MODEL} ではありません（{}）",
             f.clsid_threading
         ));
     }
@@ -866,7 +873,7 @@ pub fn judge_registration(
         return ItemResult::ng(
             id,
             problems.join(" / "),
-            "管理者権限で再登録してください（install.ps1 の再実行、または regsvr32）。タスクバーのアイコンが出ない・UILess が効かない原因になります。",
+            "管理者権限で再登録してください（install.ps1 の再実行、または regsvr32）。ThreadingModel が Both でないと、設定アプリの「言語のオプション」からの呼び出しで入口（ITfFnConfigure）が見えない原因になります（旧版の Apartment は動作はしますが、再登録で Both になります）。",
         )
         .with_evidence(lines);
     }
@@ -874,7 +881,7 @@ pub fn judge_registration(
         return ItemResult::warn(
             id,
             warns.join(" / "),
-            "別の場所の DLL を登録している可能性があります。意図しなければ install.ps1 を再実行してください。",
+            "install.ps1 の再実行（または管理者権限の regsvr32）で再登録してください。ThreadingModel が Apartment のときは旧版の登録で、再登録で Both になります。DLL の場所が違うときは、別の場所の DLL を登録している可能性があります。",
         )
         .with_evidence(lines);
     }
@@ -1093,13 +1100,19 @@ pub fn judge_tsf_log_at(
         "UILess（アプリ側の候補表示）の記録: {}",
         if a.uiless { "あり" } else { "なし" }
     ));
-    if let Some(t) = install_unix {
-        lines.push(format!(
+    // 1980-01-01（zip 展開の既定時刻）や未来の時刻は、インストール時刻として使わない
+    let install_unix = install_unix.filter(|&t| tsflog::plausible_install_time(t, now_unix));
+    match install_unix {
+        Some(t) => lines.push(format!(
             "インストール・更新から {} 秒経過。その影響期間（+{} 秒）に起きたエンジン停止の事象: {} 回（数えていません）",
             (now_unix - t).max(0),
             tsflog::INSTALL_GRACE_SECS,
             a.ignored_by_install
-        ));
+        )),
+        None => lines.push(
+            "インストール・更新の時刻: 不明（ファイル時刻が取れない・不正のため、更新直後の除外はしていません）"
+                .to_owned(),
+        ),
     }
     lines.extend(a.evidence.iter().cloned());
     let mut ng: Vec<String> = Vec::new();
@@ -1114,6 +1127,31 @@ pub fn judge_tsf_log_at(
             "変換エンジンの起動失敗の記録が {} 回あります",
             a.launch_failures
         ));
+    }
+    let mut unlaunchable_advice = "";
+    if !a.unlaunchable_pids.is_empty() {
+        let n = a.unlaunchable_pids.len();
+        let pids: Vec<String> = a
+            .unlaunchable_pids
+            .iter()
+            .map(|p| match a.host_exes.get(p) {
+                Some(exe) => format!("{p}（{exe}）"),
+                None => p.to_string(),
+            })
+            .collect();
+        let hosts = a.hosts.max(n);
+        let msg = format!(
+            "{n} プロセスで起動不可（制限されたホストの可能性）。該当 pid: {}",
+            pids.join(", ")
+        );
+        if n * 4 <= hosts && hosts > n {
+            warn.push(format!(
+                "{msg}。一部のアプリ（サンドボックス等）では辞書のみで動作しています。通常の使用に支障が無ければ問題ありません"
+            ));
+        } else {
+            ng.push(format!("{msg}（ホスト {hosts} 個中 {n} 個）"));
+        }
+        unlaunchable_advice = " 起動不可の pid は、タスクマネージャーの「詳細」タブ（PID 列）で実行ファイルを調べられます。どのアプリで入力したときに変換が辞書のみになるか（Win+Space で Nagi を選んで、メモ帳・ブラウザ・問題のアプリで同じ文を変換して比べる）を確認し、メモ帳など通常のアプリでも辞書のみなら、imserver.exe の署名・ウイルス対策のブロック（os error 15623 / 5 / 1260）を疑ってください。";
     }
     if a.panicked {
         ng.push("入力方式の有効化中に例外が起きた記録があります".to_owned());
@@ -1166,7 +1204,7 @@ pub fn judge_tsf_log_at(
         return ItemResult::ng(
             id,
             ng.into_iter().chain(warn).collect::<Vec<_>>().join(" / "),
-            format!("imserver の起動項目（engine.start）と VC++ ランタイム・辞書の項目を確認してください。%LOCALAPPDATA%\\Nagi\\logs の imserver-*.log に理由があります。{fresh_note}"),
+            format!("imserver の起動項目（engine.start）と VC++ ランタイム・辞書の項目を確認してください。%LOCALAPPDATA%\\Nagi\\logs の imserver-*.log に理由があります。{fresh_note}{unlaunchable_advice}"),
         )
         .with_evidence(lines);
     }
@@ -1174,7 +1212,7 @@ pub fn judge_tsf_log_at(
         return ItemResult::warn(
             id,
             warn.join(" / "),
-            format!("再現するときは、Nagi を選び直して数文字入力し、もう一度診断してください。続く場合は tsf.log の該当行を報告してください。{fresh_note}"),
+            format!("再現するときは、Nagi を選び直して数文字入力し、もう一度診断してください。続く場合は tsf.log の該当行を報告してください。{fresh_note}{unlaunchable_advice}"),
         )
         .with_evidence(lines);
     }
@@ -1199,6 +1237,7 @@ fn install_unix(ctx: &Ctx) -> Option<i64> {
     ["VERSION", "nagi_windows_tsf.dll"]
         .iter()
         .filter_map(|n| mtime_unix(&ctx.install_dir.join(n)))
+        .filter(|&t| tsflog::plausible_install_time(t, now_unix()))
         .max()
 }
 
@@ -1487,7 +1526,7 @@ mod tests {
     fn registered() -> WinFacts {
         WinFacts {
             clsid_inproc: "C:\\Program Files\\Nagi\\nagi_windows_tsf.dll".into(),
-            clsid_threading: "Apartment".into(),
+            clsid_threading: "Both".into(),
             tip_profile_exists: true,
             tip_profile_desc: "Nagi".into(),
             tip_categories: REQUIRED_CATEGORIES
@@ -1523,7 +1562,7 @@ mod tests {
         assert_eq!(judge_registration(&f, DLL, &|_| true).status, Status::Ng);
 
         let mut f = registered();
-        f.clsid_threading = "Both".into();
+        f.clsid_threading = "Free".into();
         assert_eq!(judge_registration(&f, DLL, &|_| true).status, Status::Ng);
 
         assert_eq!(
@@ -1648,6 +1687,72 @@ mod tests {
                 .contains("更新直後は一時的に出ることがあります")
         );
         assert!(r.evidence.iter().any(|l| l.contains("該当なし")));
+    }
+
+    const REAL_SPAWN: &str = "2026-11-21T11:20:00Z pid=7720 [engine] launch failed: spawn failed (send failed: spawn: システム バイナリのエラーが検出されました。 (os error 15623))";
+
+    #[test]
+    fn tsf_log_unlaunchable_host_minority_is_warn_all_is_ng() {
+        let now = tsflog::parse_utc("2026-11-21T12:00:00Z").unwrap();
+        let mut text = format!("{REAL_SPAWN}\n{REAL_SPAWN}\n");
+        for pid in [1, 2, 3, 4] {
+            text += &format!("2026-11-21T11:00:00Z pid={pid} [tsf] Activate done langbar=true\n");
+        }
+        let r = judge_tsf_log(&tsflog::analyze(&text), now);
+        assert_eq!(r.status, Status::Warn, "{r:?}");
+        assert!(r.detail.contains("1 プロセスで起動不可") && r.detail.contains("7720"));
+        assert!(r.detail.contains("辞書のみで動作"));
+        assert!(r.advice.as_deref().unwrap().contains("メモ帳"));
+        // 全ホストで起動不可 → NG
+        let r = judge_tsf_log(&tsflog::analyze(REAL_SPAWN), now);
+        assert_eq!(r.status, Status::Ng, "{r:?}");
+        // exe の記録があれば対応付ける
+        let t = format!("{REAL_SPAWN}\n2026-11-21T11:20:01Z pid=7720 [host] exe=app.exe\n");
+        let r = judge_tsf_log(&tsflog::analyze(&t), now);
+        assert!(r.detail.contains("7720（app.exe）"), "{r:?}");
+    }
+
+    #[test]
+    fn tsf_log_install_time_1980_is_unknown() {
+        let now = tsflog::parse_utc("2026-11-21T12:00:00Z").unwrap();
+        let a = tsflog::analyze("t pid=1 [tsf] Activate done langbar=true");
+        // 実レポート: 1479764353 秒経過 = 1980-01-01 起点
+        let r = judge_tsf_log_at(&a, now, Some(315_532_800), None);
+        assert!(r.evidence.iter().any(|l| l.contains("時刻: 不明")), "{r:?}");
+        assert!(r.evidence.iter().all(|l| !l.contains("1479764353")));
+        // 未来
+        let r = judge_tsf_log_at(&a, now, Some(now + 86_400), None);
+        assert!(r.evidence.iter().any(|l| l.contains("時刻: 不明")));
+        // 妥当な値は従来どおり
+        let r = judge_tsf_log_at(&a, now, Some(now - 300), None);
+        assert!(r.evidence.iter().any(|l| l.contains("300 秒経過")));
+    }
+
+    #[test]
+    fn registration_threading_model_both_ok_apartment_warn() {
+        let dll = |_: &str| true;
+        let install = "C:\\Program Files\\Nagi\\nagi_windows_tsf.dll";
+        assert_eq!(
+            judge_registration(&registered(), install, &dll).status,
+            Status::Ok
+        );
+        let mut f = registered();
+        f.clsid_threading = "Apartment".into();
+        let r = judge_registration(&f, install, &dll);
+        assert_eq!(r.status, Status::Warn, "{r:?}");
+        assert!(r.detail.contains("再登録で Both"));
+        f.clsid_threading = "Free".into();
+        assert_eq!(judge_registration(&f, install, &dll).status, Status::Ng);
+    }
+
+    #[test]
+    fn threading_model_matches_frontend_windows_registration() {
+        let src = include_str!("../../../../frontend-windows/src/registration.rs");
+        let line = src
+            .lines()
+            .find(|l| l.contains("pub const THREADING_MODEL"))
+            .expect("THREADING_MODEL");
+        assert!(line.contains(&format!("\"{THREADING_MODEL}\"")), "{line}");
     }
 
     #[test]

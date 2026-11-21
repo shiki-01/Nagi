@@ -76,6 +76,11 @@ pub struct BackoffPolicy {
     pub minimal_after_restarts: u32,
     /// この時間以上生き延びてからのクラッシュは「連続」に数えない（カウンタを 0 に戻す）
     pub stable_uptime: Duration,
+    /// 「再試行しても直らない起動失敗」（[`is_unrecoverable_spawn_code`]）が同じエラーでこの回数続いたら、
+    /// このプロセスでは起動不可と判断して再試行をやめる（H-125）
+    pub blocked_after_same_error: u32,
+    /// 起動不可と判断した後、1 回だけ再確認するまでの待ち
+    pub blocked_recheck: Duration,
 }
 
 impl Default for BackoffPolicy {
@@ -86,6 +91,8 @@ impl Default for BackoffPolicy {
             max_delay: Duration::from_secs(10),
             minimal_after_restarts: 5,
             stable_uptime: Duration::from_secs(30),
+            blocked_after_same_error: 3,
+            blocked_recheck: Duration::from_secs(300),
         }
     }
 }
@@ -104,6 +111,29 @@ impl BackoffPolicy {
         }
         self.initial_delay.mul_f64(factor).min(self.max_delay)
     }
+}
+
+/// 起動失敗（`spawn: ... (os error N)`）の OS エラー番号。起動以外の失敗・番号が無いものは `None`
+pub fn spawn_error_code(error: &ClientError) -> Option<i32> {
+    let ClientError::SendFailed(reason) = error else {
+        return None;
+    };
+    let rest = reason.strip_prefix("spawn")?;
+    let tail = &rest[rest.rfind("(os error ")? + "(os error ".len()..];
+    tail.strip_suffix(')')?.parse().ok()
+}
+
+/// 何度試しても直らない起動失敗の OS エラー番号か。ホストプロセス側の制約（コード整合性・
+/// プロセス緩和策・AppContainer 等）で `CreateProcess` が拒否される種類で、待っても結果は変わらない。
+/// 5（`ERROR_ACCESS_DENIED`）、577（`ERROR_INVALID_IMAGE_HASH`）、1260（`ERROR_ACCESS_DISABLED_BY_POLICY`）、
+/// 1261（`..._NO_SAFER_UI_BY_POLICY`）、1314（`ERROR_PRIVILEGE_NOT_HELD`）、15623（`ERROR_SYSTEM_NEEDS_REMEDIATION`）。
+/// 2・3（ファイルなし）・32（共有違反）・225（ウイルス検出）などは一時的/個別の事情もありうるので含めない
+pub fn is_unrecoverable_spawn_code(code: i32) -> bool {
+    matches!(code, 5 | 577 | 1260 | 1261 | 1314 | 15623)
+}
+
+fn unrecoverable_spawn_code(error: &ClientError) -> Option<i32> {
+    spawn_error_code(error).filter(|c| is_unrecoverable_spawn_code(*c))
 }
 
 /// エンジンが落ちたのが `initialize` の前か後か
@@ -186,6 +216,24 @@ pub enum EngineEvent {
     },
     /// 通信路の診断（捨てた行など。内容は含まない）
     Diagnostic(ClientDiagnostic),
+    /// 再試行しても直らない種類の起動失敗（[`is_unrecoverable_spawn_code`]）。`attempt` 回目の再試行を
+    /// `delay` 後に行う。`Crashed` の代わりに通知する（利用者へは知らせない。ログのみ）
+    SpawnRetry {
+        /// OS エラー番号
+        code: i32,
+        /// 連続失敗の回数（1 始まり）
+        attempt: u32,
+        /// 再試行までの待ち
+        delay: Duration,
+    },
+    /// 同じ起動失敗が続いたため、このプロセスでは起動不可と判断し再試行をやめた（1 プロセスで 1 回だけ通知）。
+    /// 一定時間後に 1 回だけ再確認する（`recheck_in`）
+    SpawnBlocked {
+        /// OS エラー番号
+        code: i32,
+        /// 再確認までの待ち
+        recheck_in: Duration,
+    },
 }
 
 /// スーパーバイザーの設定
@@ -238,6 +286,10 @@ struct State {
     last_exit: Option<ExitReport>,
     /// 連続失敗のうち、通常（LLM あり）起動でのもの
     normal_failures: Vec<FailureRecord>,
+    /// 直近の「直らない起動失敗」の番号と連続回数
+    spawn_streak: Option<(i32, u32)>,
+    /// 起動不可と判断済みか（以後は再試行しない。再確認の 1 回を除く）
+    blocked: bool,
 }
 
 struct Inner {
@@ -296,6 +348,8 @@ impl EngineSupervisor {
                     has_started_once: false,
                     last_exit: None,
                     normal_failures: Vec::new(),
+                    spawn_streak: None,
+                    blocked: false,
                 }),
                 on_event: Mutex::new(None),
                 restore_provider: Mutex::new(None),
@@ -352,7 +406,8 @@ impl EngineSupervisor {
     pub fn restart_now(&self) {
         let old = {
             let mut st = lock(&self.inner.state);
-            if st.stopped {
+            // 起動不可と判断したプロセスでは、復帰のたびに再試行しない
+            if st.stopped || st.blocked {
                 return;
             }
             st.generation += 1;
@@ -370,6 +425,11 @@ impl EngineSupervisor {
     /// 現在エンジンと接続しているか
     pub fn is_connected(&self) -> bool {
         lock(&self.inner.state).client.is_some()
+    }
+
+    /// 起動不可（再試行しても直らない起動失敗が続いた）と判断したか
+    pub fn is_spawn_blocked(&self) -> bool {
+        lock(&self.inner.state).blocked
     }
 
     /// minimal プロファイルに落ちているか
@@ -583,6 +643,8 @@ impl Inner {
             st.client = Some(rpc.clone());
             st.launched_at = self.clock.now();
             st.has_started_once = true;
+            st.spawn_streak = None;
+            st.blocked = false;
         }
 
         let weak: Weak<Inner> = Arc::downgrade(self);
@@ -636,7 +698,8 @@ impl Inner {
 
     /// 通信路が閉じた・起動に失敗した: 世代が古ければ無視し、バックオフ後に再起動を予約する
     fn handle_failure(self: &Arc<Self>, error: ClientError, gen_: u64) {
-        let (old, attempt, entered_minimal, record, report) = {
+        let spawn_code = unrecoverable_spawn_code(&error);
+        let (old, attempt, entered_minimal, record, report, newly_blocked) = {
             let mut st = lock(&self.state);
             if st.generation != gen_ || st.stopped {
                 return;
@@ -644,6 +707,30 @@ impl Inner {
             // 同じ世代の失敗を二重に処理しない（世代を進めて以後の通知を無効化）
             st.generation += 1;
             let old = st.client.take();
+            // 直らない起動失敗の連続を数える（違う失敗が挟まれば数え直し、起動不可の判断も解く）
+            let mut streak = 0;
+            match spawn_code {
+                Some(code) => {
+                    streak = match st.spawn_streak {
+                        Some((c, n)) if c == code => n + 1,
+                        _ => 1,
+                    };
+                    st.spawn_streak = Some((code, streak));
+                }
+                None => {
+                    st.spawn_streak = None;
+                    st.blocked = false;
+                }
+            }
+            if st.blocked {
+                // 起動不可と判断した後の再確認も失敗した。もう何もしない（再確認は 1 回だけで、予約もしない）
+                return;
+            }
+            let newly_blocked =
+                spawn_code.is_some() && streak >= self.config.backoff.blocked_after_same_error;
+            if newly_blocked {
+                st.blocked = true;
+            }
             let uptime = self.clock.now().saturating_duration_since(st.launched_at);
             if old.is_some() && uptime >= self.config.backoff.stable_uptime {
                 st.restart_count = 0;
@@ -680,7 +767,7 @@ impl Inner {
                 st.normal_failures.push(record.clone());
             }
             let report = entered.then(|| st.normal_failures.clone());
-            (old, attempt, entered, record, report)
+            (old, attempt, entered, record, report, newly_blocked)
         };
 
         if let Some(c) = old {
@@ -691,13 +778,31 @@ impl Inner {
             self.emit(EngineEvent::LaunchFailed(error));
         }
         self.emit(EngineEvent::ProcessExited(record));
-        self.emit(EngineEvent::Crashed { attempt, delay });
-        if entered_minimal {
-            self.emit(EngineEvent::EnteredMinimalMode { restarts: attempt });
-            if let Some(failures) = report {
-                self.emit(EngineEvent::MinimalSwitchReport { failures });
+        let delay = match spawn_code {
+            Some(code) if newly_blocked => {
+                let recheck_in = self.config.backoff.blocked_recheck;
+                self.emit(EngineEvent::SpawnBlocked { code, recheck_in });
+                recheck_in
             }
-        }
+            Some(code) => {
+                self.emit(EngineEvent::SpawnRetry {
+                    code,
+                    attempt,
+                    delay,
+                });
+                delay
+            }
+            None => {
+                self.emit(EngineEvent::Crashed { attempt, delay });
+                if entered_minimal {
+                    self.emit(EngineEvent::EnteredMinimalMode { restarts: attempt });
+                    if let Some(failures) = report {
+                        self.emit(EngineEvent::MinimalSwitchReport { failures });
+                    }
+                }
+                delay
+            }
+        };
 
         let weak: Weak<Inner> = Arc::downgrade(self);
         self.scheduler.schedule(
@@ -934,6 +1039,7 @@ mod tests {
             max_delay: Duration::from_millis(500),
             minimal_after_restarts: 3,
             stable_uptime: Duration::from_secs(1000),
+            ..BackoffPolicy::default()
         };
         let sched = ImmediateScheduler::new();
         let (sup, log) = make(&launcher, sched.clone(), MockClock::new(), backoff);
@@ -1090,6 +1196,124 @@ mod tests {
             )),
             1
         );
+    }
+
+    struct SpawnErrorLauncher {
+        code: i32,
+        calls: Mutex<u32>,
+    }
+
+    impl EngineLauncher for SpawnErrorLauncher {
+        fn make_connection(&self, _: bool) -> Result<Box<dyn Transport>, ClientError> {
+            *self.calls.lock().unwrap() += 1;
+            Err(ClientError::SendFailed(format!(
+                "spawn: blocked (os error {})",
+                self.code
+            )))
+        }
+    }
+
+    #[test]
+    fn spawn_error_code_parsing() {
+        let e = |s: &str| ClientError::SendFailed(s.into());
+        assert_eq!(
+            spawn_error_code(&e("spawn: x y (os error 15623)")),
+            Some(15623)
+        );
+        assert_eq!(spawn_error_code(&e("spawn")), None);
+        assert_eq!(spawn_error_code(&e("pipe (os error 5)")), None);
+        assert_eq!(spawn_error_code(&ClientError::Timeout), None);
+        for c in [5, 577, 1260, 1261, 1314, 15623] {
+            assert!(is_unrecoverable_spawn_code(c), "{c}");
+        }
+        for c in [2, 3, 32, 225] {
+            assert!(!is_unrecoverable_spawn_code(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn repeated_unrecoverable_spawn_error_gives_up_after_three_then_rechecks_once() {
+        let launcher = Arc::new(SpawnErrorLauncher {
+            code: 15623,
+            calls: Mutex::new(0),
+        });
+        let sched = ImmediateScheduler::new();
+        let mut config = Configuration::new("0");
+        config.backoff = BackoffPolicy::default();
+        let sup =
+            EngineSupervisor::with_parts(launcher.clone(), config, sched.clone(), MockClock::new());
+        let log: Log = Arc::default();
+        let l = log.clone();
+        sup.set_on_event(move |e| l.lock().unwrap().push(e));
+        assert!(sup.start().is_err());
+        // 3 回の失敗 + 5 分後の再確認 1 回で打ち切り
+        assert_eq!(*launcher.calls.lock().unwrap(), 4);
+        let b = BackoffPolicy::default();
+        assert_eq!(
+            sched.delays(),
+            [
+                b.delay_for_attempt(1),
+                b.delay_for_attempt(2),
+                b.blocked_recheck
+            ]
+        );
+        assert!(sup.is_spawn_blocked());
+        assert_eq!(
+            count(&log, |e| matches!(
+                e,
+                EngineEvent::SpawnBlocked { code: 15623, .. }
+            )),
+            1
+        );
+        assert_eq!(
+            count(&log, |e| matches!(e, EngineEvent::SpawnRetry { .. })),
+            2
+        );
+        assert_eq!(count(&log, |e| matches!(e, EngineEvent::Crashed { .. })), 0);
+        assert_eq!(
+            count(&log, |e| matches!(
+                e,
+                EngineEvent::EnteredMinimalMode { .. }
+            )),
+            0
+        );
+        // 復帰による再起動も、起動不可のプロセスでは試さない
+        sup.restart_now();
+        assert_eq!(*launcher.calls.lock().unwrap(), 4);
+    }
+
+    #[test]
+    fn a_different_error_breaks_the_unrecoverable_streak() {
+        struct Sequence(Mutex<Vec<i32>>);
+        impl EngineLauncher for Sequence {
+            fn make_connection(&self, _: bool) -> Result<Box<dyn Transport>, ClientError> {
+                let code = self.0.lock().unwrap().remove(0);
+                Err(ClientError::SendFailed(format!(
+                    "spawn: x (os error {code})"
+                )))
+            }
+        }
+        #[derive(Default)]
+        struct Queue(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+        impl Scheduler for Queue {
+            fn schedule(&self, _: Duration, work: Box<dyn FnOnce() + Send>) {
+                self.0.lock().unwrap().push(work);
+            }
+        }
+        let queue = Arc::new(Queue::default());
+        // 5, 5, 2（直る種類）, 5, 5 : 同一エラー 3 連続は無いので起動不可にならない
+        let sup = EngineSupervisor::with_parts(
+            Arc::new(Sequence(Mutex::new(vec![5, 5, 2, 5, 5]))),
+            Configuration::new("0"),
+            queue.clone(),
+            MockClock::new(),
+        );
+        let _ = sup.start();
+        for _ in 0..4 {
+            let work = queue.0.lock().unwrap().remove(0);
+            work();
+        }
+        assert!(!sup.is_spawn_blocked());
     }
 
     fn update_preedit(rev: u32, text: &str) -> String {

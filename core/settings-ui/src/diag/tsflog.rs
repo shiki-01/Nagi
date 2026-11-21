@@ -34,6 +34,14 @@ pub struct LogAnalysis {
     pub dropped_non_json: bool,
     /// インストール・更新の時刻（+120 秒）以前だったため数えなかったエンジン停止の事象の数
     pub ignored_by_install: usize,
+    /// ログに現れたホストプロセス（pid）の数
+    pub hosts: usize,
+    /// 再試行しても直らない起動失敗（`spawn failed` かつ os error 15623 / 5 / 1260 など）の回数
+    pub unlaunchable_count: usize,
+    /// 上記が出た pid（昇順・重複なし）
+    pub unlaunchable_pids: Vec<u32>,
+    /// `pid=<n> [host] exe=<name>` の記録から解決した pid → 実行ファイル名
+    pub host_exes: std::collections::BTreeMap<u32, String>,
     /// 証拠の行（マーカーに合ったもののうち問題のあるもの。最大 8 行・各 200 文字）
     pub evidence: Vec<String>,
 }
@@ -47,6 +55,32 @@ fn clip(line: &str) -> String {
         s.push('…');
     }
     s
+}
+
+/// 再試行しても直らない `spawn failed` の os error（15623 = 署名ポリシー違反、5 = アクセス拒否、1260 = ポリシーでブロック）
+pub const UNLAUNCHABLE_OS_ERRORS: [u32; 3] = [15623, 5, 1260];
+
+fn line_pid(line: &str) -> Option<u32> {
+    line.split_whitespace()
+        .find_map(|t| t.strip_prefix("pid="))
+        .and_then(|n| n.parse().ok())
+}
+
+/// 行の `spawn failed` が再試行しても直らない種類なら、その os error 番号
+fn unlaunchable_code(line: &str) -> Option<u32> {
+    if !line.contains("launch failed") || !line.contains("spawn failed") {
+        return None;
+    }
+    let rest = line.split("os error ").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let code: u32 = digits.parse().ok()?;
+    UNLAUNCHABLE_OS_ERRORS.contains(&code).then_some(code)
+}
+
+/// 時刻（UNIX 秒）がインストール時刻として妥当か。zip 展開の既定時刻（1980-01-01）や未来の値は不可
+pub fn plausible_install_time(t: i64, now_unix: i64) -> bool {
+    const MIN_PLAUSIBLE: i64 = 1_577_836_800; // 2020-01-01
+    t >= MIN_PLAUSIBLE && t <= now_unix + 3600
 }
 
 /// ログ全文を解析する
@@ -63,9 +97,29 @@ pub fn analyze_with(text: &str, ignore_until: Option<i64>) -> LogAnalysis {
     let mut problems: Vec<String> = Vec::new();
     let mut last_stop_ts: Option<&str> = None;
     let mut last_ignored_ts: Option<&str> = None;
+    let mut pids = std::collections::BTreeSet::new();
+    let mut unlaunchable = std::collections::BTreeSet::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         a.lines += 1;
         let mut problem = false;
+        let pid = line_pid(line);
+        if let Some(p) = pid {
+            pids.insert(p);
+            if let Some(exe) = line.split("[host] exe=").nth(1) {
+                let exe = exe.trim();
+                if !exe.is_empty() {
+                    a.host_exes.insert(p, clip(exe));
+                }
+            }
+        }
+        if let (Some(p), Some(_)) = (pid, unlaunchable_code(line)) {
+            // 更新直後の一時的な停止とは別物なので、インストール時刻による除外の対象にしない
+            a.unlaunchable_count += 1;
+            if unlaunchable.insert(p) {
+                problems.push(clip(line));
+            }
+            continue;
+        }
         let is_engine_line = line.contains("launch failed")
             || line.contains("entering minimal profile")
             || line.contains("stopped (crash or start failure)");
@@ -139,6 +193,8 @@ pub fn analyze_with(text: &str, ignore_until: Option<i64>) -> LogAnalysis {
     }
     // 新しいものを優先して残す
     let skip = problems.len().saturating_sub(MAX_EVIDENCE);
+    a.hosts = pids.len();
+    a.unlaunchable_pids = unlaunchable.into_iter().collect();
     a.evidence = problems.into_iter().skip(skip).collect();
     a
 }
@@ -246,6 +302,52 @@ mod tests {
         assert_eq!(a.stopped, 2);
         assert_eq!(a.evidence.len(), 2);
         assert_eq!(a.stopped_last.as_deref(), Some("2026-11-21T02:00:00Z"));
+    }
+
+    const REAL_SPAWN: &str = "2026-11-21T11:20:00Z pid=7720 [engine] launch failed: spawn failed (send failed: spawn: システム バイナリのエラーが検出されました。 (os error 15623))";
+
+    #[test]
+    fn unlaunchable_spawn_is_separated_and_grouped_by_pid() {
+        let text = format!(
+            "{REAL_SPAWN}\n{REAL_SPAWN}\n\
+2026-11-21T11:20:01Z pid=7720 [host] exe=sandbox.exe\n\
+2026-11-21T11:20:02Z pid=100 [tsf] Activate done langbar=true\n\
+2026-11-21T11:20:03Z pid=200 [engine] launch failed: spawn failed (send failed: spawn: x (os error 2))\n"
+        );
+        let a = analyze(&text);
+        assert_eq!(a.unlaunchable_count, 2);
+        assert_eq!(a.unlaunchable_pids, vec![7720]);
+        assert_eq!(a.hosts, 3);
+        assert_eq!(a.launch_failures, 1, "os error 2 は従来どおり");
+        assert_eq!(
+            a.host_exes.get(&7720).map(String::as_str),
+            Some("sandbox.exe")
+        );
+        // インストール時刻の除外対象にならない
+        let a = analyze_with(&text, Some(i64::MAX));
+        assert_eq!(a.unlaunchable_pids, vec![7720]);
+        assert_eq!(
+            unlaunchable_code("pid=1 launch failed: spawn failed (os error 5)"),
+            Some(5)
+        );
+        assert_eq!(
+            unlaunchable_code("pid=1 launch failed: spawn failed (os error 1260)"),
+            Some(1260)
+        );
+    }
+
+    #[test]
+    fn plausible_install_time_rejects_1980_future() {
+        let now = 1_795_219_200;
+        assert!(
+            !plausible_install_time(315_532_800, now),
+            "1980-01-01 は zip の既定時刻"
+        );
+        assert!(!plausible_install_time(0, now));
+        assert!(!plausible_install_time(now + 86_400, now));
+        assert!(plausible_install_time(now - 300, now));
+        // 1980 起点だと 10 億秒台の経過になってしまう値
+        assert!(now - 315_532_800 > 1_000_000_000);
     }
 
     #[test]

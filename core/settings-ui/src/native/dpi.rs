@@ -17,15 +17,14 @@ use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
     GetDpiForSystem, GetDpiForWindow, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
-    SystemParametersInfoForDpi,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    NONCLIENTMETRICSW, SPI_GETHIGHCONTRAST, SPI_GETNONCLIENTMETRICS,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    WINDOW_EX_STYLE, WINDOW_STYLE,
 };
 use windows::core::PCWSTR;
 
-/// 使うフォント（DPI ごとに作り直す）。本文・説明・案内はすべて `normal`（9pt 相当以上）。
+/// 使うフォント（DPI ごとに作り直す）。本文・説明・案内はすべて `normal`（10.5pt 相当）。
 /// 説明・案内は文字の大きさではなく色（グレー）で区別する
 #[derive(Clone, Copy)]
 pub(super) struct Fonts {
@@ -108,37 +107,37 @@ fn face_name(face: &str) -> [u16; 32] {
     out
 }
 
-/// システムのメッセージフォントを `dpi` に合わせて作る（取れなければ Segoe UI 9pt）
+/// 本文の基準サイズ（0.5pt 単位。10.5pt = 14px @96DPI）。システムのメッセージフォント（9pt）より大きくする
+pub(super) const BODY_HALF_POINTS: i32 = 21;
+
+/// 0.5pt 単位のサイズ `half_pts` を `dpi` での論理フォントの高さにする（`-MulDiv(pt, dpi, 72)` の負値。四捨五入）
+pub(super) fn font_height_px(half_pts: i32, dpi: u32) -> i32 {
+    let dpi = i64::from(dpi.max(1));
+    let px = (i64::from(half_pts) * dpi + 72) / 144;
+    -(px.max(1) as i32)
+}
+
+/// 本文のフォントを `dpi` に合わせて作る。Segoe UI Variable Text があればそれ、無ければ Segoe UI。
+/// 見出し・ラベルは同じ書体の大きさと太さだけを変える
 pub(super) fn create_fonts(dpi: u32) -> Fonts {
-    let mut metrics = NONCLIENTMETRICSW {
-        cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
+    let make = |face: &str| LOGFONTW {
+        lfHeight: font_height_px(BODY_HALF_POINTS, dpi),
+        lfWeight: 400,
+        lfCharSet: DEFAULT_CHARSET,
+        // ClearType を明示する（既定だと描く先によってギザギザになりうる）
+        lfQuality: CLEARTYPE_QUALITY,
+        lfFaceName: face_name(face),
         ..Default::default()
     };
-    let got = unsafe {
-        SystemParametersInfoForDpi(
-            SPI_GETNONCLIENTMETRICS.0,
-            metrics.cbSize,
-            Some(std::ptr::from_mut(&mut metrics).cast()),
-            0,
-            dpi,
-        )
-    }
-    .is_ok();
-    let mut normal_font: LOGFONTW = if got && metrics.lfMessageFont.lfHeight != 0 {
-        metrics.lfMessageFont
-    } else {
-        LOGFONTW {
-            // 9pt = 12px @96DPI
-            lfHeight: -((9 * dpi as i32 + 36) / 72),
-            lfWeight: 400,
-            lfCharSet: DEFAULT_CHARSET,
-            lfFaceName: face_name("Segoe UI"),
-            ..Default::default()
+    let mut normal_font = make("Segoe UI");
+    let variable = make("Segoe UI Variable Text");
+    let probe = unsafe { CreateFontIndirectW(&variable) };
+    if !probe.is_invalid() {
+        if realized_face_is(probe, "Segoe UI Variable Text") {
+            normal_font = variable;
         }
-    };
-    // 文字のなめらかさを明示する。システムのメッセージフォントの `lfQuality` は既定（0）のことがあり、
-    // その場合は描く先（メモリ DC・オーナードロー）によって ClearType が効かずギザギザになりうる
-    normal_font.lfQuality = CLEARTYPE_QUALITY;
+        let _ = unsafe { DeleteObject(HGDIOBJ(probe.0)) };
+    }
     // 見出しは本文と同じ書体（Segoe UI / Segoe UI Variable の既定）の大きさと太さだけを変える
     let derive = |num: i32, den: i32, weight: i32| -> LOGFONTW {
         let mut f = normal_font;

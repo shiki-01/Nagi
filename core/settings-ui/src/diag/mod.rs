@@ -18,6 +18,7 @@ pub mod ctx;
 pub mod engine;
 pub mod entry;
 pub mod input;
+pub mod langopts;
 pub mod manual;
 pub mod pe;
 pub mod report;
@@ -151,6 +152,7 @@ fn dispatch(ctx: &Ctx, engines: &mut Engines, id: ItemId) -> ItemResult {
         ItemId::TsfUserProfile => checks::check_user_profile(ctx),
         ItemId::TsfInterfaces => checks::check_interfaces(ctx),
         ItemId::TsfFunctionProvider => checks::check_function_provider(ctx),
+        ItemId::TsfLanguageOptions => langopts::check(ctx),
         ItemId::TsfLog => checks::check_tsf_log(ctx),
         ItemId::EngineStart => engine::check_start(ctx, engines),
         ItemId::EngineShutdown => engine::check_shutdown(ctx, engines),
