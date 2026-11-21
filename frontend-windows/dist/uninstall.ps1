@@ -24,13 +24,19 @@
 
 .PARAMETER Elevated
   内部用。昇格した子プロセスが登録解除とファイル削除だけを行う。
+
+.PARAMETER KeepInstallerFiles
+  内部用。セットアップ exe のアンインストーラ（unins*）を削除の対象から外し、インストール先のディレクトリも消さない
+  （それらは exe のアンインストーラ自身が消す）。「アプリと機能」にセットアップ exe の項目を残さないよう、
+  このスクリプトが作った項目（Uninstall\Nagi）は消す。
 #>
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'Nagi'),
     [switch]$RemoveUserData,
     [switch]$Force,
-    [switch]$Elevated
+    [switch]$Elevated,
+    [switch]$KeepInstallerFiles
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,16 +133,31 @@ function Uninstall-Privileged {
         # 子ディレクトリは作らない前提。念のため再帰で数える
         $files = Get-ChildItem -LiteralPath $InstallDir -Force -File -Recurse -ErrorAction SilentlyContinue
         foreach ($file in $files) {
+            # セットアップ exe のアンインストーラ（unins000.exe / .dat）は、実行中の本体なので触らない
+            if ($KeepInstallerFiles -and $file.Name -like 'unins*') { continue }
             if (-not (Remove-FileOrSchedule $file.FullName)) { $pending = $true }
         }
         # 退避したファイルが残っている間はディレクトリを消せない（再起動時の削除に任せる）
-        if (-not $pending) {
+        if ($KeepInstallerFiles) {
+            # ディレクトリは exe のアンインストーラが消す
+        } elseif (-not $pending) {
             Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
         } else {
             Register-DeleteOnReboot $InstallDir
         }
     }
     Remove-Item -Path $UninstallKey -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not $KeepInstallerFiles) {
+        # セットアップ exe（Inno Setup）で入れていた場合の「アプリと機能」の項目（このスクリプトで消すと宙に浮くため）
+        $root = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+        $here = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+        foreach ($key in Get-ChildItem -Path $root -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like '*_is1' }) {
+            $appPath = $key.GetValue('Inno Setup: App Path')
+            if ($appPath -and ([IO.Path]::GetFullPath([string]$appPath).TrimEnd('\') -eq $here)) {
+                Remove-Item -Path $key.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
     # スタートメニューのショートカット（install.ps1 が作る）。無ければ何もしない
     $startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Nagi'
     Remove-Item -LiteralPath $startMenu -Recurse -Force -ErrorAction SilentlyContinue

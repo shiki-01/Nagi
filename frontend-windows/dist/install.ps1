@@ -28,7 +28,27 @@
   辞書とモデルを取得しない。
 
 .PARAMETER Elevated
-  内部用。昇格した子プロセスが配置と登録だけを行う。
+  内部用。昇格した子プロセスが配置と登録だけを行う（apply-update.ps1 と、セットアップ exe が使う）。
+
+  以下はセットアップ exe（Nagi-setup-X.Y.Z.exe。frontend-windows/installer/nagi.iss）が使う内部用の指定。
+  exe は UI・昇格・CPU に合う zip の展開だけを行い、配置・登録・スタートメニュー・辞書とモデルの取得は
+  このスクリプトを呼んで行う（実装を重複させない。正はこのスクリプト）。
+
+.PARAMETER NoPause
+  -Elevated の失敗時に Enter 待ちをしない（窓を出さずに実行されるため）。
+
+.PARAMETER LogPath
+  指定すると、その場所に実行の記録（Start-Transcript）を残す。
+
+.PARAMETER StopEngines
+  -Elevated のとき、配置の前にインストール先の旧版の imserver を止める（apply-update.ps1 と同じ判定）。
+
+.PARAMETER HideUninstallEntry
+  「アプリと機能」に Nagi の項目を 2 つ出さないよう、このスクリプトが作る項目（apply-update.ps1 が参照する
+  登録情報として必要）を非表示（SystemComponent=1）にする。セットアップ exe が自前の項目を持つとき用。
+
+.PARAMETER DataOnly
+  辞書とモデルの取得だけを行う（昇格しない。-InstallDir の imserver.exe を使う）。
 #>
 [CmdletBinding()]
 param(
@@ -36,7 +56,12 @@ param(
     [ValidateSet('small', 'xsmall', 'none')]
     [string]$Model = 'small',
     [switch]$SkipData,
-    [switch]$Elevated
+    [switch]$Elevated,
+    [switch]$NoPause,
+    [string]$LogPath = '',
+    [switch]$StopEngines,
+    [switch]$HideUninstallEntry,
+    [switch]$DataOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -214,6 +239,73 @@ function New-StartMenuShortcuts([string]$TargetInstallDir) {
     }
 }
 
+# インストール先の imserver（通常名・`.old` に退避されたもの）のプロセスを、パスで列挙する
+# （プロセス名では判定しない。apply-update.ps1 と同じ。decisions.md H-96）
+function Get-InstalledEngines([string]$Dir) {
+    $prefix = (Join-Path $Dir $ExeName)
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null
+        try { $path = $_.Path } catch { }
+        $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
+# 旧版の imserver を止める（-StopEngines）。配置で imserver.exe が `.old` に改名される前に呼ぶ。
+# 止めたエンジンは各ホストの supervisor が自動で再起動し、そのとき新しい imserver.exe が使われる
+function Stop-InstalledEngines([string]$Dir) {
+    $engines = Get-InstalledEngines $Dir
+    if ($engines.Count -eq 0) { return }
+    Say "動作中の旧版のエンジン（imserver）$($engines.Count) 個を止めます（止めたエンジンは自動で再起動し、新しい版が使われます）"
+    foreach ($engine in $engines) {
+        Stop-Process -Id $engine.Id -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($engine in $engines) {
+        try { [void]$engine.WaitForExit(3000) } catch { }
+    }
+}
+
+function Start-InstallLog {
+    if (-not $LogPath) { return }
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
+        Start-Transcript -LiteralPath $LogPath -Force | Out-Null
+    } catch {
+        # 記録が取れなくても導入は続ける
+    }
+}
+
+# セットアップ exe（Inno Setup）が作る「アプリと機能」の項目の表示バージョンを、いま配置した版にそろえる。
+# 自動更新（apply-update.ps1）はこのスクリプトを再実行するため、exe の項目だけ古い版のままになるのを防ぐ。
+# 項目は Inno の "Inno Setup: App Path" がインストール先と一致するものを探す（見つからなければ何もしない）
+function Sync-SetupEntryVersion([string]$TargetInstallDir, [string]$Version) {
+    try {
+        $root = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+        $here = [IO.Path]::GetFullPath($TargetInstallDir).TrimEnd('\')
+        foreach ($key in Get-ChildItem -Path $root -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like '*_is1' }) {
+            $appPath = $key.GetValue('Inno Setup: App Path')
+            if ($appPath -and ([IO.Path]::GetFullPath([string]$appPath).TrimEnd('\') -eq $here)) {
+                New-ItemProperty -Path $key.PSPath -Name 'DisplayVersion' -Value $Version -PropertyType String -Force | Out-Null
+            }
+        }
+    } catch {
+        # 表示だけの同期。失敗しても導入は失敗にしない
+    }
+}
+
+# 辞書とモデルを配布元から取得する（現在のユーザーの %APPDATA%\Nagi\data。昇格しないで実行する）。戻り値: 成功したか
+function Install-Data([string]$Dir) {
+    $dataDir = Join-Path $env:APPDATA 'Nagi\data'
+    Say '辞書とモデルを取得しています（約 150MB。取得済みのものは飛ばします）'
+    # 標準出力は進捗の JSON（アプリ向け）なので捨て、標準エラーの人向けのログだけを表示する
+    & (Join-Path $Dir $ExeName) --install-data --data-dir $dataDir --model $Model | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Say "辞書とモデルを入れました: $dataDir"
+        return $true
+    }
+    Say '警告: 辞書とモデルを入れられませんでした。ネットワークを確認して、このスクリプトをもう一度実行してください'
+    return $false
+}
+
 # 管理者権限が要る手順: 配置・登録・「アプリと機能」への登録・スタートメニューのショートカット
 function Install-Privileged([string]$SourceDir) {
     Test-Payload $SourceDir
@@ -252,18 +344,40 @@ function Install-Privileged([string]$SourceDir) {
     foreach ($key in @('NoModify', 'NoRepair')) {
         New-ItemProperty -Path $UninstallKey -Name $key -Value 1 -PropertyType DWord -Force | Out-Null
     }
+    if ($HideUninstallEntry) {
+        # 一覧には出さない（セットアップ exe の項目だけを見せる）。InstallLocation は apply-update.ps1 が読むので残す
+        New-ItemProperty -Path $UninstallKey -Name 'SystemComponent' -Value 1 -PropertyType DWord -Force | Out-Null
+    }
+    Sync-SetupEntryVersion $InstallDir $version
 
     New-StartMenuShortcuts $InstallDir
 }
 
-# 昇格した子プロセスから呼ばれたとき: 配置だけして終わる（失敗は窓が閉じる前に読めるよう待つ）
+# 昇格した子プロセスから呼ばれたとき: 配置だけして終わる（失敗は窓が閉じる前に読めるよう待つ。-NoPause なら待たない）
 if ($Elevated) {
+    $code = 0
     try {
+        Start-InstallLog
+        if ($StopEngines) { Stop-InstalledEngines $InstallDir }
         Install-Privileged $PSScriptRoot
-        exit 0
     } catch {
         Write-Host "nagi: エラー: $($_.Exception.Message)" -ForegroundColor Red
+        $code = 1
+    }
+    try { Stop-Transcript | Out-Null } catch { }
+    if ($code -ne 0 -and -not $NoPause) {
         Read-Host 'Enter キーで閉じます' | Out-Null
+    }
+    exit $code
+}
+
+# 辞書とモデルの取得だけ（セットアップ exe が、元のユーザーの権限で呼ぶ。窓に進み具合が出る）
+if ($DataOnly) {
+    try {
+        if (Install-Data $InstallDir) { exit 0 }
+        exit 1
+    } catch {
+        Write-Host "nagi: エラー: $($_.Exception.Message)" -ForegroundColor Red
         exit 1
     }
 }
@@ -301,16 +415,7 @@ try {
     if ($SkipData) {
         Say '辞書とモデルの取得を飛ばしました（-SkipData）'
     } else {
-        $dataDir = Join-Path $env:APPDATA 'Nagi\data'
-        Say '辞書とモデルを取得しています（約 150MB。取得済みのものは飛ばします）'
-        # 標準出力は進捗の JSON（アプリ向け）なので捨て、標準エラーの人向けのログだけを表示する
-        & (Join-Path $InstallDir $ExeName) --install-data --data-dir $dataDir --model $Model | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            $dataOk = $true
-            Say "辞書とモデルを入れました: $dataDir"
-        } else {
-            Say '警告: 辞書とモデルを入れられませんでした。ネットワークを確認して、このスクリプトをもう一度実行してください'
-        }
+        $dataOk = Install-Data $InstallDir
     }
 
     Write-Host ''

@@ -5,6 +5,9 @@ name: windows-release
 # windows-vX.Y.Z に両方を載せる。アセット:
 #   x64:   Nagi-windows-X.Y.Z.zip        + latest.json        （0.1.15 以前のクライアントが参照する名前。変えない）
 #   ARM64: Nagi-windows-arm64-X.Y.Z.zip  + latest-arm64.json
+# 両方の zip を展開して、1 個のセットアップ exe（Nagi-setup-X.Y.Z.exe。Inno Setup。x64 / ARM64 共通）も作り、
+# 同じリリースに載せる（installer ジョブ。frontend-windows/installer/nagi.iss）。exe は導入の入口で、
+# 配置などの実処理は zip 内の install.ps1 が正（自動更新は zip 経由のまま）。
 # あわせて ed25519 署名つきの latest*.json を作り、サイト（nagi.shiki-01.com/updates/windows/latest*.json）に載せる
 # ため web ワークフローを起動する（web が最新の windows-v* リリースから latest*.json を取り込む）。
 # 方針は docs/decisions.md H-42（ARM64 の追加は同 H-104）。
@@ -256,9 +259,80 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/codesign.pfx"
 
+  # 両アーキテクチャの zip を展開して、1 個のセットアップ exe（Inno Setup）を作る。
+  # publish=false でも走らせる（artifact の exe を落として試せる）
+  installer:
+    needs: [prepare, build]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nagi-windows-*-${{ needs.prepare.outputs.version }}
+          path: artifacts
+          merge-multiple: true
+
+      - name: zip を展開する（x64 / ARM64）
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem artifacts | Format-Table Name, Length
+          Expand-Archive -LiteralPath "artifacts/Nagi-windows-$env:VERSION.zip" -DestinationPath payload-x64
+          if ('${{ inputs.arm64 }}' -eq 'true') {
+            Expand-Archive -LiteralPath "artifacts/Nagi-windows-arm64-$env:VERSION.zip" -DestinationPath payload-arm64
+          }
+
+      # windows-latest のイメージに Inno Setup が入っていればそれを使い、無ければ Chocolatey で入れる。
+      # nagi.iss は x64compatible / x64os / IsArm64（Inno Setup 6.3 以降）を使う
+      - name: Inno Setup の用意
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'ISCC.exe が見つかりません' }
+          $v = [version]$iscc.VersionInfo.ProductVersion
+          Write-Host "ISCC: $($iscc.FullName) ($v)"
+          if ($v -lt [version]'6.3') { throw "Inno Setup 6.3 以降が必要です（$v）" }
+          if (-not (Test-Path (Join-Path $iscc.DirectoryName 'Languages\Japanese.isl'))) { throw 'Japanese.isl が見つかりません' }
+          "ISCC=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Authenticode 署名の差し込み位置（未実装）。SignPath / Certum のクラウド署名などを入れるときは、ここで
+      # Secrets の有無を確かめ（無ければ skip）、署名コマンドを組み立てて下の iscc に
+      #   /DSignToolName=nagisign "/Snagisign=<署名コマンド> $f"
+      # を渡す（setup exe とアンインストーラが署名される）。クラウド署名のようにコマンドラインで署名できない
+      # サービスは、iscc の後に生成された exe を署名して置き換える形にする（その場合は /DSignToolName は不要）。
+      # 現在は証明書が未登録のため、署名なしで作る
+
+      - name: セットアップ exe をビルドする
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $x64 = (Resolve-Path "payload-x64/Nagi-windows-$env:VERSION").Path
+          $isccArgs = @("/DAppVersion=$env:VERSION", "/DSrcX64=$x64", "/DOutputDir=$((Resolve-Path .).Path)\installer-out")
+          if ('${{ inputs.arm64 }}' -eq 'true') {
+            $isccArgs += "/DSrcArm64=$((Resolve-Path "payload-arm64/Nagi-windows-$env:VERSION").Path)"
+          }
+          $isccArgs += (Resolve-Path 'frontend-windows/installer/nagi.iss').Path
+          & $env:ISCC @isccArgs
+          if ($LASTEXITCODE -ne 0) { throw "iscc が失敗しました ($LASTEXITCODE)" }
+          Get-ChildItem installer-out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nagi-setup-${{ needs.prepare.outputs.version }}
+          path: installer-out/Nagi-setup-${{ needs.prepare.outputs.version }}.exe
+
   # すべてのビルドが成功したときだけ、1 つのリリースに全アーキテクチャの zip と latest*.json を載せる
   release:
-    needs: [prepare, build]
+    needs: [prepare, build, installer]
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -269,7 +343,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: nagi-windows-*-${{ needs.prepare.outputs.version }}
+          pattern: nagi-{windows,setup}-*${{ needs.prepare.outputs.version }}
           merge-multiple: true
 
       - name: GitHub Releases に公開
@@ -277,13 +351,13 @@ jobs:
           ls -l
           flags=()
           if [ "${{ inputs.prerelease }}" = "true" ]; then flags=(--prerelease); fi
-          assets=("Nagi-windows-$VERSION.zip" latest.json)
+          assets=("Nagi-windows-$VERSION.zip" latest.json "Nagi-setup-$VERSION.exe")
           if [ "${{ inputs.arm64 }}" = "true" ]; then assets+=("Nagi-windows-arm64-$VERSION.zip" latest-arm64.json); fi
           gh release create "windows-v$VERSION" "${assets[@]}" \
             --target "$GITHUB_SHA" \
             --title "Nagi for Windows $VERSION" \
             "${flags[@]}" \
-            --notes "Windows 10 22H2 以降 / 11（x64: Nagi-windows-$VERSION.zip、ARM64: Nagi-windows-arm64-$VERSION.zip）。Authenticode 署名なし（SmartScreen の警告が出ることがあります。手順: docs/windows-install.md）。インストール: PowerShell で \`irm https://nagi.shiki-01.com/install.ps1 | iex\`（CPU に合う版と、辞書・モデルを自動で取得する）。実機で未検証の版は prerelease。ARM64 版は ARM64 ネイティブのアプリだけで使える（x64 エミュレーションのアプリには出ない）。"
+            --notes "Windows 10 22H2 以降 / 11（x64: Nagi-windows-$VERSION.zip、ARM64: Nagi-windows-arm64-$VERSION.zip）。Authenticode 署名なし（SmartScreen の警告が出ることがあります。手順: docs/windows-install.md）。インストール: ダブルクリックで導入できる Nagi-setup-$VERSION.exe（x64 / ARM64 共通。署名なしのため SmartScreen で「詳細情報 → 実行」）、または PowerShell で \`irm https://nagi.shiki-01.com/install.ps1 | iex\`（CPU に合う版と、辞書・モデルを自動で取得する）。実機で未検証の版は prerelease。ARM64 版は ARM64 ネイティブのアプリだけで使える（x64 エミュレーションのアプリには出ない）。"
 
       - name: サイトの latest.json を更新（web ワークフローを起動）
         if: "!inputs.prerelease"
