@@ -151,6 +151,11 @@
   <div class="horizon" aria-hidden="true">
     <span class="sun"></span>
     <span class="glow"></span>
+    <!-- 日の下のなみなみ（アプリアイコンの波）。ゆっくり横へ流れる -->
+    <svg class="waves" viewBox="-120 0 240 60" focusable="false">
+      <path class="wave" d="M-200 14q20-10 40 0t40 0t40 0t40 0t40 0t40 0t40 0t40 0t40 0t40 0" />
+      <path class="wave faint" d="M-180 40q20-10 40 0t40 0t40 0t40 0t40 0t40 0t40 0t40 0t40 0" />
+    </svg>
   </div>
 
   <div class="water">
@@ -210,13 +215,13 @@
   .copy {
     max-width: var(--wrap);
     margin: 0 auto;
-    padding: clamp(56px, 9vw, 120px) var(--gutter) 0;
+    padding: clamp(40px, 5vw, 64px) var(--gutter) 0;
     box-sizing: border-box;
   }
   .kana {
     max-width: var(--wrap);
     margin: 0 auto;
-    padding: clamp(40px, 6vw, 72px) var(--gutter) 14px;
+    padding: clamp(28px, 3.5vw, 40px) var(--gutter) 14px;
     box-sizing: border-box;
     min-height: 1.9em;
     font-family: var(--font-serif);
@@ -256,6 +261,7 @@
   /* ---- 水平線と日 ---- */
   .horizon {
     position: relative;
+    z-index: 1; /* 水面の背景より手前に、日の映りと波を出す */
     height: 0;
     border-top: 1px solid var(--fg);
   }
@@ -286,6 +292,42 @@
     -webkit-mask-composite: source-in;
     mask-composite: intersect;
     animation: shimmer 9s ease-in-out infinite;
+  }
+  .waves {
+    position: absolute;
+    left: var(--sun-x);
+    top: calc(var(--sun-r) * 0.35);
+    width: calc(var(--sun-r) * 6);
+    height: calc(var(--sun-r) * 1.5);
+    margin-left: calc(var(--sun-r) * -3);
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+  }
+  .wave {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    opacity: 0.75;
+    animation: drift 7s linear infinite;
+  }
+  .wave.faint {
+    opacity: 0.4;
+    animation-duration: 10s;
+    animation-direction: reverse;
+  }
+  @keyframes drift {
+    to {
+      transform: translateX(40px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sun,
+    .glow,
+    .wave {
+      animation: none;
+    }
   }
   @keyframes breathe {
     50% {
@@ -420,6 +462,10 @@
   @media (max-width: 899px) {
     .minamo {
       --sun-x: 84%;
+    }
+    .waves {
+      width: calc(var(--sun-r) * 3.4);
+      margin-left: calc(var(--sun-r) * -1.7);
     }
     .label {
       display: block;
