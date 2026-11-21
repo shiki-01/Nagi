@@ -2277,6 +2277,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 
 - **比較**: SignPath Foundation（無料。OSS の審査あり。証明書の発行者名は「SignPath Foundation」。GitHub Actions 連携）/ Certum の OSS 向けコード署名証明書（有料。個人名で発行。クラウド署名）/ Azure Artifact Signing（個人の利用は米国・カナダの居住者のみ）。
 - **決定**: SignPath Foundation に申請する（**未申請**。申請はユーザーが行う）。手順は `docs/code-signing.md`、公開ポリシーは `nagi.shiki-01.com/code-signing`（`web/src/routes/code-signing/`）。
+- **その後（H-113）**: 申請は後回し（2026-11-21、ユーザー決定）。現時点では未申請のまま。
 - **リスク**: 審査で知名度不足を理由に断られた例がある。その場合は Certum に切り替える。
 - **関連**: H-42 の署名方針（Azure Trusted Signing を第一候補としていた）を本決定で置き換える。
 
@@ -2290,6 +2291,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - アンインストール: `[UninstallRun]` で `uninstall.ps1 -KeepInstallerFiles`（`regsvr32 /u`・エンジン停止・スタートメニュー削除）。ユーザーデータ（`%APPDATA%\Nagi`）の削除は完了後の確認で、既定は残す（MS-IME 等の慣行）。サイレントでは `/REMOVEUSERDATA=1` のときだけ消す。
 - `install.ps1` に足した引数: `-NoPause` `-LogPath` `-StopEngines` `-HideUninstallEntry` `-DataOnly`。既存の呼び出し方の挙動は変えない。`irm | iex` の PowerShell 版は上級者向けとして残す。
 - 署名: SignPath（H-110）の Secrets が登録されるまでは無署名。
+- 実機確認（0.1.17）と本番リリースで直した CI の問題は H-113。
 
 残課題・未確認:
 - PowerShell と iscc はこの開発環境に無く、構文検査は CI 任せ。実機の確認は `docs/real-hardware-checklist.md` §8.8。
@@ -2308,3 +2310,18 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **既知の未確認**: 標準ユーザー、VC++ 再頒布可能パッケージなしの環境、ARM64（別セッションで対応中。H-107 以降）、SmartScreen の文言の記録、曖昧入力（H-88・H-89）の Windows 実機。自動更新の失敗系・設定画面の DPI 切替・`--web` も個別には未記録。
 - **CI の修正**: macOS の CI で hybrid のテストが固定 sleep のため不安定だった件を修正済み（コミット a910246）。**未対応**: 同型の固定 sleep の候補が他のテストファイルにある（`model_unload.rs`、`touch_rpc.rs`、`retro_review.rs`、`suggest_prefix.rs`、`async_load.rs`）。不安定になったら同様に、固定時間の待ちを条件待ち（ポーリング）に置き換える。
 - **更新した文書**: `CLAUDE.md`（現状）、`docs/progress.md`（Windows 節）、`docs/real-hardware-checklist.md`（§8 冒頭・§8.5c・§8.7）、`docs/windows-verification.md`（自動更新の手順）。
+
+### H-113. Windows 0.1.17 の実機確認の記録と配布（2026-11-21、ユーザー報告。ログ・計測値は未取得。コードの挙動は変えない。文書のみ）
+
+- **確認結果（問題なし、ユーザー報告。全体の動作のみで §8.8 の細目は未記録）**:
+  - セットアップ用 .exe（`Nagi-setup-0.1.17.exe`、H-111）: 導入・UAC・辞書/モデル取得の別窓・「設定 → アプリ」に 1 件・アンインストールとユーザーデータの確認。
+  - 文書切替・キャレット移動での確定（H-105）、ダークモード・ハイコントラスト追従（H-106）、モード切替のキャレット付近の「あ / A」表示（H-109）、UILess（全画面ゲームで候補がアプリ側に出る。H-108）。
+- **未確認**: `ITfFnConfigure`（言語の設定 →「オプション」から設定画面。ユーザーが場所を見つけられず、手順を案内中。手順は `docs/windows-install.md`）、§8.8 の個別の細目、ARM64（H-107）。
+- **ARM64**: 手元に実機が無いため、バグ報告を待つ方針。
+- **配布**: 0.1.17 を prerelease から公開版に切り替える。`windows-promote.yml` を追加し、prerelease を外して `web.yml` を起動し `latest.json` / `latest-arm64.json` をサイトに反映する（`windows-release.yml` は同じタグで作り直せないため）。
+- **署名**: SignPath Foundation の申請（H-110）は後回し（ユーザー決定）。現時点では未申請。
+- **本番リリースで直した CI の問題**:
+  - `installer` ジョブに実行条件が無く、sign が skipped だと installer・release が連鎖で skipped になった。
+  - ISCC の版がファイル情報でも `/?` でも読めず、版の事前確認を撤去した。
+  - マージ時に衝突マーカーが `CLAUDE.md`・`decisions.md` に残った。再発防止: マージ後に `git grep -nE '^(<<<<<<< |>>>>>>> |=======$)'` で確認する。
+- **更新した文書**: `CLAUDE.md`（現状）、`docs/progress.md`（Windows 節）、`docs/real-hardware-checklist.md`（§8 冒頭・§8.8）、`docs/windows-install.md`（設定画面の開き方）。
