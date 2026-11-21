@@ -6,6 +6,7 @@
 //! 15 分間操作が無ければ終了する）。
 //! 設定画面が使う `imserver` は `--no-llm` の別プロセス（親の PID を渡し、親が落ちたら止まる）。
 //! `--section update --auto-check`: 更新ページを開き、更新の確認を自動で実行する（右クリックメニュー・スタートメニューの「更新を確認」）。
+//! `--diag`: 画面を開かず実機の診断を実行する（`--diag-item <id>`・`--diag-out <dir>`・`--diag-json`・`--no-network`）。
 //! 検証用（`--web` のときだけ）: `--no-browser`（ブラウザを開かない）、`--url-file <path>`（URL をファイルに書く）。
 
 // Windows ではコンソールを出さない（言語バーのメニューから起動される GUI 起点のアプリ）
@@ -34,6 +35,14 @@ fn main() -> ExitCode {
 
 fn real_main() -> Result<(), String> {
     let args = parse_args(std::env::args().skip(1))?;
+    if args.diag {
+        // 診断（画面は開かない）。NG があれば終了コード 1
+        let code = nagi_settings_ui::diag::entry::run_cli(&args)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     #[cfg(windows)]
     if args.use_native() {
         return run_native(&args);

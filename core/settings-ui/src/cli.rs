@@ -24,6 +24,16 @@ pub struct Args {
     pub section: Option<String>,
     /// `--auto-check`: 開いたら更新の確認を自動で実行する（`--section update` と併用）
     pub auto_check: bool,
+    /// `--diag`: 画面を開かず、実機の診断（`diag`）を実行してレポートを出力する
+    pub diag: bool,
+    /// `--diag-item <id>`: 診断する項目を 1 つに絞る（`--diag` のとき）
+    pub diag_item: Option<String>,
+    /// `--diag-out <dir>`: レポートの保存先（`--diag` のとき。既定はログフォルダ）
+    pub diag_out: Option<PathBuf>,
+    /// `--diag-json`: レポートを JSON で標準出力に出す（`--diag` のとき）
+    pub diag_json: bool,
+    /// `--no-network`: 診断で実サーバーに通信しない（`--diag` のとき）
+    pub diag_no_network: bool,
 }
 
 impl Args {
@@ -71,6 +81,13 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Args, Strin
                 out.section = Some(name);
             }
             "--auto-check" => out.auto_check = true,
+            "--diag" => out.diag = true,
+            "--diag-item" => {
+                out.diag_item = Some(value("--diag-item")?.to_string_lossy().into_owned());
+            }
+            "--diag-out" => out.diag_out = Some(value("--diag-out")?),
+            "--diag-json" => out.diag_json = true,
+            "--no-network" => out.diag_no_network = true,
             "--no-browser" => out.no_browser = true,
             "--web" => out.web = true,
             other => return Err(format!("不明な引数: {other}")),
@@ -168,6 +185,20 @@ mod tests {
         assert!(b.auto_check);
         assert_eq!(b.update_dir, Some(PathBuf::from("/up")));
         assert!(parse(&["--section", "other"]).is_err());
+        let d = parse(&[
+            "--diag",
+            "--diag-item",
+            "env.arch",
+            "--diag-out",
+            "/o",
+            "--diag-json",
+            "--no-network",
+        ])
+        .unwrap();
+        assert!(d.diag && d.diag_json && d.diag_no_network);
+        assert_eq!(d.diag_item.as_deref(), Some("env.arch"));
+        assert_eq!(d.diag_out, Some(PathBuf::from("/o")));
+        assert!(!parse(&[]).unwrap().diag);
         assert!(parse(&["--data-dir"]).is_err());
         assert!(parse(&["--bogus"]).is_err());
     }

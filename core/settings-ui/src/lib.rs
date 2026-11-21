@@ -14,6 +14,7 @@
 //! - `opener`: ブラウザ・メモ帳・エクスプローラーの起動
 //! - `run`: HTTP サーバーのループ
 //! - `cli`: コマンドライン引数
+//! - `diag`: 実機の未確認項目をボタン一つで確認する診断（OS 非依存の判定 + Windows 依存部は `diag::sys`。`--diag` で CLI から実行）
 //! - `native_model` / `native_layout` / `native_worker`: ネイティブ設定ウィンドウの OS 非依存部分
 //!   （画面モデル・レイアウト計算・バックエンド用ワーカースレッド。`docs/decisions.md` H-104）
 //! - `native`（Windows のみ）: Win32 のウィンドウ層。上の 3 つだけを見る
@@ -21,6 +22,7 @@
 pub mod assets;
 pub mod backend;
 pub mod cli;
+pub mod diag;
 pub mod http;
 pub mod lifecycle;
 #[cfg(windows)]
