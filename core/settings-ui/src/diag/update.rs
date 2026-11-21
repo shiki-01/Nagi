@@ -651,8 +651,16 @@ mod tests {
         let zip = get(&format!("/{FAKE_ZIP}"));
         assert!(zip.starts_with("HTTP/1.1 200"));
         drop(server);
-        // 閉じたあとは接続できない
-        assert!(std::net::TcpStream::connect(host).is_err());
+        // 閉じたあとは接続できない（Linux ではソケットが閉じ切るまで少し掛かるので、最大 2 秒待つ）
+        let mut refused = false;
+        for _ in 0..40 {
+            if std::net::TcpStream::connect(host).is_err() {
+                refused = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(refused, "停止後も接続できる");
     }
 
     #[test]

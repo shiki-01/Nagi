@@ -34,7 +34,8 @@ fn embed_icon() {
     // rc の文字列ではバックスラッシュがエスケープになるので、区切りは `/` にする
     let ico_path = ico.display().to_string().replace('\\', "/");
     std::fs::write(&rc, format!("1 ICON \"{ico_path}\"\n")).expect("rc を書けません");
-    let ci = std::env::var_os("CI").is_some();
+    let ci = std::env::var_os("CI").is_some()
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     match embed_resource::compile(&rc, embed_resource::NONE) {
         embed_resource::CompilationResult::NotWindows | embed_resource::CompilationResult::Ok => {}
         embed_resource::CompilationResult::NotAttempted(reason) if !ci => {

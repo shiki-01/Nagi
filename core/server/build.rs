@@ -23,8 +23,9 @@ fn main() {
     // rc の文字列ではバックスラッシュがエスケープになるので、区切りは `/` にする
     let ico_path = ico.display().to_string().replace('\\', "/");
     std::fs::write(&rc, format!("1 ICON \"{ico_path}\"\n")).expect("rc を書けません");
-    // アイコン無しでも動く。リソースコンパイラが無いときは、CI（`CI` 環境変数）ではビルドを止め、手元では警告にとどめる
-    let ci = std::env::var_os("CI").is_some();
+    // アイコン無しでも動く。リソースコンパイラが無いときは、CI（`CI` 環境変数）の MSVC ターゲットではビルドを止め、手元では警告にとどめる
+    let ci = std::env::var_os("CI").is_some()
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     match embed_resource::compile_for(&rc, ["imserver"], embed_resource::NONE) {
         embed_resource::CompilationResult::NotWindows | embed_resource::CompilationResult::Ok => {}
         embed_resource::CompilationResult::NotAttempted(reason) if !ci => {
