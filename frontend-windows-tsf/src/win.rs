@@ -64,6 +64,14 @@ pub fn cursor_position() -> Point {
     }
 }
 
+/// マウスカーソルの位置（スクリーン座標）。取れなければ `None`
+pub fn try_cursor_position() -> Option<Point> {
+    let mut p = POINT::default();
+    unsafe { GetCursorPos(&mut p) }
+        .is_ok()
+        .then_some(Point { x: p.x, y: p.y })
+}
+
 unsafe extern "system" fn collect_monitor(
     monitor: HMONITOR,
     _hdc: HDC,

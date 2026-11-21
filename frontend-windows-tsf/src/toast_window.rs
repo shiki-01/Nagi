@@ -1,12 +1,17 @@
 //! 通知パネル（トースト）。フォーカスを奪わない最前面の小さなポップアップを、作業領域の右下に
 //! 数秒だけ出す。文言は `nagi_windows::status`、配置・表示時間は `nagi_windows::toast` が決める。
+//! モード切替ポップアップ（キャレット付近に 1 秒）も同じウィンドウで出す（`show_near`）。
 
 #![allow(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
 
-use nagi_windows::candidates::{Size, scale_px};
-use nagi_windows::toast::{TOAST_DURATION, TOAST_MARGIN, TOAST_MAX_WIDTH, place_toast};
+use std::time::Duration;
+
+use nagi_windows::candidates::{Rect, Size, scale_px};
+use nagi_windows::toast::{
+    TOAST_DURATION, TOAST_MARGIN, TOAST_MAX_WIDTH, place_mode_popup, place_toast,
+};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DT_CALCRECT, DT_NOPREFIX, DT_WORDBREAK,
@@ -36,6 +41,15 @@ const CORNER: i32 = 12;
 /// 文字の周りの余白（96 DPI 基準）
 const PAD_X: i32 = 14;
 const PAD_Y: i32 = 10;
+
+/// 表示位置の決め方
+#[derive(Clone, Copy)]
+enum Place {
+    /// プライマリの作業領域の右下（通知）
+    BottomRight,
+    /// 基準の矩形の近く（モード切替ポップアップ）
+    Near(Rect),
+}
 
 struct Paint {
     text: Vec<u16>,
@@ -105,8 +119,22 @@ impl ToastWindow {
         Some(hwnd)
     }
 
-    /// `message` を表示する。表示中なら置き換えて、表示時間をやり直す
+    /// `message` を作業領域の右下に表示する。表示中なら置き換えて、表示時間をやり直す
     pub fn show(&self, message: &str) {
+        self.present(
+            &format!("Nagi: {message}"),
+            Place::BottomRight,
+            TOAST_DURATION,
+        );
+    }
+
+    /// `text` を `anchor`（キャレットなどのスクリーン座標の矩形）の近くに `duration` だけ表示する
+    /// （モード切替ポップアップ）。表示中なら置き換えて、表示時間をやり直す
+    pub fn show_near(&self, text: &str, anchor: Rect, duration: Duration) {
+        self.present(text, Place::Near(anchor), duration);
+    }
+
+    fn present(&self, text: &str, place: Place, duration: Duration) {
         let Some(hwnd) = self.ensure_window() else {
             return;
         };
@@ -114,13 +142,17 @@ impl ToastWindow {
         let Some(work) = areas.first().copied() else {
             return;
         };
-        // プライマリの作業領域の右下へ先に動かし、そこの DPI で寸法を決める
+        // 置く場所へ先に動かし、そこのモニターの DPI で寸法を決める（トーストはプライマリの右下）
+        let (probe_x, probe_y) = match place {
+            Place::BottomRight => (work.right - 1, work.bottom - 1),
+            Place::Near(anchor) => (anchor.left, anchor.bottom),
+        };
         let _ = unsafe {
             SetWindowPos(
                 hwnd,
                 None,
-                work.right - 1,
-                work.bottom - 1,
+                probe_x,
+                probe_y,
                 0,
                 0,
                 SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER,
@@ -131,7 +163,7 @@ impl ToastWindow {
             return;
         };
         let fonts = Fonts::new(dpi);
-        let text: Vec<u16> = format!("Nagi: {message}").encode_utf16().collect();
+        let text: Vec<u16> = text.encode_utf16().collect();
         let (pad_x, pad_y) = (scale_px(PAD_X, dpi), scale_px(PAD_Y, dpi));
         let max_text_width = scale_px(TOAST_MAX_WIDTH, dpi) - pad_x * 2;
 
@@ -159,7 +191,10 @@ impl ToastWindow {
             width: (measure.right - measure.left) + pad_x * 2,
             height: (measure.bottom - measure.top) + pad_y * 2,
         };
-        let origin = place_toast(work, size, scale_px(TOAST_MARGIN, dpi));
+        let origin = match place {
+            Place::BottomRight => place_toast(work, size, scale_px(TOAST_MARGIN, dpi)),
+            Place::Near(anchor) => place_mode_popup(anchor, size, &areas),
+        };
         *cell.borrow_mut() = Some(Paint {
             text,
             fonts,
@@ -182,8 +217,17 @@ impl ToastWindow {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
             let _ = InvalidateRect(Some(hwnd), None, true);
-            let ms = u32::try_from(TOAST_DURATION.as_millis()).unwrap_or(4000);
+            let ms = u32::try_from(duration.as_millis()).unwrap_or(4000);
             SetTimer(Some(hwnd), TIMER_ID, ms, None);
+        }
+    }
+
+    /// 表示中なら隠す
+    pub fn hide(&self) {
+        let hwnd = self.hwnd.get();
+        if !hwnd.is_invalid() {
+            let _ = unsafe { KillTimer(Some(hwnd), TIMER_ID) };
+            let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
         }
     }
 

@@ -305,6 +305,24 @@ fn text_ext(context: &ITfContext, ec: u32, range: &ITfRange) -> Option<Rect> {
     Some(to_rect(rc))
 }
 
+/// 現在の選択範囲（キャレット）の画面上の矩形を測り、`done` に渡す（読み取り専用の編集セッション）。
+/// 測れなければ `None`。セッションを要求できなかったときは `Err`（`done` は呼ばれない）
+pub fn measure_selection_rect(
+    context: &ITfContext,
+    client_id: u32,
+    timing: Timing,
+    done: impl FnOnce(Option<Rect>) + 'static,
+) -> Result<()> {
+    let ctx = context.clone();
+    run(context, client_id, timing, false, move |ec| {
+        let rect = selection_range(&ctx, ec)
+            .ok()
+            .and_then(|r| text_ext(&ctx, ec, &r));
+        done(rect);
+        Ok(())
+    })
+}
+
 /// 候補ウィンドウの基準を測って `env.caret` に入れ、由来を返す。composition があれば入力部分の左端
 /// （先頭の点範囲 → composition 全体）、なければ（または測れなければ）選択範囲（キャレット）、
 /// それも測れなければ同じ composition で直前に測れた矩形。どれも無ければ `None`（マウス位置になる）

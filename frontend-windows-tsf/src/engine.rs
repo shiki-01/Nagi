@@ -346,6 +346,21 @@ impl EngineHost {
         Ok(result)
     }
 
+    /// キーを介さない操作（UILess の候補リストからの確定・取消・選択移動）。応答は `process_key` と同じ
+    pub fn perform_action(
+        &self,
+        session_id: &str,
+        action: TouchAction,
+    ) -> Result<ProcessKeyResult, ClientError> {
+        let params = PerformActionParams {
+            session_id: session_id.to_string(),
+            action,
+        };
+        let result = self.supervisor.perform_action(&params)?;
+        self.track(session_id, &result);
+        Ok(result)
+    }
+
     /// 文脈を通知する
     pub fn set_context(&self, params: &SetContextParams) -> Result<(), ClientError> {
         self.supervisor.set_context(params)

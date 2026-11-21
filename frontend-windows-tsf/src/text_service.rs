@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
-use nagi_protocol::{CandidatesView, InputMode, KeyKind, ProcessKeyResult, StatusResult};
+use nagi_protocol::{
+    CandidatesView, InputMode, KeyKind, ProcessKeyResult, StatusResult, TouchAction,
+};
 use nagi_windows::candidates::{CandidatePage, Rect, should_defer_show};
 use nagi_windows::context::{build_context, should_report_before_key};
 use nagi_windows::environment::{
@@ -30,6 +32,11 @@ use nagi_windows::status::{
     MenuCommand, MenuEntry, MenuTargets, PathEnv, ToastThrottle, toast_for,
 };
 use nagi_windows::supervisor::EngineEvent;
+use nagi_windows::toast::{
+    MODE_POPUP_DURATION, MODE_POPUP_ENABLED, ModeChangeCause, ModePopupInput, mode_popup_anchor,
+    mode_popup_text, should_show_mode_popup,
+};
+use nagi_windows::ui_element::CandidateListData;
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_POINTER, HWND, LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
     IEnumTfDisplayAttributeInfo, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl,
@@ -39,7 +46,7 @@ use windows::Win32::UI::TextServices::{
     ITfFunctionProvider, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
     ITfSource, ITfSourceSingle, ITfTextEditSink, ITfTextEditSink_Impl, ITfTextInputProcessor_Impl,
     ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
-    ITfThreadMgrEventSink_Impl, TF_ANCHOR_END, TF_ANCHOR_START,
+    ITfThreadMgrEventSink_Impl, ITfUIElement, ITfUIElementMgr, TF_ANCHOR_END, TF_ANCHOR_START,
 };
 use windows::core::{BOOL, BSTR, GUID, IUnknown, Interface, Ref, Result, implement};
 
@@ -55,6 +62,8 @@ use crate::probe::Win32Probe;
 use crate::reconversion::FunctionProvider;
 use crate::render::{self, EditPlan, HandoffCache};
 use crate::toast_window::ToastWindow;
+use crate::ui_element::{CandidateListElement, ElementState};
+use crate::win;
 
 /// プロセス内で共有するエンジン（ホストプロセスごとに 1 つ）。作るだけでは imserver を起動しない
 /// （`EngineHost::ensure_started` を、フォーカスが当たったとき・最初のキーで呼ぶ。入力しないホストで
@@ -176,7 +185,7 @@ fn log_failure(what: &str, error: &windows::core::Error) {
 }
 
 /// COM のエントリポイントでパニックを止める（パニックを FFI 境界から出すとホストアプリごと落ちる）
-fn guarded<T>(fallback: impl FnOnce() -> T, f: impl FnOnce() -> T) -> T {
+pub(crate) fn guarded<T>(fallback: impl FnOnce() -> T, f: impl FnOnce() -> T) -> T {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| fallback())
 }
 
@@ -228,6 +237,15 @@ pub(crate) struct Core {
     handoff: RefCell<HandoffCache<KeyOutcome>>,
     candidate_window: CandidateWindow,
     toast: ToastWindow,
+    /// モード切替ポップアップ（キャレット付近に 1 秒。通知とは別のウィンドウ）
+    mode_popup: ToastWindow,
+    /// UILess モードで `BeginUIElement` 中の候補リスト要素（出していなければ `None`）
+    ui: RefCell<Option<UiSession>>,
+    /// 直近の `BeginUIElement` でアプリが「自前で描く」と答えたか（モード切替ポップアップを出さない判断用。
+    /// フォーカスが変わったら捨てる）
+    ui_less: Cell<bool>,
+    /// 利用者が言語バーでモードを切り替えている最中（コンパートメントの変更通知を利用者の操作と見分ける）
+    user_mode_request: Cell<bool>,
     /// このセッションが前面でフォーカスを持っているか（通知はここだけ出す）
     focused: Cell<bool>,
     message_window: RefCell<Option<MessageWindow>>,
@@ -244,6 +262,15 @@ pub(crate) struct Core {
     thread_sink: RefCell<Option<(ITfSource, u32)>>,
     /// composition 中の文書の `ITfTextEditSink` の購読
     text_edit: RefCell<Option<TextEditAdvise>>,
+}
+
+/// `BeginUIElement` 中の候補リスト要素
+struct UiSession {
+    mgr: ITfUIElementMgr,
+    id: u32,
+    state: Rc<ElementState>,
+    /// 自前の候補ウィンドウを出す場合（`Show(TRUE)`）の表示内容
+    page: CandidatePage,
 }
 
 /// `ITfTextEditSink` の購読（composition を持つ context への）
@@ -281,6 +308,10 @@ impl Core {
             handoff: RefCell::new(HandoffCache::new()),
             candidate_window: CandidateWindow::new(),
             toast: ToastWindow::new(),
+            mode_popup: ToastWindow::new(),
+            ui: RefCell::new(None),
+            ui_less: Cell::new(false),
+            user_mode_request: Cell::new(false),
             focused: Cell::new(false),
             message_window: RefCell::new(None),
             mode_sync: RefCell::new(ModeSync::new()),
@@ -434,8 +465,10 @@ impl Core {
         self.leave_focus(self.focused_context());
         self.release_edit_sink();
         self.engine.forget_session(&self.session_id);
+        self.end_ui_element();
         self.candidate_window.destroy();
         self.toast.destroy();
+        self.mode_popup.destroy();
         *self.message_window.borrow_mut() = None;
         *self.lang_bar.borrow_mut() = None;
         *self.compartments.borrow_mut() = None;
@@ -510,7 +543,9 @@ impl Core {
         match current {
             None => {}
             Some(None) => self.write_mode_values(compartment_values(InputMode::Hiragana)),
-            Some(Some(v)) => self.request_mode_from_os(v.open, v.conversion),
+            Some(Some(v)) => {
+                self.request_mode_from_os(v.open, v.conversion, ModeChangeCause::Automatic)
+            }
         }
         self.refresh_lang_bar();
     }
@@ -525,7 +560,8 @@ impl Core {
     }
 
     /// OS のモードがコアと違うなら、コアへ送って結果を反映する
-    fn request_mode_from_os(&self, open: bool, conversion: u32) {
+    fn request_mode_from_os(&self, open: bool, conversion: u32, cause: ModeChangeCause) {
+        let previous = self.mode_sync.borrow().known();
         let requested = self.mode_sync.borrow_mut().os_changed(open, conversion);
         let Some(mode) = requested else {
             return;
@@ -536,7 +572,9 @@ impl Core {
             if let Some(ctx) = self.focused_context() {
                 let _ = self.apply(&ctx, render::plan_from_result(&result), Timing::Deferred);
             }
-            self.finish(&Followup::from_result(&result));
+            // この経路のモードは `os_changed` で合意済みなので、`finish` はポップアップを出さない
+            self.finish(&Followup::from_result(&result), ModeChangeCause::Automatic);
+            self.notify_mode_changed(previous, mode, cause);
         }
     }
 
@@ -550,18 +588,84 @@ impl Core {
             .borrow()
             .as_ref()
             .and_then(ModeCompartments::read);
+        // 言語バーの操作（`request_mode`）による変更だけを利用者の操作とする。
+        // アプリや他の IME・他スレッドによる変更は自動の同期として扱う
+        let cause = if self.user_mode_request.get() {
+            ModeChangeCause::User
+        } else {
+            ModeChangeCause::Automatic
+        };
         if let Some(v) = values {
-            self.request_mode_from_os(v.open, v.conversion);
+            self.request_mode_from_os(v.open, v.conversion, cause);
         }
     }
 
-    /// コアでモードが変わった。OS へ書く（同じなら書かない）
-    fn apply_core_mode(&self, mode: InputMode) {
+    /// コアでモードが変わった。OS へ書く（同じなら書かない）。`cause` は変わった原因
+    /// （キー操作の応答なら利用者の操作）
+    fn apply_core_mode(&self, mode: InputMode, cause: ModeChangeCause) {
+        let previous = self.mode_sync.borrow().known();
         let values = self.mode_sync.borrow_mut().core_changed(mode);
         if let Some(values) = values {
             self.write_mode_values(values);
         }
         self.refresh_lang_bar();
+        if values.is_some() {
+            self.notify_mode_changed(previous, mode, cause);
+        }
+    }
+
+    // ---- モード切替ポップアップ ----
+
+    /// モードが変わったことを知らせるポップアップを（必要なら）出す。判定は `should_show_mode_popup`
+    fn notify_mode_changed(
+        &self,
+        previous: Option<InputMode>,
+        mode: InputMode,
+        cause: ModeChangeCause,
+    ) {
+        let input = ModePopupInput {
+            enabled: MODE_POPUP_ENABLED,
+            previous,
+            mode,
+            cause,
+            focused: self.focused.get(),
+            ui_less: self.ui_less.get(),
+        };
+        if !should_show_mode_popup(&input) {
+            return;
+        }
+        // キャレットの矩形は文書を読んで測る（読めなければマウス位置）
+        let text = mode_popup_text(mode);
+        let Some(context) = self.focused_context() else {
+            self.present_mode_popup(text, None);
+            return;
+        };
+        let me = Weak::clone(&self.me);
+        let measured = edit::measure_selection_rect(
+            &context,
+            self.client_id.get(),
+            Timing::Deferred,
+            move |rect| {
+                if let Some(core) = me.upgrade() {
+                    core.present_mode_popup(text, rect);
+                }
+            },
+        );
+        if measured.is_err() {
+            self.present_mode_popup(text, None);
+        }
+    }
+
+    /// 測ったキャレットの近くにポップアップを出す。測れなければマウス位置、それも無ければ出さない。
+    /// 測っている間にフォーカスが外れた・UILess になった場合も出さない
+    fn present_mode_popup(&self, text: &str, caret: Option<Rect>) {
+        if !self.focused.get() || self.ui_less.get() {
+            return;
+        }
+        let Some(anchor) = mode_popup_anchor(caret, win::try_cursor_position()) else {
+            return;
+        };
+        self.mode_popup.show_near(text, anchor, MODE_POPUP_DURATION);
     }
 
     // ---- 言語バー ----
@@ -584,9 +688,12 @@ impl Core {
         if self.lang_bar_mode() == Some(mode) {
             return;
         }
+        // 書き込みに伴う変更通知を、利用者の操作として扱う
+        self.user_mode_request.set(true);
         if let Some(c) = self.compartments.borrow().as_ref() {
             let _ = c.write(compartment_values(mode));
         }
+        self.user_mode_request.set(false);
     }
 
     /// ボタンの左クリック（ひらがな ⇄ 英数）
@@ -650,22 +757,171 @@ impl Core {
         }
     }
 
-    // ---- 候補・通知 ----
-
     fn show_candidates(&self, view: Option<&CandidatesView>) {
-        match view.and_then(CandidatePage::from_view) {
-            Some(page) => {
-                let caret = self.caret.get();
-                // 位置が未確定で再測定待ちなら、マウス位置に出してから動くのを避けて保留する
-                if should_defer_show(caret.is_some(), self.remeasure_pending.get()) {
-                    self.candidate_window.defer(&page);
-                } else {
-                    self.candidate_window.show(&page, caret);
-                }
-            }
-            None => self.candidate_window.hide(),
+        let page = view.and_then(CandidatePage::from_view);
+        let data = view.and_then(CandidateListData::from_view);
+        let (Some(page), Some(data)) = (page, data) else {
+            self.hide_candidates();
+            return;
+        };
+        // UILess: アプリが自前で描くと答えたら、自前の候補ウィンドウは出さない
+        if !self.sync_ui_element(data, &page) {
+            self.candidate_window.hide();
+            return;
+        }
+        let caret = self.caret.get();
+        // 位置が未確定で再測定待ちなら、マウス位置に出してから動くのを避けて保留する
+        if should_defer_show(caret.is_some(), self.remeasure_pending.get()) {
+            self.candidate_window.defer(&page);
+        } else {
+            self.candidate_window.show(&page, caret);
         }
     }
+
+    /// 候補を閉じる（自前のウィンドウと、UILess の要素）
+    fn hide_candidates(&self) {
+        self.end_ui_element();
+        self.candidate_window.hide();
+    }
+
+    // ---- UILess（ITfUIElement） ----
+
+    /// 候補リスト要素を `BeginUIElement`（初回）または `UpdateUIElement`（2 回目以降）する。
+    /// 戻り値は「自前の候補ウィンドウを出してよいか」。要素を渡せないホスト（`ITfUIElementMgr` が無い等）は
+    /// 従来どおり出す
+    fn sync_ui_element(&self, data: CandidateListData, page: &CandidatePage) -> bool {
+        // COM 呼び出し（アプリが要素へ呼び返す）の間は `ui` を借りたままにしない
+        let existing = self.ui.borrow_mut().as_mut().map(|u| {
+            u.page = page.clone();
+            (u.id, Rc::clone(&u.state), u.mgr.clone())
+        });
+        if let Some((id, state, mgr)) = existing {
+            state.update(data);
+            let _ = unsafe { mgr.UpdateUIElement(id) };
+            return state.is_shown();
+        }
+        let Some(mgr) = self
+            .thread_mgr
+            .borrow()
+            .as_ref()
+            .and_then(|tm| tm.cast::<ITfUIElementMgr>().ok())
+        else {
+            return true;
+        };
+        let state = Rc::new(ElementState::new(data));
+        let Ok(element) = CandidateListElement::create(Rc::clone(&state), Weak::clone(&self.me))
+            .cast::<ITfUIElement>()
+        else {
+            return true;
+        };
+        let mut show = BOOL(1);
+        let mut id = 0u32;
+        if unsafe { mgr.BeginUIElement(&element, &mut show, &mut id) }.is_err() {
+            return true;
+        }
+        let show = show.as_bool();
+        state.set_shown(show);
+        self.ui_less.set(!show);
+        crate::tsf_log::log("ui", &format!("BeginUIElement show={show}"));
+        *self.ui.borrow_mut() = Some(UiSession {
+            mgr,
+            id,
+            state,
+            page: page.clone(),
+        });
+        show
+    }
+
+    /// 要素を閉じる（`EndUIElement`）。無ければ何もしない
+    fn end_ui_element(&self) {
+        let taken = self.ui.borrow_mut().take();
+        if let Some(session) = taken {
+            let _ = unsafe { session.mgr.EndUIElement(session.id) };
+        }
+    }
+
+    /// アプリが要素の `Show` を呼んだ。自前の候補ウィンドウの表示・非表示を合わせる
+    pub(crate) fn on_ui_element_show(&self, visible: bool) {
+        self.ui_less.set(!visible);
+        let page = self.ui.borrow().as_ref().map(|u| u.page.clone());
+        let Some(page) = page else {
+            return;
+        };
+        if visible {
+            self.candidate_window.show(&page, self.caret.get());
+        } else {
+            self.candidate_window.hide();
+        }
+    }
+
+    /// フォーカス中の文書（`ITfCandidateListUIElement::GetDocumentMgr`）
+    pub(crate) fn focused_document_mgr(&self) -> Option<ITfDocumentMgr> {
+        let tm = self.thread_mgr.borrow().clone()?;
+        unsafe { tm.GetFocus() }.ok()
+    }
+
+    /// 候補リストの選択を `index` へ動かす（`SetSelection`）。コアの次候補・前候補の操作を繰り返して
+    /// 選択をそこへ移す（ロジックはコアが持つ）。1 ステップごとの編集を反映し、最後に UI を更新する
+    pub(crate) fn ui_set_selection(&self, index: u32) -> Result<()> {
+        let current = self
+            .ui
+            .borrow()
+            .as_ref()
+            .map(|u| u.state.selection())
+            .ok_or_else(|| windows::core::Error::from(E_FAIL))?;
+        let (action, steps) = if index >= current {
+            (TouchAction::NextCandidate, index - current)
+        } else {
+            (TouchAction::PrevCandidate, current - index)
+        };
+        let context = self.focused_context();
+        let mut last = None;
+        for _ in 0..steps {
+            let result = self
+                .engine
+                .perform_action(&self.session_id, action.clone())
+                .map_err(|_| windows::core::Error::from(E_FAIL))?;
+            if let Some(ctx) = &context {
+                let _ = self.apply(ctx, render::plan_from_result(&result), Timing::Deferred);
+            }
+            let reached = result
+                .candidates
+                .as_ref()
+                .is_some_and(|c| c.selected == index);
+            last = Some(result);
+            if reached {
+                break;
+            }
+        }
+        if let Some(result) = last {
+            self.finish(&Followup::from_result(&result), ModeChangeCause::Automatic);
+        }
+        Ok(())
+    }
+
+    /// 候補の確定（`Finalize`）。コアの確定操作を送る
+    pub(crate) fn ui_finalize(&self) -> Result<()> {
+        self.ui_action(TouchAction::Commit)
+    }
+
+    /// 候補の取消（`Abort`）。コアの取消操作を送る
+    pub(crate) fn ui_abort(&self) -> Result<()> {
+        self.ui_action(TouchAction::Cancel)
+    }
+
+    fn ui_action(&self, action: TouchAction) -> Result<()> {
+        let result = self
+            .engine
+            .perform_action(&self.session_id, action)
+            .map_err(|_| windows::core::Error::from(E_FAIL))?;
+        if let Some(ctx) = self.focused_context() {
+            let _ = self.apply(&ctx, render::plan_from_result(&result), Timing::Deferred);
+        }
+        self.finish(&Followup::from_result(&result), ModeChangeCause::Automatic);
+        Ok(())
+    }
+
+    // ---- 候補・通知 ----
 
     fn show_toast(&self, message: &str) {
         if !self.focused.get() {
@@ -681,16 +937,17 @@ impl Core {
     }
 
     /// 編集を反映した後の UI 更新（モード・候補・再変換の要求）
-    fn finish(&self, followup: &Followup) {
+    /// `mode_cause` は応答のモード変化の原因（キー操作の応答は利用者の操作、それ以外は自動）
+    fn finish(&self, followup: &Followup, mode_cause: ModeChangeCause) {
         if let Some(mode) = followup.mode {
-            self.apply_core_mode(mode);
+            self.apply_core_mode(mode, mode_cause);
         }
         if let Some(view) = &followup.candidates {
             self.show_candidates(Some(view));
         }
         // 入力中でなくなったら候補は出さない
         if !self.is_composing() {
-            self.candidate_window.hide();
+            self.hide_candidates();
         }
     }
 
@@ -732,7 +989,7 @@ impl Core {
             move |text| convert.upgrade()?.reconvert_text(text),
             move |result| {
                 if let Some(core) = applied.upgrade() {
-                    core.finish(&Followup::from_result(result));
+                    core.finish(&Followup::from_result(result), ModeChangeCause::Automatic);
                 }
             },
         )
@@ -916,14 +1173,14 @@ impl Core {
                     if let Some(ctx) = context {
                         let _ = self.apply(ctx, render::plan_from_result(&result), timing);
                     }
-                    self.finish(&Followup::from_result(&result));
+                    self.finish(&Followup::from_result(&result), ModeChangeCause::Automatic);
                 }
                 EngineEvent::RestoreFailed { .. } => {
                     // 表示中の文字列をそのまま確定する（設計書 §3.3「入力を失わない」）
                     if let (Some(ctx), Some(env)) = (context, self.env()) {
                         let _ = edit::run_end_keeping_text(ctx, self.client_id.get(), &env, timing);
                     }
-                    self.candidate_window.hide();
+                    self.hide_candidates();
                 }
                 EngineEvent::Started { .. } => self.on_engine_started(),
                 // 通知は上の `toast_for` で表示済み。それ以外は表示するものが無い
@@ -975,7 +1232,7 @@ impl Core {
                 outcome.eaten
             ),
         );
-        self.finish(&outcome.followup);
+        self.finish(&outcome.followup, ModeChangeCause::User);
         if outcome.followup.reconvert
             && let Some(ctx) = context
         {
@@ -1033,6 +1290,7 @@ impl Core {
 
     fn enter_focus(&self) {
         self.focused.set(true);
+        self.ui_less.set(false);
         crate::e2e_probe::record_event("set_focus", "foreground=true");
         // 入力する可能性のあるホストになったので、ここでエンジンを起動する（先読み。H-96）
         self.engine.ensure_started();
@@ -1043,6 +1301,8 @@ impl Core {
     /// 文書が分からないときの反映先
     fn leave_focus(&self, fallback: Option<ITfContext>) {
         self.focused.set(false);
+        self.ui_less.set(false);
+        self.mode_popup.hide();
         crate::e2e_probe::record_event("set_focus", "foreground=false");
         let context = self
             .text_edit
@@ -1056,7 +1316,7 @@ impl Core {
     /// エンジンの `focus_out`（確定・学習の flush）を送り、結果を `context` に反映して composition を閉じる
     fn flush_composition(&self, context: Option<&ITfContext>, timing: Timing) {
         self.handoff.borrow_mut().clear();
-        self.candidate_window.hide();
+        self.hide_candidates();
         // 前の矩形・再測定待ちを持ち越さない
         self.last_rect.set(None);
         self.remeasure_pending.set(false);
@@ -1458,7 +1718,7 @@ impl ITfCompositionSink_Impl for CompositionSink_Impl {
                 // E2E プローブ: composition が（アプリ側の都合で）空になったことを記録する
                 crate::e2e_probe::record(Some(""), "");
                 self.core.handoff.borrow_mut().clear();
-                self.core.candidate_window.hide();
+                self.core.hide_candidates();
                 let _ = self.core.engine.reset(&self.core.session_id);
                 Ok(())
             },

@@ -17,7 +17,8 @@
 //! - [`mode`] — 入力モードの OS（コンパートメント）との同期（同じモードなら送らない）
 //! - [`focus`] — focus_in / focus_out の冪等な判定と、キャレットの composition 範囲外判定
 //! - [`reconvert`] — 再変換の対象テキストの判定
-//! - [`toast`] — 通知パネルの配置
+//! - [`toast`] — 通知パネルの配置、モード切替ポップアップの判定・配置
+//! - [`ui_element`] — UILess モード（`ITfCandidateListUIElement`）の候補リストのモデル
 //! - [`icon`] — 入力方式アイコン（.ico）の生成
 //! - [`diag`] — 診断ログ（tsf.log）の整形・ローテーション判断・イベントの文言（入力内容は含めない）
 //! - [`engine_log`] — imserver の stderr の保存先（ホスト pid ごとのファイル）と古いファイルの掃除
@@ -45,6 +46,7 @@ pub mod status;
 pub mod supervisor;
 pub mod theme;
 pub mod toast;
+pub mod ui_element;
 
 #[cfg(test)]
 mod testing;

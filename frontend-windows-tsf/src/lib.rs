@@ -84,4 +84,6 @@ mod text_service;
 #[cfg(windows)]
 mod toast_window;
 #[cfg(windows)]
+mod ui_element;
+#[cfg(windows)]
 mod win;

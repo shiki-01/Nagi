@@ -8,6 +8,10 @@ pub const CLSID_NAGI_TEXT_SERVICE: GUID = GUID::from_u128(0xB0D6897E_C414_4BB1_B
 /// 入力方式（言語プロファイル）の GUID
 pub const GUID_NAGI_PROFILE: GUID = GUID::from_u128(0x5B02A01F_6B4F_430F_A6A8_D9B4D83C1918);
 
+/// UILess モードで `BeginUIElement` に渡す候補リスト要素の GUID（`ITfUIElement::GetGUID`）
+pub const GUID_NAGI_CANDIDATE_LIST_ELEMENT: GUID =
+    GUID::from_u128(0x10ED1F08_8044_4596_883C_5026DE54CB87);
+
 /// 日本語（ja-JP）の LANGID
 pub const LANGID_JAPANESE: u16 = 0x0411;
 
