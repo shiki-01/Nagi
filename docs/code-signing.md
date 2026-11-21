@@ -4,7 +4,7 @@ Windows 版の配布物（セットアップ用 .exe・zip 内の .exe / .dll）
 方式は SignPath Foundation の OSS 向け無料プログラム（2026-11-21 ユーザー決定。比較は `docs/decisions.md` の H-110）。
 
 - 公開ポリシー: <https://nagi.shiki-01.com/code-signing>（`web/src/routes/code-signing/+page.svelte`）
-- SignPath 側の設定の写し: `.signpath/artifact-configuration.xml`（正は SignPath の Web 画面。変更したら両方を揃える）
+- SignPath 側の設定の写し: `.signpath/artifact-configuration.xml`（中身の dll / exe 用）と `.signpath/artifact-configuration-setup.xml`（セットアップ exe 用）。正は SignPath の Web 画面。変更したら両方を揃える
 - 署名の組み込み先: `.github/workflows/windows-release.yml`（Secrets が無ければ署名を飛ばして無署名で配布する）
 
 この文書の SignPath 側の画面名・入力項目は、2026-11 時点で公式ページを直接確認できず、第三者の申請記録と公式ドキュメントの断片から書いている。申請時に画面と違えば、画面を正としてこの文書を直す。
@@ -45,7 +45,7 @@ Windows 版の配布物（セットアップ用 .exe・zip 内の .exe / .dll）
 
 1. **GitHub との連携**: Trusted Build System として GitHub（GitHub.com）を組織に追加し、案内に従って SignPath の GitHub App を `shiki-01/nagi` にインストールする。
 2. **Project**: slug は `nagi` を推奨（ワークフローの `SIGNPATH_PROJECT_SLUG` に入れる）。リポジトリ URL を登録する。
-3. **Artifact configuration**: `.signpath/artifact-configuration.xml` の内容を貼り付ける。slug は `windows-release` を推奨。
+3. **Artifact configuration**（2 つ作る）: `.signpath/artifact-configuration.xml` の内容を slug `windows-release` で、`.signpath/artifact-configuration-setup.xml` の内容を slug `windows-setup` で貼り付ける（セットアップ exe は署名済みの中身から後で作るため、別の要求・別の設定にする）。
 4. **Signing policy**: `release-signing` を作る（Foundation の証明書を使う方）。
    - 承認者（Approvers）: `shiki-01`、承認は手動（Foundation の条件）
    - ビルドの出所の検証（origin verification）を有効にし、許可するブランチを `main` に、ワークフローを `.github/workflows/windows-release.yml` に限定する
@@ -63,14 +63,15 @@ Windows 版の配布物（セットアップ用 .exe・zip 内の .exe / .dll）
 | Variable | `SIGNPATH_PROJECT_SLUG` | `nagi` |
 | Variable | `SIGNPATH_SIGNING_POLICY_SLUG` | `release-signing`（試験中は `test-signing`） |
 | Variable | `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` | `windows-release` |
+| Variable（省略可） | `SIGNPATH_ARTIFACT_CONFIGURATION_SETUP_SLUG` | `windows-setup`（省略時もこの値） |
 
-`SIGNPATH_API_TOKEN` が未登録なら、ワークフローは署名を飛ばして従来どおり無署名で配布する。
+`SIGNPATH_API_TOKEN`（Secret）か `SIGNPATH_ORGANIZATION_ID`（Variable）のどちらかが未登録なら、ワークフローは署名を飛ばして従来どおり無署名で配布する。両方があって署名が失敗（却下・タイムアウト）したときは、未署名のものを黙って公開しないよう、リリースまで進まず失敗する。
 
 ## 4. 署名付きリリースの流れ
 
 1. `gh workflow run windows-release.yml --ref main -f publish=false` で、署名まで通るか試す（成果物は Actions の artifact）。
-2. 実行中に SignPath から承認依頼が届く（メール・Web 画面）。内容（コミット・ワークフロー・ファイル一覧）を確認して承認する。承認するまでワークフローは待つ（既定の待ち時間を超えると失敗するので、手元にいるときに実行する）。
-3. 署名済みの成果物で release ジョブが進み、GitHub Releases に載る。
+2. 実行中に SignPath から承認依頼が **2 回**届く（メール・Web 画面。1 回目: x64 / ARM64 の dll・exe を 1 つの要求にまとめたもの、2 回目: それらから作ったセットアップ exe）。待ち時間は各 3600 秒。内容（コミット・ワークフロー・ファイル一覧）を確認して承認する。承認するまでワークフローは待つ（既定の待ち時間を超えると失敗するので、手元にいるときに実行する）。
+3. 署名済みの中身から zip・SHA256SUMS・latest*.json（ed25519 署名）を作る（署名してから zip 化するので、自動更新の検証は崩れない）。release ジョブが進み、GitHub Releases に載る。
 4. 署名の確認: エクスプローラーでファイルのプロパティ → デジタル署名に「SignPath Foundation」が出ること、または PowerShell で `Get-AuthenticodeSignature .\Nagi-setup-<ver>.exe`。
 
 ## 5. 注意
