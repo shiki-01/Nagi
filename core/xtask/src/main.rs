@@ -114,6 +114,10 @@ enum Task {
     /// チェックサムをつけて zip 化する（target/windows-bundle/Nagi-windows-<version>.zip）。
     /// ビルドは行わない（MSVC ターゲットでビルド済みの成果物を集める。`windows-release.yml` を参照）
     BundleWindows {
+        /// 配布物のアーキテクチャ。aarch64 のときは `Nagi-windows-arm64-<version>.zip` を作る
+        /// （x86_64 は従来の `Nagi-windows-<version>.zip`）
+        #[arg(long, value_enum, default_value = "x86_64")]
+        arch: bundle_windows::Arch,
         /// nagi_windows_tsf.dll のパス（既定は target[/<triple>]/release/）
         #[arg(long)]
         dll: Option<std::path::PathBuf>,
@@ -123,7 +127,7 @@ enum Task {
         /// nagi-settings.exe のパス（既定は target[/<triple>]/release/）
         #[arg(long)]
         settings: Option<std::path::PathBuf>,
-        /// 既定パスを探すターゲットトリプル（例: x86_64-pc-windows-msvc）
+        /// 既定パスを探すターゲットトリプル（例: x86_64-pc-windows-msvc / aarch64-pc-windows-msvc。--arch と一致が必要）
         #[arg(long)]
         target: Option<String>,
         /// 出力先ディレクトリ（既定は target/windows-bundle）
@@ -232,6 +236,7 @@ fn main() -> ExitCode {
             sign_identity,
         }),
         Task::BundleWindows {
+            arch,
             dll,
             imserver,
             settings,
@@ -241,6 +246,7 @@ fn main() -> ExitCode {
             signtool,
             timestamp_url,
         } => bundle_windows::run(bundle_windows::Options {
+            arch,
             dll,
             imserver,
             settings,

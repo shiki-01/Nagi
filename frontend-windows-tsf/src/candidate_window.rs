@@ -11,23 +11,24 @@ use std::cell::{Cell, RefCell};
 use nagi_windows::candidates::{
     CandidatePage, Metrics, Point, Rect, Size, WindowLayout, anchor_rect, layout, place_window,
 };
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, COLOR_3DSHADOW, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW,
-    COLOR_WINDOWTEXT, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DrawTextW,
-    EndPaint, FillRect, FrameRect, GetSysColor, GetSysColorBrush, HGDIOBJ, InvalidateRect,
-    PAINTSTRUCT, SYS_COLOR_INDEX, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    BeginPaint, CreateSolidBrush, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
+    DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, HDC, HGDIOBJ, InvalidateRect,
+    PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HTTRANSPARENT, HWND_TOPMOST,
     MA_NOACTIVATE, SW_HIDE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCDESTROY,
-    WM_NCHITTEST, WM_PAINT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_NCHITTEST, WM_PAINT, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
 use nagi_windows::candidates::FontRole;
+use nagi_windows::theme::Rgb;
 
 use crate::win::{
     self, Fonts, WindowClass, cursor_position, drop_user_data, into_user_data, user_data_ref, wide,
@@ -215,8 +216,26 @@ impl Drop for CandidateWindow {
     }
 }
 
-fn color(index: SYS_COLOR_INDEX) -> windows::Win32::Foundation::COLORREF {
-    windows::Win32::Foundation::COLORREF(unsafe { GetSysColor(index) })
+fn color(c: Rgb) -> COLORREF {
+    COLORREF(c.to_colorref())
+}
+
+/// 単色で矩形を塗る
+fn fill(hdc: HDC, r: &RECT, c: Rgb) {
+    unsafe {
+        let brush = CreateSolidBrush(color(c));
+        FillRect(hdc, r, brush);
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+    }
+}
+
+/// 単色で矩形の枠を描く
+fn frame(hdc: HDC, r: &RECT, c: Rgb) {
+    unsafe {
+        let brush = CreateSolidBrush(color(c));
+        FrameRect(hdc, r, brush);
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+    }
 }
 
 fn rect_of(r: Rect) -> RECT {
@@ -240,11 +259,10 @@ fn draw(hwnd: HWND) {
             right: size.width,
             bottom: size.height,
         };
-        unsafe {
-            FillRect(hdc, &whole, GetSysColorBrush(COLOR_WINDOW));
-            FrameRect(hdc, &whole, GetSysColorBrush(COLOR_3DSHADOW));
-            SetBkMode(hdc, TRANSPARENT);
-        }
+        let pal = win::palette();
+        fill(hdc, &whole, pal.background);
+        frame(hdc, &whole, pal.border);
+        unsafe { SetBkMode(hdc, TRANSPARENT) };
         let text_flags = DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX;
         let draw_text = |text: &str, role: FontRole, mut rect: RECT, align, col| {
             let mut buf: Vec<u16> = text.encode_utf16().collect();
@@ -259,10 +277,10 @@ fn draw(hwnd: HWND) {
         for (row, rect) in paint.page.rows.iter().zip(&lay.row_rects) {
             let r = rect_of(*rect);
             let (main, sub) = if row.is_selected {
-                unsafe { FillRect(hdc, &r, GetSysColorBrush(COLOR_HIGHLIGHT)) };
-                (color(COLOR_HIGHLIGHTTEXT), color(COLOR_HIGHLIGHTTEXT))
+                fill(hdc, &r, pal.selected_bg);
+                (color(pal.selected_text), color(pal.selected_sub_text))
             } else {
-                (color(COLOR_WINDOWTEXT), color(COLOR_GRAYTEXT))
+                (color(pal.text), color(pal.sub_text))
             };
             let from_x = |x: i32| RECT { left: x, ..r };
             draw_text(
@@ -288,7 +306,7 @@ fn draw(hwnd: HWND) {
         if let (Some(footer), Some(text)) = (lay.footer_rect, paint.page.footer_text()) {
             let mut r = rect_of(footer);
             r.right -= Metrics::default().padding;
-            draw_text(&text, FontRole::Label, r, DT_RIGHT, color(COLOR_GRAYTEXT));
+            draw_text(&text, FontRole::Label, r, DT_RIGHT, color(pal.sub_text));
         }
     }
     let _ = unsafe { EndPaint(hwnd, &ps) };
@@ -301,6 +319,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        // ライト/ダーク・ハイコントラストの切替に追従する（トップレベルなので受け取れる）
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+            if win::theme_message(msg, wparam, lparam) {
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
+            }
+            unsafe { win::default_proc(hwnd, msg, wparam, lparam) }
+        }
         // フォーカスもクリックも奪わない
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),

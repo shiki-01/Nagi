@@ -7,17 +7,23 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 
 use nagi_windows::candidates::{self, FontRole, Point, Rect, TextMeasure, scale_px};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use nagi_windows::theme::{Palette, Rgb, SystemColors, ThemeInput, select_palette};
+use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleDC, CreateFontW, DEFAULT_CHARSET,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
+    COLOR_WINDOW, COLOR_WINDOWTEXT, CreateCompatibleDC, CreateFontW, DEFAULT_CHARSET,
     DEFAULT_PITCH, DeleteDC, DeleteObject, EnumDisplayMonitors, FF_DONTCARE, FW_NORMAL, GetDC,
-    GetMonitorInfoW, GetTextExtentPoint32W, HDC, HFONT, HGDIOBJ, HMONITOR, MONITORINFO,
-    OUT_DEFAULT_PRECIS, ReleaseDC, SelectObject,
+    GetMonitorInfoW, GetSysColor, GetTextExtentPoint32W, HDC, HFONT, HGDIOBJ, HMONITOR,
+    MONITORINFO, OUT_DEFAULT_PRECIS, ReleaseDC, SYS_COLOR_INDEX, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, GetCursorPos, HCURSOR, HICON, MONITORINFOF_PRIMARY, RegisterClassExW,
-    UnregisterClassW, WNDCLASS_STYLES, WNDCLASSEXW, WNDPROC,
+    SPI_GETHIGHCONTRAST, SPI_SETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SystemParametersInfoW, UnregisterClassW, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WNDCLASS_STYLES,
+    WNDCLASSEXW, WNDPROC,
 };
 use windows::core::{BOOL, PCWSTR};
 
@@ -286,4 +292,90 @@ pub unsafe fn drop_user_data<T>(ptr: isize) {
     if ptr != 0 {
         drop(unsafe { Box::from_raw(ptr as *mut T) });
     }
+}
+
+// ---- テーマ（ダークモード / ハイコントラスト）----
+
+/// 現在のパレットのキャッシュ。無効化されるまでレジストリを読み直さない
+static THEME: Mutex<Option<Palette>> = Mutex::new(None);
+
+fn read_apps_use_light_theme() -> Option<u32> {
+    let mut data = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize").as_ptr()),
+            PCWSTR(wide("AppsUseLightTheme").as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&raw mut data).cast::<c_void>()),
+            Some(&raw mut size),
+        )
+    };
+    (err == ERROR_SUCCESS).then_some(data)
+}
+
+fn sys_rgb(index: SYS_COLOR_INDEX) -> Rgb {
+    let v = unsafe { GetSysColor(index) };
+    Rgb(
+        (v & 0xFF) as u8,
+        ((v >> 8) & 0xFF) as u8,
+        ((v >> 16) & 0xFF) as u8,
+    )
+}
+
+fn read_high_contrast() -> Option<SystemColors> {
+    let mut hc = HIGHCONTRASTW {
+        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            hc.cbSize,
+            Some((&raw mut hc).cast::<c_void>()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .ok()?;
+    (hc.dwFlags.0 & HCF_HIGHCONTRASTON.0 != 0).then(|| SystemColors {
+        window: sys_rgb(COLOR_WINDOW),
+        window_text: sys_rgb(COLOR_WINDOWTEXT),
+        highlight: sys_rgb(COLOR_HIGHLIGHT),
+        highlight_text: sys_rgb(COLOR_HIGHLIGHTTEXT),
+        gray_text: sys_rgb(COLOR_GRAYTEXT),
+    })
+}
+
+/// 現在のテーマのパレット（キャッシュ済み。変更通知で `theme_message` が破棄する）
+pub fn palette() -> Palette {
+    let mut guard = THEME.lock().unwrap_or_else(|e| e.into_inner());
+    *guard.get_or_insert_with(|| {
+        select_palette(ThemeInput {
+            apps_use_light_theme: read_apps_use_light_theme(),
+            high_contrast: read_high_contrast(),
+        })
+    })
+}
+
+/// テーマ変更を知らせるメッセージなら、キャッシュを破棄して true を返す
+/// （呼び出し側は再描画する）。`WM_SETTINGCHANGE` はトップレベルウィンドウへ
+/// ブロードキャストされるので、候補ウィンドウ・トースト自身で受けられる。
+pub fn theme_message(msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+    let changed = match msg {
+        WM_SYSCOLORCHANGE => true,
+        WM_SETTINGCHANGE => {
+            // ライト/ダーク切替は lParam が "ImmersiveColorSet"、ハイコントラスト切替は SPI_SETHIGHCONTRAST
+            let immersive = lparam.0 != 0
+                && unsafe { PCWSTR(lparam.0 as *const u16).to_string() }
+                    .is_ok_and(|s| s == "ImmersiveColorSet");
+            immersive || wparam.0 == SPI_SETHIGHCONTRAST.0 as usize
+        }
+        _ => false,
+    };
+    if changed {
+        *THEME.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    changed
 }

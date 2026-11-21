@@ -15,6 +15,7 @@
 //! - [`preedit_style`] — preedit の下線などの表示属性の描画計画
 //! - [`status`] — 通知・メニュー・入力モードの文言
 //! - [`mode`] — 入力モードの OS（コンパートメント）との同期（同じモードなら送らない）
+//! - [`focus`] — focus_in / focus_out の冪等な判定と、キャレットの composition 範囲外判定
 //! - [`reconvert`] — 再変換の対象テキストの判定
 //! - [`toast`] — 通知パネルの配置
 //! - [`icon`] — 入力方式アイコン（.ico）の生成
@@ -31,6 +32,7 @@ pub mod context;
 pub mod diag;
 pub mod engine_log;
 pub mod environment;
+pub mod focus;
 pub mod icon;
 pub mod keynorm;
 pub mod mode;
@@ -41,6 +43,7 @@ pub mod revision;
 pub mod session;
 pub mod status;
 pub mod supervisor;
+pub mod theme;
 pub mod toast;
 
 #[cfg(test)]

@@ -18,8 +18,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HTTRANSPARENT, HWND_TOPMOST,
     KillTimer, MA_NOACTIVATE, SW_HIDE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_ERASEBKGND, WM_MOUSEACTIVATE,
-    WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_TIMER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_TIMER,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -222,12 +222,12 @@ fn draw(hwnd: HWND) {
             bottom: paint.size.height,
         };
         unsafe {
-            // 暗い半透明風の HUD（色は固定。システム色に依存しない）
-            let brush = CreateSolidBrush(COLORREF(0x0030_2B2B));
+            let pal = win::palette();
+            let brush = CreateSolidBrush(COLORREF(pal.toast_bg.to_colorref()));
             FillRect(hdc, &whole, brush);
             let _ = DeleteObject(HGDIOBJ(brush.0));
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, COLORREF(0x00FF_FFFF));
+            SetTextColor(hdc, COLORREF(pal.toast_text.to_colorref()));
             let old = SelectObject(hdc, HGDIOBJ(paint.fonts.font(FontRole::Surface).0));
             let mut text_rect = RECT {
                 left: paint.pad_x,
@@ -250,6 +250,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+            if win::theme_message(msg, wparam, lparam) {
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
+            }
+            unsafe { win::default_proc(hwnd, msg, wparam, lparam) }
+        }
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
         WM_TIMER if wparam.0 == TIMER_ID => {

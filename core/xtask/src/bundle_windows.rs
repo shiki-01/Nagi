@@ -4,7 +4,9 @@
 //! 行い、ここでは成果物の収集・（任意で）Authenticode 署名・チェックサム・zip 化だけを行う
 //! （`docs/decisions.md` H-42）。収集と zip 化は OS 非依存で、Linux でも単体テストできる。
 //!
-//! zip の構成（`Nagi-windows-<version>.zip`、最上位に `Nagi-windows-<version>/` を 1 つ置く）:
+//! zip の構成（x86_64 は `Nagi-windows-<version>.zip`、ARM64 は `Nagi-windows-arm64-<version>.zip`。
+//! どちらも最上位に `Nagi-windows-<version>/` を 1 つ置く。zip の名前だけがアーキテクチャで変わる。
+//! x86_64 の名前は 0.1.15 以前のクライアントの自動更新が参照するため変えない。decisions.md H-102）:
 //!
 //! ```text
 //! nagi_windows_tsf.dll   TSF の入力方式（COM の InprocServer32）
@@ -15,6 +17,7 @@
 //! README.md              docs/windows-install.md（SmartScreen の手順を含む）
 //! LICENSE-MIT / LICENSE-APACHE / NOTICE / THIRD_PARTY_LICENSES.md（元は THIRD_PARTY_LICENSES_WINDOWS.md）
 //! VERSION                バージョン（x.y.z）
+//! ARCH                   この zip のアーキテクチャ（`x86_64` / `aarch64`。install.ps1 が OS と突き合わせる）
 //! SHA256SUMS             上記すべての SHA-256（`<hex>  <相対パス>`。install.ps1 が検証する）
 //! ```
 
@@ -34,6 +37,8 @@ pub const SETTINGS_FILE: &str = "nagi-settings.exe";
 /// リポジトリ上の Windows 用ライセンス一覧（`gen-licenses` の出力。iOS 用の
 /// `THIRD_PARTY_LICENSES.md` とは別。decisions.md H-43）。
 pub const WINDOWS_LICENSES_FILE: &str = "THIRD_PARTY_LICENSES_WINDOWS.md";
+/// アーキテクチャを書いたファイルの名前（`x86_64` / `aarch64`）。
+pub const ARCH_FILE: &str = "ARCH";
 /// チェックサム一覧のファイル名。
 pub const CHECKSUM_FILE: &str = "SHA256SUMS";
 /// 署名用 PFX のパスワードを渡す環境変数名（コマンドラインには載せない）。
@@ -41,8 +46,47 @@ const PFX_PASSWORD_ENV: &str = "NAGI_WINDOWS_PFX_PASSWORD";
 /// 既定のタイムスタンプサーバー（RFC 3161）。
 const DEFAULT_TIMESTAMP_URL: &str = "http://timestamp.digicert.com";
 
+/// 配布物のアーキテクチャ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Arch {
+    /// x64（Intel / AMD）。既定。
+    #[value(name = "x86_64")]
+    X86_64,
+    /// ARM64（Windows on Arm）。
+    #[value(name = "aarch64")]
+    Aarch64,
+}
+
+impl Arch {
+    /// `ARCH` ファイルと Rust のターゲットトリプルの先頭に使う名前。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+
+    /// zip のファイル名の先頭（バージョンの前）。x86_64 は従来の名前のまま。
+    pub fn zip_stem(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "Nagi-windows",
+            Arch::Aarch64 => "Nagi-windows-arm64",
+        }
+    }
+
+    /// PE ヘッダの Machine フィールド（IMAGE_FILE_MACHINE_AMD64 / ARM64）。
+    pub fn pe_machine(self) -> u16 {
+        match self {
+            Arch::X86_64 => 0x8664,
+            Arch::Aarch64 => 0xAA64,
+        }
+    }
+}
+
 /// `bundle-windows` のオプション。
 pub struct Options {
+    /// 配布物のアーキテクチャ。
+    pub arch: Arch,
     /// DLL のパス。未指定なら `<target>[/<triple>]/release/nagi_windows_tsf.dll`。
     pub dll: Option<PathBuf>,
     /// imserver.exe のパス。未指定なら `<target>[/<triple>]/release/imserver.exe`。
@@ -86,6 +130,7 @@ pub struct Inputs {
     pub settings: PathBuf,
     pub repo: PathBuf,
     pub version: String,
+    pub arch: Arch,
 }
 
 fn repo_root() -> PathBuf {
@@ -97,10 +142,16 @@ fn repo_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// zip のベース名（拡張子なし）。`Nagi-windows-<version>`。
-/// アップデートの `download_url` と `windows-release.yml` はこの名前に依存する。
+/// zip の最上位ディレクトリの名前（アーキテクチャによらず `Nagi-windows-<version>`）。
+/// 自動更新の `apply-update.ps1` はこの名前のディレクトリを探すため、ARM64 でも変えない。
 pub fn bundle_name(version: &str) -> String {
     format!("Nagi-windows-{version}")
+}
+
+/// zip のファイル名（拡張子つき）。x86_64 は `Nagi-windows-<version>.zip`（アップデートの
+/// `download_url` と `windows-release.yml` が依存する既存の名前）、ARM64 は `Nagi-windows-arm64-<version>.zip`。
+pub fn zip_file_name(arch: Arch, version: &str) -> String {
+    format!("{}-{version}.zip", arch.zip_stem())
 }
 
 /// 配布物に入れるファイルの一覧（`SHA256SUMS` を除く）。入力ファイルの存在もここで確かめる。
@@ -138,6 +189,10 @@ pub fn plan(inputs: &Inputs) -> Result<Vec<Entry>, String> {
             name: "VERSION".to_string(),
             source: Source::Bytes(format!("{}\n", inputs.version).into_bytes()),
         },
+        Entry {
+            name: ARCH_FILE.to_string(),
+            source: Source::Bytes(format!("{}\n", inputs.arch.as_str()).into_bytes()),
+        },
     ];
     for e in &entries {
         if let Source::File(p) = &e.source
@@ -152,6 +207,18 @@ pub fn plan(inputs: &Inputs) -> Result<Vec<Entry>, String> {
 /// 先頭が `MZ`（PE / DOS ヘッダ）か。Linux の `.so` などを取り違えて入れないための検査。
 pub fn looks_like_pe(bytes: &[u8]) -> bool {
     bytes.starts_with(b"MZ")
+}
+
+/// PE ヘッダの Machine フィールド。PE ヘッダを読めないとき（短すぎる等）は `None`。
+pub fn pe_machine(bytes: &[u8]) -> Option<u16> {
+    let lfanew = u32::from_le_bytes(bytes.get(0x3C..0x40)?.try_into().ok()?) as usize;
+    if bytes.get(lfanew..lfanew.checked_add(4)?)? != b"PE\0\0" {
+        return None;
+    }
+    let start = lfanew + 4;
+    Some(u16::from_le_bytes(
+        bytes.get(start..start + 2)?.try_into().ok()?,
+    ))
 }
 
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
@@ -262,7 +329,7 @@ fn run_signtool(signtool: &str, args: &[String], password: Option<&str>) -> Resu
 }
 
 /// ステージング先のファイルを書き出す。
-fn stage(stage_dir: &Path, entries: &[Entry]) -> Result<(), String> {
+fn stage(stage_dir: &Path, entries: &[Entry], arch: Arch) -> Result<(), String> {
     for e in entries {
         let bytes = match &e.source {
             Source::File(p) => fs::read(p)
@@ -275,6 +342,17 @@ fn stage(stage_dir: &Path, entries: &[Entry]) -> Result<(), String> {
             return Err(format!(
                 "{} が Windows の実行形式（PE）ではありません。MSVC ターゲットでビルドした成果物を指定してください",
                 e.name
+            ));
+        }
+        // PE ヘッダを読めるときは、アーキテクチャの取り違え（x64 の DLL を ARM64 の zip に入れる等）を弾く
+        if (e.name == DLL_FILE || e.name == IMSERVER_FILE || e.name == SETTINGS_FILE)
+            && let Some(machine) = pe_machine(&bytes)
+            && machine != arch.pe_machine()
+        {
+            return Err(format!(
+                "{} のアーキテクチャ（PE Machine 0x{machine:04X}）が --arch {} と一致しません",
+                e.name,
+                arch.as_str()
             ));
         }
         let dest = stage_dir.join(&e.name);
@@ -311,7 +389,7 @@ pub fn assemble(
             .map_err(|e| format!("既存のステージングの削除に失敗しました: {e}"))?;
     }
     fs::create_dir_all(&stage_dir).map_err(|e| format!("ディレクトリの作成に失敗しました: {e}"))?;
-    stage(&stage_dir, &entries)?;
+    stage(&stage_dir, &entries, inputs.arch)?;
 
     if let Some((signtool, pfx, timestamp_url)) = sign {
         let password = std::env::var(PFX_PASSWORD_ENV).ok();
@@ -333,7 +411,7 @@ pub fn assemble(
         .map_err(|e| format!("{CHECKSUM_FILE} の書き込みに失敗しました: {e}"))?;
     files.push((CHECKSUM_FILE.to_string(), sums.into_bytes()));
 
-    let zip_path = out_dir.join(format!("{name}.zip"));
+    let zip_path = out_dir.join(zip_file_name(inputs.arch, &inputs.version));
     let zip = write_zip(&name, &files)?;
     fs::write(&zip_path, zip)
         .map_err(|e| format!("{} の書き込みに失敗しました: {e}", zip_path.display()))?;
@@ -355,7 +433,16 @@ pub fn run(opts: Options) -> Result<(), String> {
         .map(PathBuf::from)
         .unwrap_or_else(|| repo.join("core").join("target"));
     let triple = opts.target.as_deref();
+    if let Some(t) = triple
+        && !t.starts_with(opts.arch.as_str())
+    {
+        return Err(format!(
+            "--target {t} が --arch {} と一致しません",
+            opts.arch.as_str()
+        ));
+    }
     let inputs = Inputs {
+        arch: opts.arch,
         dll: opts
             .dll
             .unwrap_or_else(|| default_artifact(&target_dir, triple, DLL_FILE)),
@@ -447,6 +534,7 @@ mod tests {
             settings,
             repo,
             version: "1.2.3".to_string(),
+            arch: Arch::X86_64,
         }
     }
 
@@ -466,6 +554,73 @@ mod tests {
     fn bundle_name_matches_release_asset() {
         // windows-release.yml と update の download_url が参照する名前
         assert_eq!(bundle_name("0.1.1"), "Nagi-windows-0.1.1");
+    }
+
+    #[test]
+    fn zip_file_name_keeps_x86_64_name() {
+        // 0.1.15 以前のクライアント・latest.json・web が参照する既存の名前
+        assert_eq!(
+            zip_file_name(Arch::X86_64, "0.1.1"),
+            "Nagi-windows-0.1.1.zip"
+        );
+        assert_eq!(
+            zip_file_name(Arch::Aarch64, "0.1.1"),
+            "Nagi-windows-arm64-0.1.1.zip"
+        );
+    }
+
+    /// 指定の Machine を持つ最小の PE ヘッダ（`MZ` + e_lfanew + `PE\0\0` + Machine）。
+    fn fake_pe(machine: u16) -> Vec<u8> {
+        let mut b = vec![0u8; 0x48];
+        b[0] = b'M';
+        b[1] = b'Z';
+        b[0x3C] = 0x40;
+        b[0x40..0x44].copy_from_slice(b"PE\0\0");
+        b[0x44..0x46].copy_from_slice(&machine.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn pe_machine_reads_header() {
+        assert_eq!(pe_machine(&fake_pe(0x8664)), Some(0x8664));
+        assert_eq!(pe_machine(&fake_pe(0xAA64)), Some(0xAA64));
+        assert_eq!(pe_machine(b"MZ-dll"), None);
+    }
+
+    #[test]
+    fn aarch64_bundle_has_own_zip_name_and_arch_file() {
+        let t = Temp::new("arm64");
+        let mut inputs = fake_inputs(&t.0);
+        inputs.arch = Arch::Aarch64;
+        for p in [&inputs.dll, &inputs.imserver, &inputs.settings] {
+            fs::write(p, fake_pe(0xAA64)).unwrap();
+        }
+        let out = t.0.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let zip_path = assemble(&inputs, &out, None).unwrap();
+        assert_eq!(zip_path, out.join("Nagi-windows-arm64-1.2.3.zip"));
+        let files = read_zip(fs::read(&zip_path).unwrap());
+        // 最上位ディレクトリの名前はアーキテクチャによらず同じ（apply-update.ps1 が参照する）
+        assert!(
+            files
+                .iter()
+                .all(|(n, _)| n.starts_with("Nagi-windows-1.2.3/"))
+        );
+        let arch = files
+            .iter()
+            .find(|(n, _)| n.ends_with("/ARCH"))
+            .expect("ARCH が zip に無い");
+        assert_eq!(arch.1, b"aarch64\n");
+    }
+
+    #[test]
+    fn assemble_rejects_wrong_architecture_binaries() {
+        let t = Temp::new("wrongarch");
+        let mut inputs = fake_inputs(&t.0);
+        inputs.arch = Arch::Aarch64;
+        fs::write(&inputs.dll, fake_pe(0x8664)).unwrap(); // x64 の DLL
+        let err = assemble(&inputs, &t.0.join("out"), None).unwrap_err();
+        assert!(err.contains("一致しません"), "{err}");
     }
 
     #[test]
@@ -489,6 +644,7 @@ mod tests {
                 "NOTICE",
                 "THIRD_PARTY_LICENSES.md",
                 "VERSION",
+                "ARCH",
             ]
         );
     }
@@ -528,14 +684,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} が zip に無い"))
                 .1
         };
-        // すべて最上位ディレクトリの下にあり、SHA256SUMS を含めて 14 個
-        assert_eq!(files.len(), 14);
+        // すべて最上位ディレクトリの下にあり、SHA256SUMS を含めて 15 個
+        assert_eq!(files.len(), 15);
         assert!(
             files
                 .iter()
                 .all(|(n, _)| n.starts_with("Nagi-windows-1.2.3/"))
         );
         assert_eq!(get("VERSION"), b"1.2.3\n");
+        assert_eq!(get("ARCH"), b"x86_64\n");
         assert_eq!(get("nagi_windows_tsf.dll"), b"MZ-dll");
         assert_eq!(get("nagi-settings.exe"), b"MZ-settings");
         // ライセンス一覧は Windows 用（iOS 用ではない）が THIRD_PARTY_LICENSES.md の名前で入る
@@ -550,7 +707,7 @@ mod tests {
 
         // SHA256SUMS は SHA256SUMS 以外のすべてを、zip の中身どおりに列挙する
         let sums = String::from_utf8(get(CHECKSUM_FILE).clone()).unwrap();
-        assert_eq!(sums.lines().count(), 13);
+        assert_eq!(sums.lines().count(), 14);
         for (name, data) in files.iter().filter(|(n, _)| !n.ends_with(CHECKSUM_FILE)) {
             let short = name.strip_prefix("Nagi-windows-1.2.3/").unwrap();
             let expected = format!("{}  {short}", crate::update_sign::sha256_hex(data));

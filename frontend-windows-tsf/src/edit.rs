@@ -50,6 +50,8 @@ pub struct Env {
     pub remeasure_pending: Rc<Cell<bool>>,
     /// 再測定で `caret` を更新した後の呼び出し（候補ウィンドウの位置の更新）
     pub on_remeasured: Rc<dyn Fn()>,
+    /// 編集計画の反映後（composition の開始・終了があり得る）の呼び出し。`ITfTextEditSink` の購読の同期に使う
+    pub on_composition_change: Rc<dyn Fn(&ITfContext)>,
 }
 
 /// 実行の仕方
@@ -65,6 +67,33 @@ pub enum Timing {
 
 type Op = Box<dyn FnOnce(u32) -> Result<()>>;
 
+thread_local! {
+    /// 自分の編集セッションを実行・要求している間の深さ。`ITfTextEditSink::OnEndEdit` が
+    /// 「自分以外の変更」かを見分けるのに使う
+    static OWN_EDIT_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// `OWN_EDIT_DEPTH` を上げ、Drop で戻す
+struct OwnEditGuard;
+
+impl OwnEditGuard {
+    fn enter() -> Self {
+        OWN_EDIT_DEPTH.with(|d| d.set(d.get() + 1));
+        Self
+    }
+}
+
+impl Drop for OwnEditGuard {
+    fn drop(&mut self) {
+        OWN_EDIT_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// 自分の編集セッションの実行中（要求の呼び出し中を含む）か
+pub fn in_own_edit() -> bool {
+    OWN_EDIT_DEPTH.with(|d| d.get() > 0)
+}
+
 #[implement(ITfEditSession)]
 struct EditSession {
     op: RefCell<Option<Op>>,
@@ -73,6 +102,7 @@ struct EditSession {
 impl ITfEditSession_Impl for EditSession_Impl {
     fn DoEditSession(&self, ec: u32) -> Result<()> {
         let op = self.op.borrow_mut().take();
+        let _own = OwnEditGuard::enter();
         match op {
             // パニックを COM の境界（TSF の呼び出し元）から出さない
             Some(op) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| op(ec)))
@@ -103,6 +133,8 @@ pub fn run(
                 Timing::Async => TF_ES_ASYNC.0,
             },
     );
+    // 同期の編集セッションの `OnEndEdit` は要求の呼び出し中に届く
+    let _own = OwnEditGuard::enter();
     let hr = unsafe { context.RequestEditSession(client_id, &session, flags) }?;
     // 延期された場合は成功コード（TF_S_ASYNC）。失敗コードだけをエラーにする
     hr.ok()
@@ -129,14 +161,16 @@ pub fn run_end_keeping_text(
     env: &Env,
     timing: Timing,
 ) -> Result<()> {
-    let (ctx, composition) = (context.clone(), Rc::clone(&env.composition));
+    let (ctx, env) = (context.clone(), env.clone());
     run(context, client_id, timing, true, move |ec| {
-        let taken = composition.borrow_mut().take();
+        let taken = env.composition.borrow_mut().take();
         if let Some(c) = taken {
             if let Ok(range) = unsafe { c.GetRange() } {
                 let _ = display_attr::clear(&ctx, ec, &range);
             }
-            unsafe { c.EndComposition(ec) }?;
+            let ended = unsafe { c.EndComposition(ec) };
+            (env.on_composition_change)(&ctx);
+            ended?;
             crate::e2e_probe::record(Some(""), "");
         }
         Ok(())
@@ -356,6 +390,19 @@ fn log_anchor_source(source: AnchorSource) {
 /// 編集計画を反映する。順序は「直前の確定の削除 → 確定 → preedit の更新」。
 /// `start_at` は composition を始める範囲（再変換で選択範囲を置き換えるときに指定する）
 fn apply_plan(
+    context: &ITfContext,
+    ec: u32,
+    env: &Env,
+    plan: &EditPlan,
+    start_at: Option<&ITfRange>,
+) -> Result<()> {
+    let result = apply_plan_inner(context, ec, env, plan, start_at);
+    // 失敗しても composition の有無は変わり得る。購読を実態に合わせる
+    (env.on_composition_change)(context);
+    result
+}
+
+fn apply_plan_inner(
     context: &ITfContext,
     ec: u32,
     env: &Env,
