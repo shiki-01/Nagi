@@ -2230,6 +2230,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **起動・終了**: 親子関係は従来どおり（imserver は `--no-llm --parent-pid <自 PID>`）。ウィンドウを閉じるとすぐ隠し、メッセージループを抜けてから imserver に `shutdown` を送り最大 6 秒待つ（imserver 側で 3 秒待って kill）。多重起動は名前付きミューテックス（`Local\NagiSettingsWindow`）で抑止し、2 つ目は既存のウィンドウを前面に出して終了する（引数は無視）。起動引数は従来互換 + `--web`。`--no-browser` / `--url-file` は `--web` のときだけ意味を持つ。TSF 層・status.rs・install.ps1 は変更なし（起動引数の互換のみ）。
 - **テスト**: `native_model`（カテゴリ順・level 絞り込み・iOS 専用除外・値変換と検証・既定との比較・再起動バッジ・メッセージ番号と ID の衝突）、`native_layout`（DPI 別の高さ・スクロール範囲）、`native_worker`（フェイクのバックエンドで接続・再試行・更新・更新確認の URL 絞り込み）、`cli`（`--web`）。Win32 層は `cargo clippy -p nagi-settings-ui --target x86_64-pc-windows-gnu --all-targets -- -D warnings` による型検査のみ（Linux には mingw が無くリンク・実行はできない）。
 - **未実装**: 本体（クライアント領域）のダークモード、アクセシビリティの詳細確認（「既定に戻す」ボタンの読み上げ名が他の項目と区別できない・UI Automation の名前）、キーマップ・ユーザー辞書の編集 UI、数値入力のスピナー（UPDOWN）、PgUp/PgDn などキーボードでのパネルのスクロール、更新確認中の他の設定変更の待ち（ワーカーは 1 本で、確認が終わるまで後続のコマンドが待つ）、ウィンドウの位置・サイズの記憶。
+- **その後（H-114）**: 本項の画面構成（上部の「詳細設定を表示」・左のカテゴリ LISTBOX・グループ枠）は H-114 のレイアウト刷新で置き換わった（詳細設定の切替は左下のフッターへ、一覧は左端全高のサイドバーへ）。「既定に戻す」の読み上げ名の課題も H-114 で解消。モデル・ワーカー・保存の挙動・起動と終了は本項のまま。
 - **未確認（実機確認項目）**: `docs/real-hardware-checklist.md` §8.5c の設定画面の項目（ウィンドウが開く・DPI 150% のレイアウト・項目の変更が config.toml に反映・再起動バッジ・更新ページ・多重起動・閉じたあと imserver が残らない・キーボード操作）。
 
 ### H-105. 文書フォーカス・キャレット移動への追従と ITfFnConfigure（2026-11-21。Linux での単体テストと型検査のみ・Windows 実機未確認）
@@ -2325,3 +2326,45 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
   - ISCC の版がファイル情報でも `/?` でも読めず、版の事前確認を撤去した。
   - マージ時に衝突マーカーが `CLAUDE.md`・`decisions.md` に残った。再発防止: マージ後に `git grep -nE '^(<<<<<<< |>>>>>>> |=======$)'` で確認する。
 - **更新した文書**: `CLAUDE.md`（現状）、`docs/progress.md`（Windows 節）、`docs/real-hardware-checklist.md`（§8 冒頭・§8.8）、`docs/windows-install.md`（設定画面の開き方）。
+
+### H-114. Windows: 設定画面のレイアウト刷新（2026-11-21、ユーザー要望。Linux では `native_layout` の単体テストのみ・Windows 実機未確認。H-104 の画面構成を置き換える）
+
+- **構成**: サイドバーは左端に全高で置き、上部バーは廃止。下部にフッター（左から「詳細設定を表示」・ステータス・「閉じる」。区切り線つき）。右のパネルは縦スクロール。クライアント領域の最小は 760x440 dp（初期 880x620 dp）。サイドバー項目は LISTBOX のオーナードロー。
+- **寸法**: 余白は 4dp グリッド（4 / 8 / 12 / 16 / 24 / 32）。96 DPI 基準の dp で持ち実 DPI で px にする。入力欄・コンボボックスの幅は全項目で 240dp に統一（`CONTROL_W`）、動作ボタンの幅も共通（`BUTTON_W`）。
+- **見た目**: 説明文は本文と同じ大きさのままグレーにする（小さくしない。読みやすさのため）。グループ枠は使わず、節見出し + 区切り線にする。
+- **アクセシビリティ**: 「既定に戻す」ボタンの読み上げ名は「{項目名}を既定に戻す」（`controls.rs` の `set_accessible_name`。MSAA の `PROPID_ACC_NAME`。UI Automation にも橋渡しされる）。設定できなければ見える文字列のまま。H-104 の「項目名が付かない既知の課題」への対応。
+- **ページの追加**: `core/settings-ui/src/native/pages.rs` の `PAGES` に 1 行（識別子・サイドバーの表示名・行を組み立てる関数）。サイドバー・見出し・配置・Tab 順・スクロールは共通の仕組み（`page.rs`）が処理する。ボタンを置くなら `native_model::ids` に ID を足し `window.rs` の `on_command` に処理を足す。
+- **実装**: `core/settings-ui/src/native_layout.rs`（レイアウト計算。OS 非依存）、`native/pages.rs`・`page.rs`・`window.rs`・`controls.rs`・`dpi.rs`。
+- **更新した文書**: H-104（追記）、`docs/real-hardware-checklist.md` §8.5c、`docs/windows-install.md`（設定画面の説明）。
+- **未確認**: Windows 実機での見た目（DPI 100/150/200%・最小サイズ・ダークモード。本体のダークモード対応は引き続き未実装）。
+
+### H-115. Windows: アイコンを Nagi のロゴに統一し、タスクバーのカラー/モノクロを選べるようにする（2026-11-21、ユーザー要望。Linux では描画・切替判断の単体テストのみ・実機未確認）
+
+- **ロゴ**: 画像ファイルを手で作らず、コードで描画する（`frontend-windows/src/icon.rs`。SVG と同じ 1024 四方の座標系）。24px 以下（`SMALL_MAX`）は線と波を太くして振れ幅を大きくした小サイズ版にする（SVG のままだと 16px で潰れるため）。生成する大きさは 16 / 20 / 24 / 32 / 48 / 256。`frontend-windows/assets/nagi.ico` は生成結果をコミットし、絵柄との一致をテストで検査する（`NAGI_UPDATE_ICO=1 cargo test -p nagi-windows icon` で書き直す）。
+- **exe への埋め込み**: `embed-resource`（MSVC は `rc.exe`、GNU は `windres`）でリソース ID 1 に `nagi.ico` を入れる。対象は `nagi-settings.exe`（`core/settings-ui/build.rs`。ウィンドウのアイコンも同じリソースを読む）と `imserver.exe`（`core/server/build.rs` を今回追加）。**リソースコンパイラが無いとき**: `CI` 環境変数があればビルド失敗、無ければ警告のみでアイコン無しの exe になる。
+- **トレードオフ**: `embed-resource` が `nagi-server` の build-dependency に増える（実行時の依存には入らない。非 Windows ターゲット、iOS / Android のライブラリビルドでは `build.rs` が何もしない）。許容できなければ `core/server/build.rs` と依存を外せる（imserver.exe のアイコンが既定になるだけ）。
+- **タスクバー・言語バー**: 設定 `[windows] indicator_icon = "color" | "mono"`（既定 `color`。`config/default.toml`）。`color` はロゴの色に「あ / A」の小さな印を付ける。`mono` は `SystemUsesLightTheme`（レジストリ）を見て、ライトなら黒・ダークなら白で描く（読めなければ白。`indicator::mono_foreground`）。設定値は 5 秒に 1 回だけ `get_settings` で読み直す（`indicator::REFRESH_INTERVAL`）ため、変更の反映は最大約 5 秒遅れ、再起動は不要。判断は `frontend-windows/src/indicator.rs`、レジストリ・`HICON` 生成は `frontend-windows-tsf/src/langbar.rs`。
+- **常にカラー**: `RegisterProfile`（入力方式の一覧。`nagi.ico` を DLL と同じ場所へ書き出す）・設定アプリ・セットアップ（`SetupIconFile`）・スタートメニューのショートカット（`install.ps1` が `IconLocation` を設定画面 exe に）・「アプリと機能」（`DisplayIcon`）。
+- **未統一（今回の範囲外）**: トースト / モード切替ポップアップ / 更新通知の表示、Inno のウィザード画像、`--web` 設定画面のタブアイコン、macOS のアイコン。
+- **未確認**: 16px での判別、モノクロの白/黒の切替、タスクバーのテーマ追従（`docs/real-hardware-checklist.md` §8.9）。
+
+### H-116. Windows: 動作確認の診断 `nagi-settings --diag`（2026-11-21、ユーザー要望「未確認項目をボタン一つで確認したい」。ロジックのみ。Linux では判定ロジックの単体テストのみ・Windows 実機未実行）
+
+- **仕様**: 画面を開かずに診断を実行してレポートを出す。`nagi-settings.exe --diag [--diag-item <id>] [--diag-out <dir>] [--diag-json] [--no-network]`。実装は `core/settings-ui/src/diag/`（入口は `entry.rs`）。
+  - 項目は 29（自動 23 + 手動案内 6）。自動: 環境（`env.arch` / `env.user` / `env.vcruntime` / `env.display`）、導入（`install.files` / `install.old_files` / `install.signature`）、`data.files`、TSF（`tsf.registration` / `tsf.user_profile` / `tsf.interfaces` / `tsf.function_provider` / `tsf.log`）、エンジン（`engine.start` / `engine.memory` / `engine.shutdown` / `engine.parent_exit`）、入力（`input.fuzzy` / `input.reconvert`）、更新（`update.check` / `update.offline` / `update.bad_signature` / `update.state`）。手動案内: `manual.language_options` / `manual.reconversion` / `manual.multi_dpi` / `manual.smartscreen` / `manual.apply_update` / `manual.arm64_emulation`。ID の一覧と順序は `types.rs` の `ItemId::ALL`。
+  - 手動項目は手順を表示するだけ（結果は「手動」）。ただし根拠が拾えるときだけ状態が変わる（`manual.language_options` は `tsf.log` に設定画面を起動した記録があれば OK、`manual.arm64_emulation` は ARM64 でなければスキップ）。
+  - 出力: テキスト（既定）または JSON（`--diag-json`、標準出力）。進捗は標準エラー。レポートは常にファイルにも保存する（`--diag-out`。既定は `%LOCALAPPDATA%\Nagi\logs`、無ければ一時フォルダ）。`nagi-settings.exe` は GUI サブシステムのため、画面で見るには `> diag.txt` のリダイレクトが要る。結果に入力内容は含めない（固定のテスト文字列だけを流し、本文は出さない）。
+  - 終了コード: 0 = NG なし、1 = NG あり、2 = 引数の誤り。`--no-network` は更新確認で実サーバーに通信しない。
+  - 実行時間: imserver の初期化（最大 60 秒）や更新確認（最大 40 秒）の待ちで 1 分以上かかることがある。
+- **Windows の事実の取得は PowerShell**: 判定は OS 非依存の純関数（`checks`・`engine`・`input`・`update`・`manual`）で、事実の収集だけを `sys::System`（Windows 実装は PowerShell 1 回 + COM 調査用の `-STA` の PowerShell）が行う。理由: 署名・COM の `QueryInterface`・レジストリ・OS 情報を `windows` クレートで直接呼ぶと unsafe とバインディングが大きく増える。診断は実機確認の補助で速度が要らず、判定ロジックを Linux で単体テストできる（`System` をフェイクにする）ほうを優先した。診断モジュールに unsafe は無い。PowerShell を実行できない環境（制限付き・グループポリシー）では該当項目が「判定不能」になり、その旨と対処を出す。
+- **診断用の imserver は一時 `--user-dir`**: 診断が起動する imserver は作業ディレクトリ（`Ctx::scratch_root` の下）を `--user-dir` にして動かし、利用者の `config.toml`・`learning.tsv`・更新フォルダには書かない（書き込み先の確認 `env.user` が probe ファイルを作って消すのを除く）。終了時に作業ディレクトリを消す。
+- **§9.1 の期待の限定**: `ありかとう`（`arikatou`）→ `ありがとう` は、「在り難う」「あり難う」が辞書にあって読みとして成立するため、辞書のみ（LLM なし）のエンジンでは「もしかして」に出ない（H-88 の「成立する読み」の扱い）。診断ではこのケースを「外れても NG にしない（要確認止まり）」とした（`diag/input.rs` の `FUZZY_CASES`、`required: false`）。これに合わせ、`docs/real-hardware-checklist.md` §9.1 の期待は LLM あり（`--features llama` とモデルがある構成）の場合に限定した。誤り辞書（`ありがとごさいます` 系）は辞書のみでも必須。
+- **関連**: 一覧と §8・§9 の対応は `docs/real-hardware-checklist.md` §8.9「ボタン一つで確認」。
+
+### H-117. Windows TSF: 候補位置の補正・保留タイムアウト・imserver メモリ計測（2026-11-21。Linux では単体テストと型検査のみ・実機未確認）
+
+- **補正オフセット**: `%APPDATA%\Nagi\window-offsets.tsv`。形式は TSV（`<exe 名>\t<dx>\t<dy>`、`#` 始まりは注釈。96 DPI 基準の dp。右・下が正）。キャレット位置を正しく測れないアプリのために、実行ファイル名（小文字）ごとに候補ウィンドウとモード切替ポップアップへ適用する。**トーストは対象外**。上限は片方向 400dp、最大 256 件、64KB 超のファイルは無視。手で編集する前提で、フォーカスを得るたびに読み直す（再起動不要）。候補ウィンドウはフォーカスもクリックも奪わず利用者が動かせない（マウス操作は v1 の非目標）ため、この方式にした。ロジックは `frontend-windows/src/placement.rs`、読み込みは `text_service.rs` の `load_window_offset`。設定画面からの編集 UI は無い。
+- **候補保留のタイムアウト**: H-102 の「キャレット位置が測れるまで候補を保留」は、非同期の編集セッションが走らない・位置を返さないアプリで永久に保留しうる。保留に 150ms の期限を設け（`anchor_wait::DEFER_TIMEOUT`）、期限後は最後に測れた位置、無ければマウス位置で出す。150ms は実機での調整対象。ロジックは `frontend-windows/src/anchor_wait.rs`（時刻を引数で渡す状態機械）、タイマーと描画は TSF 層。
+- **メモリ計測ログ**: imserver の常駐メモリを `tsf.log` に `[mem] imserver ...` で 10 分に 1 回（ホストプロセスごと。`process_memory::LOG_INTERVAL`）記録する。ワーキングセット・ピーク・プライベートの数値のみで入力内容は含まない。目的はメモリ逼迫の閾値（H-99）を実測で見直す材料集めで、**閾値は変えていない**。`GetProcessMemoryInfo` の unsafe は `frontend-windows-tsf/src/proc_mem.rs` に隔離（`nagi-windows` は `forbid(unsafe_code)` のまま）。
+- **設定を開く導線**: 既存のもの（右クリックメニュー・スタートメニュー）のみで追加なし。
+- **未確認**: 実機での位置補正の効き・フォールバック時の位置・`[mem]` の出力（`docs/real-hardware-checklist.md` §8.9）。
