@@ -678,6 +678,14 @@ pub fn definitions() -> Vec<SettingDef> {
             SettingKind::Text,
         ),
         update_check,
+        def(
+            "windows.indicator_icon",
+            "Windows の表示",
+            "タスクバーのアイコン（Windows のみ）",
+            "タスクバーの入力インジケーターと言語バーに出る Nagi のアイコンの色です。「モノクロ」はシステムのテーマ（ライト/ダーク）に合わせて白または黒で描きます。次にアイコンが更新されたとき（モードの切り替えなど）に反映されます。",
+            choice(&[("color", "カラー"), ("mono", "モノクロ")]),
+        )
+        .platforms(SettingPlatforms::Desktop),
     ]
 }
 
@@ -766,6 +774,7 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "apps.remember_mode" => Some(Bool(config.apps.remember_mode)),
         "apps.passthrough" => Some(Bool(config.apps.passthrough)),
         "apps.passthrough_chars" => Some(Text(config.apps.passthrough_chars.clone())),
+        "windows.indicator_icon" => Some(Text(config.windows.indicator_icon.as_str().to_string())),
         _ => None,
     }
 }
@@ -1178,6 +1187,41 @@ mod tests {
             &[set(
                 "convert.symbol_position",
                 SettingValue::Text("middle".into()),
+            )],
+        )
+        .unwrap();
+        assert_eq!(bad.errors.len(), 1);
+    }
+
+    #[test]
+    fn windows_indicator_icon_definition_and_editing() {
+        let defs = definitions();
+        let d = defs
+            .iter()
+            .find(|d| d.key == "windows.indicator_icon")
+            .unwrap();
+        assert!(matches!(&d.kind, SettingKind::Choice { options } if options.len() == 2));
+        assert_eq!(d.platforms, SettingPlatforms::Desktop);
+        assert_eq!(
+            from_config(&Config::default(), "windows.indicator_icon"),
+            Some(SettingValue::Text("color".into()))
+        );
+        let r = apply_changes(
+            None,
+            &[set(
+                "windows.indicator_icon",
+                SettingValue::Text("mono".into()),
+            )],
+        )
+        .unwrap();
+        let (c, issues) = crate::parse(&r.source).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(c.windows.indicator_icon, crate::IndicatorIcon::Mono);
+        let bad = apply_changes(
+            None,
+            &[set(
+                "windows.indicator_icon",
+                SettingValue::Text("blue".into()),
             )],
         )
         .unwrap();

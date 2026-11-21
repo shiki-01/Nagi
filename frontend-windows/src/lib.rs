@@ -19,7 +19,8 @@
 //! - [`reconvert`] — 再変換の対象テキストの判定
 //! - [`toast`] — 通知パネルの配置、モード切替ポップアップの判定・配置
 //! - [`ui_element`] — UILess モード（`ITfCandidateListUIElement`）の候補リストのモデル
-//! - [`icon`] — 入力方式アイコン（.ico）の生成
+//! - [`icon`] — Nagi のロゴ・モード表示つきアイコンの描画と .ico の生成
+//! - [`indicator`] — タスクバー・言語バーのアイコンの配色（設定 `windows.indicator_icon` とテーマ）
 //! - [`diag`] — 診断ログ（tsf.log）の整形・ローテーション判断・イベントの文言（入力内容は含めない）
 //! - [`engine_log`] — imserver の stderr の保存先（ホスト pid ごとのファイル）と古いファイルの掃除
 //! - [`placement`] — アプリ単位の表示位置の補正（候補ウィンドウ・モード切替ポップアップ）
@@ -39,6 +40,7 @@ pub mod engine_log;
 pub mod environment;
 pub mod focus;
 pub mod icon;
+pub mod indicator;
 pub mod keynorm;
 pub mod mode;
 pub mod placement;

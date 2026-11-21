@@ -310,13 +310,20 @@ pub enum Page {
     Update,
     /// データ・ファイル
     Data,
+    /// 登録式の追加ページ（`native/pages.rs` の表に 1 行足すだけで増やせる。値は表の中での識別子）
+    Extra(&'static str),
     /// 読み込み中・失敗の表示（読み込めるまでの「設定」）
     Status,
 }
 
-/// 左の一覧: 絞り込み後のカテゴリ + 「更新」+「データ・ファイル」。
-/// まだ読み込めていなければ（読み込み中・失敗）カテゴリの代わりに「設定」（状態の表示）を先頭に置く
-pub fn sidebar(view: Option<&SettingsView>, detail: bool) -> Vec<(Page, String)> {
+/// 左の一覧: 絞り込み後のカテゴリ + 登録済みの固定ページ（`fixed`。「更新」「データ・ファイル」など。
+/// 表示順は渡した順）。まだ読み込めていなければ（読み込み中・失敗）カテゴリの代わりに
+/// 「設定」（状態の表示）を先頭に置く
+pub fn sidebar(
+    view: Option<&SettingsView>,
+    detail: bool,
+    fixed: &[(Page, &str)],
+) -> Vec<(Page, String)> {
     let mut out = Vec::new();
     match view {
         Some(view) => {
@@ -326,8 +333,7 @@ pub fn sidebar(view: Option<&SettingsView>, detail: bool) -> Vec<(Page, String)>
         }
         None => out.push((Page::Status, "設定".to_owned())),
     }
-    out.push((Page::Update, "更新".to_owned()));
-    out.push((Page::Data, "データ・ファイル".to_owned()));
+    out.extend(fixed.iter().map(|(p, t)| (*p, (*t).to_owned())));
     out
 }
 
@@ -395,6 +401,12 @@ pub mod ids {
     pub const STATUS: i32 = 102;
     /// 右のスクロールパネル
     pub const PANEL: i32 = 103;
+    /// 「閉じる」
+    pub const CLOSE: i32 = 104;
+    /// サイドバーとパネルの間の縦線
+    pub const SIDEBAR_RULE: i32 = 105;
+    /// フッターの上の横線
+    pub const FOOTER_RULE: i32 = 106;
     /// 「更新を確認」
     pub const UPDATE_CHECK: i32 = 200;
     /// 「更新を適用…」
@@ -417,11 +429,14 @@ pub mod ids {
     pub const TIMER_STATUS: usize = 1;
 
     /// 固定の ID すべて
-    pub const FIXED: [i32; 12] = [
+    pub const FIXED: [i32; 15] = [
         LIST,
         DETAIL_CHECK,
         STATUS,
         PANEL,
+        CLOSE,
+        SIDEBAR_RULE,
+        FOOTER_RULE,
         UPDATE_CHECK,
         UPDATE_APPLY,
         UPDATE_NOTES,
@@ -540,17 +555,22 @@ mod tests {
         assert_eq!(v.visible_categories(true), [0, 1]);
         assert_eq!(v.categories[0].visible_fields(false), [0]);
         assert_eq!(v.categories[0].visible_fields(true), [0, 1]);
-        let side = sidebar(Some(&v), false);
+        let fixed = [
+            (Page::Update, "更新"),
+            (Page::Data, "データ・ファイル"),
+            (Page::Extra("diag"), "動作確認"),
+        ];
+        let side = sidebar(Some(&v), false, &fixed);
         let titles: Vec<_> = side.iter().map(|(_, t)| t.as_str()).collect();
-        assert_eq!(titles, ["変換", "更新", "データ・ファイル"]);
+        assert_eq!(titles, ["変換", "更新", "データ・ファイル", "動作確認"]);
         assert_eq!(side[0].0, Page::Category(0));
-        let side = sidebar(Some(&v), true);
-        assert_eq!(side.len(), 4);
+        let side = sidebar(Some(&v), true, &fixed);
+        assert_eq!(side.len(), 5);
         // 未読み込みでも更新・データのページは出る（先頭は状態の表示）
-        let side = sidebar(None, true);
+        let side = sidebar(None, true, &fixed);
         assert_eq!(
             side.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
-            [Page::Status, Page::Update, Page::Data]
+            [Page::Status, Page::Update, Page::Data, Page::Extra("diag")]
         );
     }
 

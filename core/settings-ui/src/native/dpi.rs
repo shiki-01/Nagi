@@ -7,28 +7,33 @@ use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DEFAULT_CHARSET, DeleteObject, HFONT, HGDIOBJ, LOGFONTW,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
     GetDpiForWindow, SetProcessDpiAwarenessContext, SystemParametersInfoForDpi,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, WINDOW_EX_STYLE, WINDOW_STYLE,
+    NONCLIENTMETRICSW, SPI_GETHIGHCONTRAST, SPI_GETNONCLIENTMETRICS,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WINDOW_EX_STYLE, WINDOW_STYLE,
 };
 use windows::core::PCWSTR;
 
-/// 使うフォント 2 種（DPI ごとに作り直す）
+/// 使うフォント（DPI ごとに作り直す）。本文・説明・案内はすべて `normal`（9pt 相当以上）。
+/// 説明・案内は文字の大きさではなく色（グレー）で区別する
 #[derive(Clone, Copy)]
 pub(super) struct Fonts {
     /// 本文（システムのメッセージフォント。Segoe UI 9pt 相当）
     pub normal: HFONT,
-    /// 説明・案内（本文の 9 割）
-    pub small: HFONT,
+    /// ページの見出し（本文の 1.6 倍・セミボールド）
+    pub heading: HFONT,
+    /// 節（グループ）の見出し（本文の 1.2 倍・セミボールド）
+    pub section: HFONT,
 }
 
 impl Fonts {
     /// 破棄する（コントロールから外してから呼ぶこと）
     pub fn destroy(self) {
-        for f in [self.normal, self.small] {
+        for f in [self.normal, self.heading, self.section] {
             let _ = unsafe { DeleteObject(HGDIOBJ(f.0)) };
         }
     }
@@ -117,15 +122,38 @@ pub(super) fn create_fonts(dpi: u32) -> Fonts {
             ..Default::default()
         }
     };
-    let mut small_font = normal_font;
-    small_font.lfHeight = normal_font.lfHeight * 9 / 10;
-    if small_font.lfHeight == 0 {
-        small_font.lfHeight = -1;
-    }
+    // 見出しは本文と同じ書体（Segoe UI / Segoe UI Variable の既定）の大きさと太さだけを変える
+    let derive = |num: i32, den: i32| -> LOGFONTW {
+        let mut f = normal_font;
+        f.lfHeight = (normal_font.lfHeight * num / den).min(-1);
+        f.lfWeight = 600;
+        f
+    };
+    let heading_font = derive(8, 5);
+    let section_font = derive(6, 5);
     Fonts {
         normal: unsafe { CreateFontIndirectW(&normal_font) },
-        small: unsafe { CreateFontIndirectW(&small_font) },
+        heading: unsafe { CreateFontIndirectW(&heading_font) },
+        section: unsafe { CreateFontIndirectW(&section_font) },
     }
+}
+
+/// ハイコントラストテーマが有効か（有効ならエラーも赤ではなくシステムの文字色にする）
+pub(super) fn is_high_contrast() -> bool {
+    let mut info = HIGHCONTRASTW {
+        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
+    };
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            info.cbSize,
+            Some(std::ptr::from_mut(&mut info).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .is_ok();
+    ok && (info.dwFlags.0 & HCF_HIGHCONTRASTON.0) != 0
 }
 
 /// Windows のアプリのテーマがダークか（レジストリ。取れなければライト）

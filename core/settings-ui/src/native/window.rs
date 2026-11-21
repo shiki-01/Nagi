@@ -1,18 +1,24 @@
 //! メインウィンドウ: クラス登録・メッセージループ・各メッセージの処理。
 
 use super::NativeOptions;
-use super::controls::{create_child, instance, send, send_text, set_font, set_text, wide};
+use super::controls::{
+    create_child, init_accessibility, instance, release_accessibility, send, send_text, set_font,
+    set_text, wide,
+};
 use super::dpi::{
-    apply_title_bar_theme, create_fonts, ensure_dpi_awareness, outer_size, system_dpi, window_dpi,
+    apply_title_bar_theme, create_fonts, ensure_dpi_awareness, is_high_contrast, outer_size,
+    system_dpi, window_dpi,
 };
 use super::page::{
     edit_text, ensure_visible, find_ctl, rebuild_page, refit_fonts, relayout, role_of,
     scroll_state, scroll_to,
 };
+use super::pages;
 use super::state::{Phase, Role, State, UpdateUi};
 use crate::http::{is_safe_notes_url, user_dict_dir};
 use crate::native_layout::{
-    control_height, frame_layout, initial_client_size, min_client_size, scale, wheel_step,
+    Rect, control_height, frame_layout, initial_client_size, min_client_size, sidebar_item_height,
+    sidebar_item_parts, wheel_step,
 };
 use crate::native_model::{Page, SettingsView, describe_update, ids, messages, sidebar};
 use crate::native_worker::{Command, Reply, WorkerHandle};
@@ -26,34 +32,43 @@ use windows::Win32::Foundation::{
     COLORREF, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    COLOR_GRAYTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT, GetSysColor, GetSysColorBrush, HBRUSH, HDC,
-    SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
+    COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT,
+    DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DrawFocusRect, DrawTextW, FillRect,
+    GetSysColor, GetSysColorBrush, HBRUSH, HDC, HGDIOBJ, SelectObject, SetBkMode, SetTextColor,
+    TRANSPARENT, UpdateWindow,
 };
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::SystemServices::{
-    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_LEFT, SS_NOPREFIX,
+    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_ETCHEDHORZ, SS_ETCHEDVERT, SS_LEFT, SS_NOPREFIX,
 };
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Controls::{
-    ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+    DRAWITEMSTRUCT, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, ODS_FOCUS,
+    ODS_NOFOCUSRECT, ODS_SELECTED,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
-use windows::Win32::UI::Shell::{ExtractIconW, ShellExecuteW};
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BS_AUTOCHECKBOX, CB_GETCURSEL, CB_GETDROPPEDSTATE, CREATESTRUCTW, CS_HREDRAW,
-    CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW, GetParent, GetScrollInfo,
-    GetWindowLongPtrW, HICON, HMENU, IDC_ARROW, IDYES, IsDialogMessageW, IsIconic, KillTimer,
-    LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LB_SETCURSEL, LB_SETITEMHEIGHT,
-    LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, LoadCursorW, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO,
-    MINMAXINFO, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SB_VERT, SCROLLINFO, SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, SWP_NOACTIVATE,
-    SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_GETMINMAXINFO, WM_MOUSEWHEEL, WM_NCCREATE,
-    WM_SETICON, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSEXW, WS_CHILD,
-    WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL,
+    BM_GETCHECK, BS_AUTOCHECKBOX, BS_PUSHBUTTON, CB_GETCURSEL, CB_GETDROPPEDSTATE, CREATESTRUCTW,
+    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW, GetParent,
+    GetScrollInfo, GetWindowLongPtrW, HICON, HMENU, IDC_ARROW, IDYES, IsDialogMessageW, IsIconic,
+    KillTimer, LB_ADDSTRING, LB_GETCURSEL, LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT,
+    LB_SETCURSEL, LB_SETITEMHEIGHT, LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY,
+    LBS_OWNERDRAWFIXED, LoadCursorW, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, MSG,
+    MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO,
+    SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER,
+    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO, WM_MOUSEWHEEL,
+    WM_NCCREATE, WM_SETICON, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSEXW,
+    WS_CHILD, WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    IMAGE_ICON, LR_SHARED, LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
 };
 use windows::core::{PCWSTR, w};
 
@@ -96,6 +111,20 @@ fn hwnd_from(raw: isize) -> HWND {
 
 pub(super) fn run(options: NativeOptions) -> Result<(), String> {
     ensure_dpi_awareness();
+    // 読み上げ用の名前（MSAA の属性サービス）に COM が要る。失敗しても設定画面は動く
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    if com {
+        init_accessibility();
+    }
+    let result = run_inner(options);
+    if com {
+        release_accessibility();
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+fn run_inner(options: NativeOptions) -> Result<(), String> {
     // 多重起動の抑止: 2 つ目は既存のウィンドウを前面に出して終わる
     let name = wide(MUTEX_NAME);
     let _mutex = match unsafe { CreateMutexW(None, true, PCWSTR(name.as_ptr())) } {
@@ -226,6 +255,9 @@ fn register_classes() -> Result<(), String> {
         hCursor: cursor,
         hbrBackground: background,
         lpszClassName: PCWSTR(main_name.as_ptr()),
+        // タスクバー・Alt+Tab は大、タイトルバーは小（exe に埋め込んだ Nagi のロゴ）
+        hIcon: app_icon(true, system_dpi()).unwrap_or_default(),
+        hIconSm: app_icon(false, system_dpi()).unwrap_or_default(),
         ..Default::default()
     };
     let panel_name = wide(PANEL_CLASS);
@@ -246,15 +278,26 @@ fn register_classes() -> Result<(), String> {
     Ok(())
 }
 
-fn app_icon() -> Option<HICON> {
-    let mut path = [0u16; 520];
-    let n = unsafe { windows::Win32::System::LibraryLoader::GetModuleFileNameW(None, &mut path) };
-    if n == 0 {
-        return None;
-    }
-    // exe に埋め込まれたアイコンがあれば使う（無ければ NULL、exe 以外なら 1 が返る）
-    let icon = unsafe { ExtractIconW(Some(instance()), PCWSTR(path.as_ptr()), 0) };
-    (icon.0 as usize > 1).then_some(icon)
+/// exe に埋め込んだ Nagi のアイコン（リソース ID 1。`build.rs` が `.ico` から埋め込む）を、
+/// `big`（タスクバー・Alt+Tab）か小（タイトルバー）の大きさで読む。共有アイコンなので破棄しない。
+/// 埋め込まれていなければ `None`（OS の既定のアイコンになる）
+fn app_icon(big: bool, dpi: u32) -> Option<HICON> {
+    let (cx, cy) = if big {
+        (SM_CXICON, SM_CYICON)
+    } else {
+        (SM_CXSMICON, SM_CYSMICON)
+    };
+    let (width, height) = unsafe {
+        (
+            GetSystemMetricsForDpi(cx, dpi),
+            GetSystemMetricsForDpi(cy, dpi),
+        )
+    };
+    // MAKEINTRESOURCE(1)
+    let id = PCWSTR(std::ptr::without_provenance::<u16>(1));
+    let handle =
+        unsafe { LoadImageW(Some(instance()), id, IMAGE_ICON, width, height, LR_SHARED) }.ok()?;
+    Some(HICON(handle.0))
 }
 
 // ---- ウィンドウプロシージャ ----
@@ -344,6 +387,16 @@ fn handle_message(st: &State, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC => on_ctl_color(st, wparam, lparam),
+        WM_DRAWITEM => {
+            // SAFETY: WM_DRAWITEM の lparam は有効な DRAWITEMSTRUCT
+            let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
+            if item.CtlID == ids::LIST as u32 {
+                draw_sidebar_item(st, item);
+                LRESULT(1)
+            } else {
+                LRESULT(0)
+            }
+        }
         WM_VSCROLL => {
             on_vscroll(st, wparam);
             LRESULT(0)
@@ -399,31 +452,19 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
     st.fonts.set(Some(fonts));
     let font = fonts.normal;
 
+    // 作る順 = Tab 順: サイドバー → パネルの中 → 「詳細設定を表示」→ 「閉じる」
     let list = create_child(
         hwnd,
         "LISTBOX",
         "",
-        LBS_NOTIFY as u32 | LBS_NOINTEGRALHEIGHT as u32 | WS_TABSTOP.0 | WS_VSCROLL.0,
-        WS_EX_CLIENTEDGE.0,
+        LBS_NOTIFY as u32
+            | LBS_NOINTEGRALHEIGHT as u32
+            | LBS_OWNERDRAWFIXED as u32
+            | LBS_HASSTRINGS as u32
+            | WS_TABSTOP.0
+            | WS_VSCROLL.0,
+        0,
         ids::LIST,
-        font,
-    );
-    let detail = create_child(
-        hwnd,
-        "BUTTON",
-        "詳細設定を表示",
-        BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
-        0,
-        ids::DETAIL_CHECK,
-        font,
-    );
-    let status = create_child(
-        hwnd,
-        "STATIC",
-        "",
-        SS_LEFT.0 | SS_NOPREFIX.0 | SS_CENTERIMAGE.0 | SS_ENDELLIPSIS.0,
-        0,
-        ids::STATUS,
         font,
     );
     let panel_class = wide(PANEL_CLASS);
@@ -445,21 +486,87 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
             None,
         )
     };
-    let (Some(list), Some(detail), Some(status), Ok(panel)) = (list, detail, status, panel) else {
+    let detail = create_child(
+        hwnd,
+        "BUTTON",
+        "詳細設定を表示",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
+        0,
+        ids::DETAIL_CHECK,
+        font,
+    );
+    let status = create_child(
+        hwnd,
+        "STATIC",
+        "",
+        SS_LEFT.0 | SS_NOPREFIX.0 | SS_CENTERIMAGE.0 | SS_ENDELLIPSIS.0,
+        0,
+        ids::STATUS,
+        font,
+    );
+    let close = create_child(
+        hwnd,
+        "BUTTON",
+        "閉じる",
+        BS_PUSHBUTTON as u32 | WS_TABSTOP.0,
+        0,
+        ids::CLOSE,
+        font,
+    );
+    let sidebar_rule = create_child(
+        hwnd,
+        "STATIC",
+        "",
+        SS_ETCHEDVERT.0,
+        0,
+        ids::SIDEBAR_RULE,
+        font,
+    );
+    let footer_rule = create_child(
+        hwnd,
+        "STATIC",
+        "",
+        SS_ETCHEDHORZ.0,
+        0,
+        ids::FOOTER_RULE,
+        font,
+    );
+    let (
+        Some(list),
+        Some(detail),
+        Some(status),
+        Some(close),
+        Some(sidebar_rule),
+        Some(footer_rule),
+        Ok(panel),
+    ) = (
+        list,
+        detail,
+        status,
+        close,
+        sidebar_rule,
+        footer_rule,
+        panel,
+    )
+    else {
         return false;
     };
     st.list.set(list);
     st.detail.set(detail);
     st.status.set(status);
+    st.close.set(close);
+    st.sidebar_rule.set(sidebar_rule);
+    st.footer_rule.set(footer_rule);
     st.panel.set(panel);
 
     apply_title_bar_theme(hwnd);
-    if let Some(icon) = app_icon() {
-        for kind in [0usize, 1] {
+    // WM_SETICON の種別: 0 = ICON_SMALL（タイトルバー）、1 = ICON_BIG（タスクバー・Alt+Tab）
+    for (kind, big) in [(0usize, false), (1usize, true)] {
+        if let Some(icon) = app_icon(big, dpi) {
             send(hwnd, WM_SETICON, kind, icon.0 as isize);
         }
     }
-    send(list, LB_SETITEMHEIGHT, 0, scale(28, dpi) as isize);
+    send(list, LB_SETITEMHEIGHT, 0, sidebar_item_height(dpi) as isize);
     layout_main(st);
     rebuild_sidebar(st);
     true
@@ -476,9 +583,12 @@ fn layout_main(st: &State) {
     let frame = frame_layout(rect.right - rect.left, rect.bottom - rect.top, st.dpi.get());
     for (control, r) in [
         (st.list.get(), frame.list),
-        (st.detail.get(), frame.detail_check),
+        (st.sidebar_rule.get(), frame.sidebar_rule),
         (st.panel.get(), frame.panel),
+        (st.footer_rule.get(), frame.footer_rule),
+        (st.detail.get(), frame.detail_check),
         (st.status.get(), frame.status),
+        (st.close.get(), frame.close),
     ] {
         let _ = unsafe { MoveWindow(control, r.x, r.y, r.w, r.h, true) };
     }
@@ -490,7 +600,12 @@ fn on_dpi_changed(st: &State, hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     st.dpi.set(dpi.max(96));
     let old = st.fonts.replace(Some(create_fonts(st.dpi.get())));
     if let Some(fonts) = st.fonts.get() {
-        for control in [st.list.get(), st.detail.get(), st.status.get()] {
+        for control in [
+            st.list.get(),
+            st.detail.get(),
+            st.status.get(),
+            st.close.get(),
+        ] {
             set_font(control, fonts.normal);
         }
     }
@@ -499,7 +614,7 @@ fn on_dpi_changed(st: &State, hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         st.list.get(),
         LB_SETITEMHEIGHT,
         0,
-        scale(28, st.dpi.get()) as isize,
+        sidebar_item_height(st.dpi.get()) as isize,
     );
     if let Some(old) = old {
         old.destroy();
@@ -524,7 +639,7 @@ fn on_dpi_changed(st: &State, hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
 fn rebuild_sidebar(st: &State) {
     let (titles, selected) = {
         let mut model = st.model.borrow_mut();
-        let entries = sidebar(model.view.as_ref(), model.detail);
+        let entries = sidebar(model.view.as_ref(), model.detail, &pages::sidebar_entries());
         if !entries.iter().any(|(p, _)| *p == model.page)
             && let Some((first, _)) = entries.first()
         {
@@ -568,14 +683,92 @@ fn on_ctl_color(st: &State, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     };
     let color = match role {
         Some(Role::Desc | Role::Hint) => unsafe { GetSysColor(COLOR_GRAYTEXT) },
-        // 赤（COLORREF は 0x00BBGGRR）
-        Some(Role::Error) => 0x0000_00C0,
+        // 赤（COLORREF は 0x00BBGGRR）。ハイコントラストではシステムの文字色（赤は背景次第で読めない）
+        Some(Role::Error) if !is_high_contrast() => 0x0000_00C0,
         _ => unsafe { GetSysColor(COLOR_WINDOWTEXT) },
     };
     unsafe {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, COLORREF(color));
         LRESULT(GetSysColorBrush(COLOR_WINDOW).0 as isize)
+    }
+}
+
+// ---- サイドバー（オーナードロー） ----
+
+/// サイドバーの 1 項目を描く。色はすべてシステム色（ライト・ダーク・ハイコントラストに追従）。
+/// 選択は `COLOR_HIGHLIGHT` の角の立った帯、文字は左に余白を取って縦中央
+fn draw_sidebar_item(st: &State, item: &DRAWITEMSTRUCT) {
+    if item.itemID == u32::MAX {
+        return; // 項目が 0 件のときのフォーカス表示
+    }
+    let hdc = item.hDC;
+    let dpi = st.dpi.get();
+    let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
+    let (fill, text_x) = sidebar_item_parts(
+        Rect {
+            x: item.rcItem.left,
+            y: item.rcItem.top,
+            w: item.rcItem.right - item.rcItem.left,
+            h: item.rcItem.bottom - item.rcItem.top,
+        },
+        dpi,
+    );
+    let fill_rect = RECT {
+        left: fill.x,
+        top: fill.y,
+        right: fill.x + fill.w,
+        bottom: fill.y + fill.h,
+    };
+    unsafe {
+        FillRect(hdc, &item.rcItem, GetSysColorBrush(COLOR_WINDOW));
+        if selected {
+            FillRect(hdc, &fill_rect, GetSysColorBrush(COLOR_HIGHLIGHT));
+        }
+    }
+    let list = st.list.get();
+    let len = send(list, LB_GETTEXTLEN, item.itemID as usize, 0);
+    if len > 0 {
+        let mut buf = vec![0u16; len as usize + 1];
+        let n = send(
+            list,
+            LB_GETTEXT,
+            item.itemID as usize,
+            buf.as_mut_ptr() as isize,
+        );
+        buf.truncate(n.max(0) as usize);
+        let mut text_rect = RECT {
+            left: text_x,
+            top: fill.y,
+            right: fill_rect.right,
+            bottom: fill_rect.bottom,
+        };
+        unsafe {
+            let old = st
+                .fonts
+                .get()
+                .map(|f| SelectObject(hdc, HGDIOBJ(f.normal.0)));
+            SetBkMode(hdc, TRANSPARENT);
+            let color = if selected {
+                GetSysColor(COLOR_HIGHLIGHTTEXT)
+            } else {
+                GetSysColor(COLOR_WINDOWTEXT)
+            };
+            SetTextColor(hdc, COLORREF(color));
+            DrawTextW(
+                hdc,
+                &mut buf,
+                &mut text_rect,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+            if let Some(old) = old {
+                SelectObject(hdc, old);
+            }
+        }
+    }
+    // キーボードでたどっているときの目印（選択の帯の内側に細い枠）
+    if item.itemState.0 & ODS_FOCUS.0 != 0 && item.itemState.0 & ODS_NOFOCUSRECT.0 == 0 {
+        let _ = unsafe { DrawFocusRect(hdc, &fill_rect) };
     }
 }
 
@@ -635,9 +828,8 @@ fn on_command(st: &State, id: i32, code: u32) {
     }
     match id {
         IDOK => commit_focused_edit(st),
-        IDCANCEL => {
-            let _ = unsafe { PostMessageW(Some(st.hwnd.get()), WM_CLOSE, WPARAM(0), LPARAM(0)) };
-        }
+        IDCANCEL => close_window(st),
+        ids::CLOSE if code == BN_CLICKED => close_window(st),
         ids::LIST if code == LBN_SELCHANGE => select_page(st),
         ids::DETAIL_CHECK if code == BN_CLICKED => {
             let checked = send(st.detail.get(), BM_GETCHECK, 0, 0) == BST_CHECKED;
@@ -671,6 +863,10 @@ fn on_command(st: &State, id: i32, code: u32) {
         id if id >= ids::DYNAMIC_BASE => on_field_command(st, id, code),
         _ => {}
     }
+}
+
+fn close_window(st: &State) {
+    let _ = unsafe { PostMessageW(Some(st.hwnd.get()), WM_CLOSE, WPARAM(0), LPARAM(0)) };
 }
 
 fn send_command(st: &State, command: Command) {

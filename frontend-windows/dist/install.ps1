@@ -230,6 +230,9 @@ function New-StartMenuShortcuts([string]$TargetInstallDir) {
         foreach ($item in $items) {
             $link = $shell.CreateShortcut((Join-Path $folder ($item.Name + '.lnk')))
             $link.TargetPath = $item.Target
+            # どのショートカットも Nagi のロゴにそろえる（設定画面 exe に埋め込んだアイコン。H-115）。
+            # 既定のままだと、cmd・PowerShell・フォルダの既定のアイコンになる
+            $link.IconLocation = ('{0},0' -f $settingsGui)
             if ($item.Arguments) { $link.Arguments = $item.Arguments }
             if ($item.Minimized) { $link.WindowStyle = 7 }
             $link.Save()
@@ -333,6 +336,7 @@ function Install-Privileged([string]$SourceDir) {
     $values = @{
         DisplayName     = 'Nagi（日本語入力）'
         DisplayVersion  = $version
+        DisplayIcon     = ('{0},0' -f (Join-Path $InstallDir 'nagi-settings.exe'))
         Publisher       = 'shiki-01'
         InstallLocation = $InstallDir
         URLInfoAbout    = 'https://nagi.shiki-01.com'

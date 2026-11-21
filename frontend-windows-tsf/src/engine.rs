@@ -387,6 +387,11 @@ impl EngineHost {
         Ok(result)
     }
 
+    /// 設定項目の一覧と現在値（言語バーのアイコンの配色など、フロントが読む設定の取得用）
+    pub fn settings(&self) -> Result<nagi_protocol::SettingsSnapshot, ClientError> {
+        self.supervisor.get_settings()
+    }
+
     /// 現在の状態（プロファイル・学習・辞書。メニュー表示用）
     pub fn status(&self) -> Result<nagi_protocol::StatusResult, ClientError> {
         self.supervisor.get_status()

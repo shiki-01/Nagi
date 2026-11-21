@@ -4,7 +4,7 @@
 //! 可変な値は `Cell` / `RefCell` に入れ、借用は短くして、借用中に Win32 を呼ばない。
 
 use super::dpi::Fonts;
-use crate::native_layout::{PanelLayout, RowSpec};
+use crate::native_layout::{Gap, PanelLayout, RowSpec};
 use crate::native_model::{Page, SettingsView};
 use crate::native_worker::WorkerHandle;
 use std::cell::{Cell, RefCell};
@@ -14,7 +14,13 @@ use windows::Win32::Foundation::HWND;
 /// コントロールの役割
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Role {
-    /// 項目名・見出し（STATIC）
+    /// ページの見出し（STATIC・大きいセミボールド）
+    Heading,
+    /// 節（グループ）の見出し（STATIC・セミボールド）。直下に [`Role::Rule`]
+    Section,
+    /// 節の見出しの下の区切り線（STATIC・`SS_ETCHEDHORZ`）
+    Rule,
+    /// 項目名・本文（STATIC）
     Title,
     /// 真偽値（チェックボックス。項目名を兼ねる）
     Check,
@@ -56,7 +62,8 @@ pub(super) struct Ctl {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RowFlags {
     pub has_input: bool,
-    pub has_hint: bool,
+    /// 前の行との間の空き
+    pub gap: Gap,
 }
 
 /// 今のページのコントロールと配置
@@ -118,6 +125,9 @@ pub(super) struct State {
     pub detail: Cell<HWND>,
     pub status: Cell<HWND>,
     pub panel: Cell<HWND>,
+    pub close: Cell<HWND>,
+    pub sidebar_rule: Cell<HWND>,
+    pub footer_rule: Cell<HWND>,
     pub dpi: Cell<u32>,
     pub fonts: Cell<Option<Fonts>>,
     pub worker: RefCell<Option<WorkerHandle>>,
@@ -135,6 +145,9 @@ impl State {
             detail: Cell::default(),
             status: Cell::default(),
             panel: Cell::default(),
+            close: Cell::default(),
+            sidebar_rule: Cell::default(),
+            footer_rule: Cell::default(),
             dpi: Cell::new(96),
             fonts: Cell::new(None),
             worker: RefCell::new(None),

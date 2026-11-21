@@ -34,6 +34,9 @@ VersionInfoVersion={#AppVersion}.0
 VersionInfoDescription=Nagi（日本語入力）セットアップ
 UninstallDisplayName=Nagi（日本語入力）
 UninstallDisplayIcon={app}\nagi-settings.exe
+; セットアップ exe・アンインストーラ（unins000.exe）のアイコン。Nagi のロゴ（frontend-windows/assets/nagi.ico。
+; 絵柄は core の nagi-windows の icon モジュールが生成する。H-115）。パスはこのスクリプトからの相対
+SetupIconFile=..\assets\nagi.ico
 ; 配置先は install.ps1 の既定（%ProgramFiles%\Nagi）に固定する。自動更新（apply-update.ps1）が
 ; Program Files への導入だけに対応するため、変更させない
 DefaultDirName={commonpf64}\Nagi

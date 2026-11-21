@@ -448,3 +448,12 @@ auto_check = true
 # アップデート確認マニフェストの URL（省略時は OS ごとの既定の URL を使う）
 # 既定: 未指定
 # check_url = "https://nagi.shiki-01.com/updates/macos/latest.json"
+
+[windows]
+# Windows のタスクバー（入力インジケーター）・言語バーに出る Nagi のアイコンの色
+# （入力方式の一覧・設定アプリ・セットアップのアイコンは常にカラー）
+# "color" = Nagi のロゴの色（あ / A の小さな印が付く）
+# "mono"  = モノクロ。システムのテーマ（ライト/ダーク）に合わせて白または黒で描く
+# 次にアイコンが更新されたとき（モードの切り替えなど）に反映される。再起動は不要
+# 既定: "color"
+indicator_icon = "color"

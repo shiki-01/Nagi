@@ -1,11 +1,14 @@
 //! 右のスクロールパネル: ページの組み立て・配置・スクロール。
 
-use super::controls::{create_child, get_text, send, send_text, set_font};
+use super::controls::{
+    clear_accessible_name, create_child, get_text, send, send_text, set_accessible_name, set_font,
+};
 use super::dpi::Fonts;
-use super::state::{Ctl, Ident, Model, Phase, Role, RowFlags, State};
+use super::pages::{self, RowDef, text_row};
+use super::state::{Ctl, Ident, Model, Role, RowFlags, State};
 use crate::native_layout::{
-    self as layout, Columns, RowSpec, button_row, clamp_scroll, control_height, layout_rows, scale,
-    scroll_into_view,
+    self as layout, BUTTON_W, Columns, RULE_PX, RowSpec, button_row, clamp_scroll, control_height,
+    layout_rows, scale, scroll_into_view,
 };
 use crate::native_model::{FieldView, Page, ids};
 use nagi_protocol::settings::SettingKind;
@@ -15,7 +18,7 @@ use windows::Win32::Graphics::Gdi::{
     ReleaseDC, SelectObject,
 };
 use windows::Win32::System::SystemServices::{
-    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_LEFT, SS_NOPREFIX,
+    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_ETCHEDHORZ, SS_LEFT, SS_NOPREFIX,
 };
 use windows::Win32::UI::Controls::{EM_SETCUEBANNER, SetScrollInfo};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
@@ -28,37 +31,31 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_VSCROLL,
 };
 
-/// ボタン 1 つの定義
-struct BtnDef {
-    id: i32,
-    text: &'static str,
-    width_dp: i32,
-    enabled: bool,
-}
-
-/// 1 行の定義
-enum RowDef {
-    Field {
-        field: Box<FieldView>,
-        error: Option<String>,
-    },
-    Text {
-        role: Role,
-        text: String,
-    },
-    Buttons(Vec<BtnDef>),
-}
-
-fn text_row(role: Role, text: impl Into<String>) -> RowDef {
-    RowDef::Text {
-        role,
-        text: text.into(),
+/// ロールごとのフォント
+pub(super) fn font_for(fonts: Fonts, role: Role) -> windows::Win32::Graphics::Gdi::HFONT {
+    match role {
+        Role::Heading => fonts.heading,
+        Role::Section => fonts.section,
+        _ => fonts.normal,
     }
 }
 
-/// いまのページの行を作る
+/// いまのページの見出しの文字列
+fn page_title(model: &Model) -> String {
+    match model.page {
+        Page::Category(ci) => model
+            .view
+            .as_ref()
+            .and_then(|v| v.categories.get(ci))
+            .map_or_else(|| "設定".to_owned(), |c| c.name.clone()),
+        Page::Status => "設定".to_owned(),
+        page => pages::find_page(page).map_or_else(String::new, |p| p.title.to_owned()),
+    }
+}
+
+/// いまのページの行を作る（先頭はページの見出し）
 fn rows_for(model: &Model) -> Vec<RowDef> {
-    let mut rows = Vec::new();
+    let mut rows = vec![text_row(Role::Heading, page_title(model))];
     match model.page {
         Page::Category(ci) => {
             if let Some(view) = &model.view {
@@ -80,96 +77,12 @@ fn rows_for(model: &Model) -> Vec<RowDef> {
                 }
             }
         }
-        Page::Update => {
-            rows.push(text_row(
-                Role::Title,
-                format!("現在の版: {}", env!("CARGO_PKG_VERSION")),
-            ));
-            let mut buttons = vec![BtnDef {
-                id: ids::UPDATE_CHECK,
-                text: "更新を確認",
-                width_dp: 110,
-                enabled: !model.update.busy,
-            }];
-            if model.update.can_apply {
-                buttons.push(BtnDef {
-                    id: ids::UPDATE_APPLY,
-                    text: "更新を適用…",
-                    width_dp: 120,
-                    enabled: !model.update.busy,
-                });
-            }
-            if model.update.notes_url.is_some() {
-                buttons.push(BtnDef {
-                    id: ids::UPDATE_NOTES,
-                    text: "リリースノートを開く",
-                    width_dp: 160,
-                    enabled: true,
-                });
-            }
-            rows.push(RowDef::Buttons(buttons));
-            let result = if model.update.busy {
-                "確認しています…".to_owned()
-            } else {
-                model.update.text.clone()
-            };
-            if !result.is_empty() {
-                rows.push(text_row(Role::Title, result));
+        Page::Status => rows.extend(pages::status_rows(model)),
+        page => {
+            if let Some(def) = pages::find_page(page) {
+                rows.extend((def.build)(model));
             }
         }
-        Page::Data => {
-            let path = model.view.as_ref().and_then(|v| v.config_path.clone());
-            rows.push(text_row(Role::Title, "設定ファイル"));
-            rows.push(text_row(
-                Role::Desc,
-                path.clone()
-                    .unwrap_or_else(|| "（設定ファイルの場所は未定です）".to_owned()),
-            ));
-            let enabled = path.is_some();
-            // 幅の狭いウィンドウでも収まるよう、1 行に 1 つずつ置く
-            for (id, text, width_dp) in [
-                (ids::OPEN_CONFIG, "config.toml を開く", 150),
-                (ids::OPEN_CONFIG_DIR, "設定フォルダを開く", 150),
-                (ids::OPEN_USER_DICT, "ユーザー辞書フォルダを開く", 200),
-            ] {
-                rows.push(RowDef::Buttons(vec![BtnDef {
-                    id,
-                    text,
-                    width_dp,
-                    enabled,
-                }]));
-            }
-            rows.push(text_row(Role::Title, "学習データ"));
-            rows.push(text_row(
-                Role::Desc,
-                "変換の学習結果をすべて削除します。元に戻せません。",
-            ));
-            rows.push(RowDef::Buttons(vec![BtnDef {
-                id: ids::CLEAR_LEARNING,
-                text: "学習データを全削除…",
-                width_dp: 170,
-                enabled: true,
-            }]));
-        }
-        Page::Status => match &model.phase {
-            Phase::Failed(message) => {
-                rows.push(text_row(Role::Title, "設定を読み込めませんでした"));
-                rows.push(text_row(Role::Error, message.clone()));
-                rows.push(RowDef::Buttons(vec![BtnDef {
-                    id: ids::RETRY,
-                    text: "再試行",
-                    width_dp: 100,
-                    enabled: true,
-                }]));
-            }
-            _ => {
-                rows.push(text_row(Role::Title, "読み込み中…"));
-                rows.push(text_row(
-                    Role::Desc,
-                    "変換エンジンを起動して設定を読み込んでいます。初回は 1 分ほどかかることがあります。",
-                ));
-            }
-        },
     }
     rows
 }
@@ -236,12 +149,7 @@ impl Builder<'_> {
     }
 
     fn text(&mut self, role: Role, text: &str, key: Option<&str>) {
-        let small = matches!(role, Role::Desc | Role::Hint);
-        let font = if small {
-            self.fonts.small
-        } else {
-            self.fonts.normal
-        };
+        let font = font_for(self.fonts, role);
         let mut style = SS_LEFT.0 | SS_NOPREFIX.0;
         if role == Role::Hint {
             style |= SS_CENTERIMAGE.0 | SS_ENDELLIPSIS.0;
@@ -249,6 +157,22 @@ impl Builder<'_> {
         let id = self.fresh_id();
         let hwnd = create_child(self.panel, "STATIC", text, style, 0, id, font);
         self.add(role, hwnd, id, key, text, 0);
+    }
+
+    /// 節の見出し（文字 + 下の区切り線）
+    fn section(&mut self, text: &str) {
+        self.text(Role::Section, text, None);
+        let id = self.fresh_id();
+        let hwnd = create_child(
+            self.panel,
+            "STATIC",
+            "",
+            SS_ETCHEDHORZ.0,
+            0,
+            id,
+            self.fonts.normal,
+        );
+        self.add(Role::Rule, hwnd, id, None, "", 0);
     }
 
     fn button(
@@ -313,6 +237,7 @@ impl Builder<'_> {
                         }
                         let index = field.choice_index().map_or(-1, |i| i as isize);
                         send(hwnd, CB_SETCURSEL, index as usize, 0);
+                        set_accessible_name(hwnd, &field.label);
                         let _ = unsafe { SetWindowSubclass(hwnd, Some(combo_subclass), 1, 0) };
                     }
                 }
@@ -332,6 +257,9 @@ impl Builder<'_> {
                     {
                         send_text(hwnd, EM_SETCUEBANNER, 1, "自動");
                     }
+                    if let Some(hwnd) = hwnd {
+                        set_accessible_name(hwnd, &field.label);
+                    }
                 }
             }
         }
@@ -340,11 +268,13 @@ impl Builder<'_> {
         }
         if let Some(hint) = field.range_hint() {
             self.text(Role::Hint, &hint, Some(key));
-            flags.has_hint = true;
         }
         if field.explicit {
             let id = self.fresh_id();
-            self.button(Role::Reset, "既定に戻す", id, Some(key), 0);
+            // 読み上げの名前に項目名を含める（「既定に戻す」だけでは、どの項目か区別できない）
+            if let Some(hwnd) = self.button(Role::Reset, "既定に戻す", id, Some(key), 0) {
+                set_accessible_name(hwnd, &format!("{}を既定に戻す", field.label));
+            }
         }
         if let Some(error) = error {
             self.text(Role::Error, error, Some(key));
@@ -356,12 +286,16 @@ impl Builder<'_> {
         match def {
             RowDef::Field { field, error } => self.field(field, error.as_deref()),
             RowDef::Text { role, text } => {
-                self.text(*role, text, None);
+                if *role == Role::Section {
+                    self.section(text);
+                } else {
+                    self.text(*role, text, None);
+                }
                 RowFlags::default()
             }
             RowDef::Buttons(buttons) => {
                 for b in buttons {
-                    if let Some(hwnd) = self.button(Role::Button, b.text, b.id, None, b.width_dp)
+                    if let Some(hwnd) = self.button(Role::Button, b.text, b.id, None, BUTTON_W)
                         && !b.enabled
                     {
                         let _ = unsafe { EnableWindow(hwnd, false) };
@@ -413,6 +347,9 @@ pub(super) fn rebuild_page(st: &State) {
     };
     let old = std::mem::take(&mut st.ui.borrow_mut().ctls);
     for c in old {
+        if matches!(c.role, Role::Edit | Role::Combo | Role::Reset) {
+            clear_accessible_name(c.hwnd);
+        }
         let _ = unsafe { DestroyWindow(c.hwnd) };
     }
     let mut ctls = Vec::new();
@@ -427,7 +364,9 @@ pub(super) fn rebuild_page(st: &State) {
         };
         for (row, def) in defs.iter().enumerate() {
             builder.row = row;
-            flags.push(builder.row(def));
+            let mut f = builder.row(def);
+            f.gap = pages::gap_before(row.checked_sub(1).map(|p| &defs[p]), def);
+            flags.push(f);
         }
     }
     {
@@ -512,16 +451,31 @@ pub(super) fn relayout(st: &State) {
     {
         let mut ui = st.ui.borrow_mut();
         let mut specs = vec![RowSpec::default(); ui.specs.len()];
+        for (spec, flag) in specs.iter_mut().zip(&ui.flags) {
+            spec.gap = flag.gap;
+        }
         for c in &ui.ctls {
+            let flag = ui.flags[c.row];
             let spec = &mut specs[c.row];
             match c.role {
+                Role::Heading => {
+                    spec.title_h = measure(hdc, fonts.heading, &c.text, cols.width) + pad
+                }
+                Role::Section => {
+                    spec.title_h = measure(hdc, fonts.section, &c.text, cols.width) + pad
+                }
+                Role::Rule => spec.rule_h = RULE_PX,
                 Role::Title => spec.title_h = measure(hdc, fonts.normal, &c.text, cols.width) + pad,
                 Role::Check => {
-                    let h = measure(hdc, fonts.normal, &c.text, cols.width - scale(24, dpi));
-                    spec.title_h = (h + pad).max(scale(18, dpi));
+                    let h = measure(hdc, fonts.normal, &c.text, cols.check_w - scale(24, dpi));
+                    spec.title_h = spec.title_h.max((h + pad).max(scale(18, dpi)));
                 }
-                Role::Desc => spec.desc_h = measure(hdc, fonts.small, &c.text, cols.width) + pad,
+                Role::Desc => spec.desc_h = measure(hdc, fonts.normal, &c.text, cols.width) + pad,
                 Role::Error => spec.error_h = measure(hdc, fonts.normal, &c.text, cols.width) + pad,
+                Role::Reset if !flag.has_input => {
+                    // 真偽値の項目は、チェックボックスと同じ行の右端に置く
+                    spec.title_h = spec.title_h.max(control_h);
+                }
                 Role::Edit | Role::Combo | Role::Reset | Role::Button => spec.control_h = control_h,
                 Role::Hint => {}
             }
@@ -577,9 +531,11 @@ fn place_all(st: &State) {
             let spec = specs[c.row];
             let flag = flags[c.row];
             let (x, y, w, h, content_h) = match c.role {
-                Role::Title | Role::Check => {
+                Role::Title | Role::Heading | Role::Section => {
                     (cols.x, rl.title_y, cols.width, spec.title_h, spec.title_h)
                 }
+                Role::Check => (cols.x, rl.title_y, cols.check_w, spec.title_h, spec.title_h),
+                Role::Rule => (cols.x, rl.rule_y, cols.width, spec.rule_h, spec.rule_h),
                 Role::Desc => (cols.x, rl.desc_y, cols.width, spec.desc_h, spec.desc_h),
                 Role::Error => (cols.x, rl.error_y, cols.width, spec.error_h, spec.error_h),
                 Role::Edit => (cols.x, rl.control_y, cols.control_w, control_h, control_h),
@@ -591,16 +547,17 @@ fn place_all(st: &State) {
                     control_h,
                 ),
                 Role::Hint => (cols.hint_x, rl.control_y, cols.hint_w, control_h, control_h),
-                Role::Reset => {
-                    let x = if !flag.has_input {
-                        cols.x
-                    } else if flag.has_hint {
-                        cols.reset_x
-                    } else {
-                        cols.hint_x
-                    };
-                    (x, rl.control_y, cols.reset_w, control_h, control_h)
+                Role::Reset if !flag.has_input => {
+                    (cols.reset_x, rl.title_y, cols.reset_w, control_h, control_h)
                 }
+                // 入力欄の行では、案内の有無によらず同じ右端の列に揃える
+                Role::Reset => (
+                    cols.reset_x,
+                    rl.control_y,
+                    cols.reset_w,
+                    control_h,
+                    control_h,
+                ),
                 Role::Button => {
                     let n = button_seen[c.row];
                     button_seen[c.row] += 1;
@@ -718,11 +675,6 @@ pub(super) fn refit_fonts(st: &State) {
     let Some(fonts) = st.fonts.get() else { return };
     let ui = st.ui.borrow();
     for c in &ui.ctls {
-        let font = if matches!(c.role, Role::Desc | Role::Hint) {
-            fonts.small
-        } else {
-            fonts.normal
-        };
-        set_font(c.hwnd, font);
+        set_font(c.hwnd, font_for(fonts, c.role));
     }
 }

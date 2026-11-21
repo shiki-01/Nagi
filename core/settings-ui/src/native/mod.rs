@@ -8,6 +8,7 @@
 mod controls;
 mod dpi;
 mod page;
+mod pages;
 mod state;
 mod window;
 

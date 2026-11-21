@@ -723,6 +723,14 @@ impl Core {
         }
     }
 
+    /// 設定 `windows.indicator_icon`（言語バーのアイコンの配色）をコアから読む。読めなければ `None`
+    pub(crate) fn fetch_indicator_style(&self) -> Option<nagi_windows::indicator::IndicatorStyle> {
+        let snapshot = self.engine.settings().ok()?;
+        Some(nagi_windows::indicator::IndicatorStyle::from_items(
+            &snapshot.items,
+        ))
+    }
+
     /// コアと合意している現在のモード（ボタンの表示用）
     pub(crate) fn lang_bar_mode(&self) -> Option<InputMode> {
         self.mode_sync.borrow().known()

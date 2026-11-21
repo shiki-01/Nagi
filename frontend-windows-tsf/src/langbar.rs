@@ -3,7 +3,9 @@
 //! モード・状態・設定を出す。
 //!
 //! 何を出すか・どう切り替えるかは `nagi_windows::status`（`menu_entries` / `toggled` / `button_text`）と
-//! `Core` が決める。ここは COM の受け口と、表示用の `HICON`（文字を描いたアイコン）だけ。
+//! `Core` が決める。ここは COM の受け口と、表示用の `HICON`（Nagi のロゴにモードの文字を載せたアイコン）だけ。
+//! 絵柄は `nagi_windows::icon::render_status`、カラー/モノクロの選択は設定 `windows.indicator_icon`
+//! （`nagi_windows::indicator`。H-115）。
 //! モードの正はコアで、切り替えは `mode_comp` のコンパートメントへ書く形に統一している
 //! （他のクライアントやトレイの操作と同じ経路。`Core::request_mode`）。
 //!
@@ -16,18 +18,19 @@
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::path::Path;
 use std::rc::{Rc, Weak};
+use std::time::Instant;
 
+use nagi_windows::icon;
+use nagi_windows::indicator::{self, IndicatorStyle, StyleCache};
 use nagi_windows::status::{self, MenuEntry};
 use windows::Win32::Foundation::{
-    COLORREF, E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_POINTER, POINT, RECT, TRUE,
+    E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_POINTER, ERROR_SUCCESS, POINT, RECT,
 };
-use windows::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DT_CENTER,
-    DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, FillRect, GetDC, HBITMAP,
-    HGDIOBJ, ReleaseDC, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
-};
+use windows::Win32::Graphics::Gdi::HBITMAP;
+use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::TextServices::{
@@ -37,19 +40,13 @@ use windows::Win32::UI::TextServices::{
     TF_LBI_STYLE_SHOWNINTRAY, TF_LBI_TEXT, TF_LBI_TOOLTIP, TF_LBMENUF_CHECKED, TF_LBMENUF_GRAYED,
     TF_LBMENUF_SEPARATOR, TfLBIClick,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateIconIndirect, HICON, ICONINFO, SM_CXSMICON, SW_SHOWNORMAL,
-};
+use windows::Win32::UI::WindowsAndMessaging::{CreateIcon, HICON, SM_CXSMICON, SW_SHOWNORMAL};
 use windows::core::{BOOL, BSTR, GUID, IUnknown, Interface, PCWSTR, Ref, Result, implement, w};
 
 use crate::guids::CLSID_NAGI_TEXT_SERVICE;
 use crate::text_service::Core;
-use crate::win::{make_font, wide};
+use crate::win::wide;
 
-/// ボタンの背景（藍。`BGR` 順の `COLORREF`）
-const BACKGROUND: COLORREF = COLORREF(0x00B5_513F);
-/// 文字の色（白）
-const FOREGROUND: COLORREF = COLORREF(0x00FF_FFFF);
 /// 言語バー内の並び順（他の項目の後ろ）
 const SORT_ORDER: u32 = 10;
 
@@ -60,9 +57,25 @@ struct Button {
     core: Weak<Core>,
     sinks: Sinks,
     next_cookie: RefCell<u32>,
+    /// 設定 `windows.indicator_icon` の読み取り結果（間引いて読み直す）
+    style: RefCell<StyleCache>,
 }
 
 impl Button {
+    /// アイコンの配色の設定。前回の取得から間隔があいていれば、コアへ読み直しに行く
+    /// （設定の変更は、次のアイコンの更新で反映される。再起動は要らない）
+    fn indicator_style(&self) -> IndicatorStyle {
+        let now = Instant::now();
+        if self.style.borrow().due(now) {
+            let fetched = self
+                .core
+                .upgrade()
+                .and_then(|core| core.fetch_indicator_style());
+            self.style.borrow_mut().record(now, fetched);
+        }
+        self.style.borrow().style()
+    }
+
     fn mode(&self) -> Option<nagi_protocol::InputMode> {
         self.core.upgrade().and_then(|c| c.lang_bar_mode())
     }
@@ -183,7 +196,9 @@ impl ITfLangBarItemButton_Impl for Button_Impl {
     fn GetIcon(&self) -> Result<HICON> {
         // システム DPI に合わせた小アイコンの大きさ（100% で 16px）
         let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) }.max(16);
-        make_icon(status::button_text(self.mode()), size)
+        let tone = indicator::tone(self.indicator_style(), system_uses_light_theme());
+        let rgba = icon::render_status(size as u32, indicator::glyph(self.mode()), tone);
+        make_icon(&rgba, size)
     }
 
     fn GetText(&self) -> Result<BSTR> {
@@ -231,57 +246,44 @@ fn add_item(menu: &ITfMenu, id: u32, flags: u32, label: &str) -> Result<()> {
     }
 }
 
-/// `text` を白で描いた藍色の正方形のアイコン。呼び出し側（言語バー）が `DestroyIcon` する前提で、
+/// システム（タスクバー）がライトテーマか。`SystemUsesLightTheme`（0 = ダーク、1 = ライト）が読めなければ `None`。
+/// アプリのテーマ（`AppsUseLightTheme`）とは別の値で、タスクバー・入力インジケーターは前者に従う
+fn system_uses_light_theme() -> Option<bool> {
+    let mut data = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let value = wide("SystemUsesLightTheme");
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&raw mut data).cast::<c_void>()),
+            Some(&raw mut size),
+        )
+    };
+    (err == ERROR_SUCCESS).then_some(data != 0)
+}
+
+/// 非乗算の RGBA（行は上から下）から `HICON` を作る。呼び出し側（言語バー）が `DestroyIcon` する前提で、
 /// 呼ぶたびに新しく作る
-fn make_icon(text: &str, size: i32) -> Result<HICON> {
-    let mut label: Vec<u16> = text.encode_utf16().collect();
-    let font = make_font(size * 3 / 4, 96);
-    let screen = unsafe { GetDC(None) };
-    let dc = unsafe { CreateCompatibleDC(Some(screen)) };
-    let color = unsafe { CreateCompatibleBitmap(screen, size, size) };
-    let old_bitmap = unsafe { SelectObject(dc, HGDIOBJ(color.0)) };
-    let old_font = unsafe { SelectObject(dc, HGDIOBJ(font.0)) };
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: size,
-        bottom: size,
-    };
-    let brush = unsafe { CreateSolidBrush(BACKGROUND) };
-    unsafe {
-        FillRect(dc, &rect, brush);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, FOREGROUND);
-        DrawTextW(
-            dc,
-            &mut label,
-            &mut rect,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-        );
-        SelectObject(dc, old_font);
-        SelectObject(dc, old_bitmap);
+fn make_icon(rgba: &[u8], size: i32) -> Result<HICON> {
+    // XOR（色）は BGRA の上から下。AND マスクは 1bpp で行は 16 bit 境界、1 = 透明（アルファがあれば無視される）
+    let mut xor = Vec::with_capacity(rgba.len());
+    for px in rgba.chunks_exact(4) {
+        xor.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
     }
-    // AND マスク: 0 は「色をそのまま使う」（全面を不透明にする）。1bpp で行は 16 bit 境界
     let stride = (size as usize).div_ceil(16) * 2;
-    let zeros = vec![0u8; stride * size as usize];
-    let mask = unsafe { CreateBitmap(size, size, 1, 1, Some(zeros.as_ptr().cast())) };
-    let info = ICONINFO {
-        fIcon: TRUE,
-        xHotspot: 0,
-        yHotspot: 0,
-        hbmMask: mask,
-        hbmColor: color,
-    };
-    let icon = unsafe { CreateIconIndirect(&info) };
-    unsafe {
-        let _ = DeleteObject(HGDIOBJ(mask.0));
-        let _ = DeleteObject(HGDIOBJ(color.0));
-        let _ = DeleteObject(HGDIOBJ(brush.0));
-        let _ = DeleteObject(HGDIOBJ(font.0));
-        let _ = DeleteDC(dc);
-        ReleaseDC(None, screen);
+    let mut mask = vec![0u8; stride * size as usize];
+    for (i, px) in rgba.chunks_exact(4).enumerate() {
+        if px[3] == 0 {
+            let (row, col) = (i / size as usize, i % size as usize);
+            mask[row * stride + col / 8] |= 0x80 >> (col % 8);
+        }
     }
-    icon
+    unsafe { CreateIcon(None, size, size, 1, 32, mask.as_ptr(), xor.as_ptr()) }
 }
 
 /// `ShellExecuteW("open")` で `file` を開く。戻り値が 32 以下なら失敗で、`[menu] open failed` を
@@ -379,6 +381,7 @@ impl LangBar {
             core,
             sinks: Rc::clone(&sinks),
             next_cookie: RefCell::new(0),
+            style: RefCell::new(StyleCache::new()),
         }
         .into();
         unsafe { manager.AddItem(&item) }.inspect_err(|e| {

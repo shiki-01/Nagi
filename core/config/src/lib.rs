@@ -1052,6 +1052,42 @@ impl Default for UpdateSection {
     }
 }
 
+/// タスクバー（入力インジケーター）・言語バーのアイコンの色（`windows.indicator_icon`。H-115）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndicatorIcon {
+    /// Nagi のロゴの色（既定）。
+    #[default]
+    Color,
+    /// モノクロ。システムのテーマに合わせて白または黒で描く。
+    Mono,
+}
+
+impl IndicatorIcon {
+    /// 文字列表現を返す。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IndicatorIcon::Color => "color",
+            IndicatorIcon::Mono => "mono",
+        }
+    }
+}
+
+impl fmt::Display for IndicatorIcon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Windows のフロントエンドだけが使う設定のセクション（`[windows]`）。
+/// コアは値を保持して `get_settings` で返すだけで、解釈はフロントエンドが行う。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowsSection {
+    /// タスクバー（入力インジケーター）・言語バーのアイコンの色。既定: `color`。
+    pub indicator_icon: IndicatorIcon,
+}
+
 /// Nagi の全設定。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1082,6 +1118,8 @@ pub struct Config {
     pub update: UpdateSection,
     /// アプリごとの既定モード・素通しのセクション。
     pub apps: AppsSection,
+    /// Windows のフロントエンド専用のセクション。
+    pub windows: WindowsSection,
 }
 
 impl Config {
@@ -1327,6 +1365,7 @@ const KNOWN_KEYS: &[&str] = &[
     "keymap",
     "update",
     "apps",
+    "windows",
 ];
 
 /// `[input.fuzzy]` の既知キー。
@@ -1409,6 +1448,7 @@ fn get_known_section_keys(section: &str) -> &'static [&'static str] {
             "passthrough_chars",
             "classes",
         ],
+        "windows" => &["indicator_icon"],
         _ => &[],
     }
 }

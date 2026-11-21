@@ -60,3 +60,8 @@ llama = ["nagi-infer/llama"]
 
 [lints]
 workspace = true
+
+[build-dependencies]
+# Windows 向けのビルドでだけ使う（build.rs が対象 OS を見て分岐する。他のターゲットでは何もしない）。
+# imserver.exe のアイコンの埋め込み用で、実行時の依存には入らない（H-115）
+embed-resource = "3"

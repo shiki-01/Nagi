@@ -1,12 +1,15 @@
 //! Win32 コントロールの作成とメッセージ送信の薄いラッパー。
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::HFONT;
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{CAccPropServices, IAccPropServices, PROPID_ACC_NAME};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, GetWindowTextLengthW, GetWindowTextW, HMENU, SendMessageW, SetWindowTextW,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETFONT, WS_CHILD, WS_VISIBLE,
+    CHILDID_SELF, CreateWindowExW, GetWindowTextLengthW, GetWindowTextW, HMENU, OBJID_CLIENT,
+    SendMessageW, SetWindowTextW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETFONT, WS_CHILD, WS_VISIBLE,
 };
 use windows::core::PCWSTR;
 
@@ -94,4 +97,57 @@ pub(super) fn get_text(hwnd: HWND) -> String {
     let mut buf = vec![0u16; len as usize + 1];
     let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+thread_local! {
+    /// 読み上げの名前を設定するサービス（UI スレッドのもの。COM の初期化〜終了の間だけ持つ）
+    static ACC_PROPS: RefCell<Option<IAccPropServices>> = const { RefCell::new(None) };
+}
+
+/// 読み上げ用のサービスを用意する（COM を初期化したあとに呼ぶ。作れなければ名前の設定は何もしない）
+pub(super) fn init_accessibility() {
+    let svc: Option<IAccPropServices> =
+        unsafe { CoCreateInstance(&CAccPropServices, None, CLSCTX_INPROC_SERVER) }.ok();
+    ACC_PROPS.with(|slot| *slot.borrow_mut() = svc);
+}
+
+/// 読み上げ用のサービスを解放する（COM を終了する前に呼ぶ）
+pub(super) fn release_accessibility() {
+    ACC_PROPS.with(|slot| *slot.borrow_mut() = None);
+}
+
+/// コントロールの「読み上げ・自動操作上の名前」を、画面に見える文字列とは別に設定する
+/// （MSAA の `PROPID_ACC_NAME`。UI Automation にも橋渡しされる）。同じ見た目のボタン
+/// 「既定に戻す」を項目ごとに区別するのに使う。設定できなければ何もしない（見える文字列が名前になる）
+pub(super) fn set_accessible_name(hwnd: HWND, name: &str) {
+    let name = wide(name);
+    ACC_PROPS.with(|slot| {
+        if let Some(svc) = slot.borrow().as_ref() {
+            let _ = unsafe {
+                svc.SetHwndPropStr(
+                    hwnd,
+                    OBJID_CLIENT.0 as u32,
+                    CHILDID_SELF,
+                    PROPID_ACC_NAME,
+                    PCWSTR(name.as_ptr()),
+                )
+            };
+        }
+    });
+}
+
+/// [`set_accessible_name`] で設定した名前を消す（コントロールを破棄する前に呼ぶ）
+pub(super) fn clear_accessible_name(hwnd: HWND) {
+    ACC_PROPS.with(|slot| {
+        if let Some(svc) = slot.borrow().as_ref() {
+            let _ = unsafe {
+                svc.ClearHwndProps(
+                    hwnd,
+                    OBJID_CLIENT.0 as u32,
+                    CHILDID_SELF,
+                    &[PROPID_ACC_NAME],
+                )
+            };
+        }
+    });
 }
