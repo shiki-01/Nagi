@@ -3,7 +3,7 @@
 Nagi は、ローカルの LLM と辞書で変換する日本語入力です。この文書は Windows 版の導入手順です
 （zip の中にも `README.md` として同梱しています）。
 
-- 対象: Windows 10 22H2 以降 / Windows 11（x64）。ARM64 は未対応
+- 対象: Windows 10 22H2 以降 / Windows 11（x64 と ARM64。ARM64 版は実機未確認）。ARM64 版は ARM64 ネイティブのアプリでだけ使えます（x64 エミュレーションで動くアプリには Nagi は出ません）
 - 状態: **実機での検証が済んでいません**（開発中のプレビュー。`docs/real-hardware-checklist.md` §8）。動作しない・不安定な場合があります
 - 実機での検証が済むまで、リリースは prerelease として公開します。その間は方法 A（`irm | iex`）が使えないことがあります。方法 B で取得してください
 - 入力内容・個人情報は外部へ送りません。ネットワークを使うのは、辞書・モデルの取得と更新の確認だけです（更新の確認は設定で無効にできます）
@@ -18,14 +18,14 @@ Nagi は、ローカルの LLM と辞書で変換する日本語入力です。�
 irm https://nagi.shiki-01.com/install.ps1 | iex
 ```
 
-最新版の zip を取得し、SHA-256 を確かめてから、同梱のインストーラを実行します。途中で、ユーザーアカウント制御（UAC）の確認が出ます（`C:\Program Files\Nagi` への配置と、入力方式の登録に管理者権限が必要です）。
+PC の CPU（x64 / ARM64）に合う最新版の zip を取得し、SHA-256 を確かめてから、同梱のインストーラを実行します。途中で、ユーザーアカウント制御（UAC）の確認が出ます（`C:\Program Files\Nagi` への配置と、入力方式の登録に管理者権限が必要です）。
 続けて、辞書とモデルを配布元から取得します（約 150MB。取得済みのものは飛ばします）。辞書だけで使う場合や後で取得する場合は、実行前に `$env:NAGI_SKIP_DATA = '1'` を設定します。
 
 この方法でダウンロードしたファイルには「インターネットから取得」の印（Mark of the Web）が付かないため、SmartScreen の警告は出ません。
 
 ### 方法 B: zip を手動でダウンロードする
 
-1. [GitHub Releases](https://github.com/shiki-01/nagi/releases) の `windows-vX.Y.Z` から `Nagi-windows-X.Y.Z.zip` をダウンロードします。
+1. [GitHub Releases](https://github.com/shiki-01/nagi/releases) の `windows-vX.Y.Z` から、x64 の PC は `Nagi-windows-X.Y.Z.zip`、ARM64 の PC は `Nagi-windows-arm64-X.Y.Z.zip` をダウンロードします（CPU が合わない zip はインストーラが配置の前に止めます）。
    - ブラウザが「一般的にダウンロードされていません」などと警告することがあります（署名していない配布物のため。下の「SmartScreen について」）。Edge ではダウンロード一覧の「…」→「保存」→「詳細表示」→「保持する」の順に進みます。
 2. **展開する前に** zip を右クリック →「プロパティ」→ 全般タブ下部の「許可する」（ブロックの解除）にチェックして OK を押します。この手順を飛ばすと、展開したファイルすべてに警告の印が付きます。
 3. zip を展開します（右クリック →「すべて展開」）。
@@ -133,5 +133,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Nagi\unins
 
 - **入力方式に Nagi が出ない**: サインアウトして入れ直す。`regsvr32` の登録が失敗していないか、管理者の PowerShell で `regsvr32 "C:\Program Files\Nagi\nagi_windows_tsf.dll"` を実行して確かめる。
 - **変換されず読みがそのまま出る**: 辞書が無い状態です。方法 A をもう一度実行するか、`"C:\Program Files\Nagi\imserver.exe" --install-data --data-dir "$env:APPDATA\Nagi\data" --model small` を実行して辞書とモデルを取得します。
-- **`imserver.exe` が起動しない**: [Visual C++ 再頒布可能パッケージ（x64）](https://aka.ms/vs/17/release/vc_redist.x64.exe) を入れる。
+- **`imserver.exe` が起動しない**: Visual C++ 再頒布可能パッケージを入れる（[x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) / [ARM64](https://aka.ms/vs/17/release/vc_redist.arm64.exe)）。
 - **エンジンが停止した通知が出る**: 自動で再起動します。繰り返す場合は `imserver.exe` を端末から直接実行して、エラーの内容を確かめてください。

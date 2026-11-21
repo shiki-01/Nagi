@@ -1,9 +1,13 @@
 name: windows-release
 
 # Windows 版（TSF の DLL + imserver.exe + nagi-settings.exe、LLM 有効）を MSVC でビルドし、zip にまとめて GitHub Releases に公開する。
-# あわせて ed25519 署名つきの latest.json を作り、サイト（nagi.shiki-01.com/updates/windows/latest.json）に載せる
-# ため web ワークフローを起動する（web が最新の windows-v* リリースから latest.json を取り込む）。
-# 方針は docs/decisions.md H-42。
+# x64（windows-latest）と ARM64（windows-11-arm のネイティブランナー）を別々にビルドし、1 つのリリース
+# windows-vX.Y.Z に両方を載せる。アセット:
+#   x64:   Nagi-windows-X.Y.Z.zip        + latest.json        （0.1.15 以前のクライアントが参照する名前。変えない）
+#   ARM64: Nagi-windows-arm64-X.Y.Z.zip  + latest-arm64.json
+# あわせて ed25519 署名つきの latest*.json を作り、サイト（nagi.shiki-01.com/updates/windows/latest*.json）に載せる
+# ため web ワークフローを起動する（web が最新の windows-v* リリースから latest*.json を取り込む）。
+# 方針は docs/decisions.md H-42（ARM64 の追加は同 H-104）。
 #
 # 署名なし配布が前提（Authenticode 証明書は未取得。SmartScreen の扱いは docs/windows-install.md）。
 # 証明書があれば、次の Secrets を登録すると signtool で DLL と exe に署名する（無ければ署名なしで続行）:
@@ -20,12 +24,17 @@ name: windows-release
 #   実機で未検証の間は prerelease（既定）にしておく。prerelease は web ワークフローの latest.json の取り込み対象外なので、
 #   サイトの更新確認・インストールコマンドには出ない。実機で確認できたら -f prerelease=false で公開する。
 #   公開せずビルドだけ試すときは -f publish=false（成果物は Actions の artifact に残る）。
+#   x64 だけにするときは -f arm64=false。
 
 on:
   workflow_dispatch:
     inputs:
       llama:
         description: "imserver を LLM（llama.cpp）有効でビルドする"
+        type: boolean
+        default: true
+      arm64:
+        description: "ARM64 版もビルドして同じリリースに載せる（windows-11-arm ランナーが使えないときは false）"
         type: boolean
         default: true
       publish:
@@ -46,23 +55,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: windows-latest
-    timeout-minutes: 120
-    env:
-      TARGET: x86_64-pc-windows-msvc
+  # バージョンの決定・リリース済みの確認・Secrets の確認（1 回だけ）
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust (rust-toolchain.toml)
+        working-directory: core
+        run: rustup show active-toolchain || rustup toolchain install
+
       - name: バージョンの決定（core/Cargo.toml の version から）
+        id: version
         working-directory: core
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "xtask") | .version' | tr -d '\r')
           echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::core/Cargo.toml の version が X.Y.Z 形式ではありません: $VERSION"; exit 1; }
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "::notice::リリースするバージョン: $VERSION"
           if [ "${{ inputs.publish }}" = "true" ] && gh release view "windows-v$VERSION" >/dev/null 2>&1; then
             echo "::error::リリース windows-v$VERSION は作成済みです。core/Cargo.toml の version を上げてください"
@@ -81,6 +97,38 @@ jobs:
             echo "::notice::WINDOWS_CODESIGN_PFX が未設定のため、Authenticode 署名なしでビルドします（SmartScreen の警告が出る配布物になります）"
           fi
 
+      # arch: xtask の --arch / zip: zip のファイル名の先頭 / manifest: latest.json のファイル名
+      # ARM64 は x64 ランナーからのクロスではなく、ネイティブの windows-11-arm ランナーでビルドする
+      # （llama.cpp の cmake・libclang をクロスで設定せずに済む。ランナーで ARM64 の DLL を実際に登録できる）
+      - name: ビルド対象の一覧
+        id: matrix
+        run: |
+          x64='{"arch":"x86_64","runner":"windows-latest","target":"x86_64-pc-windows-msvc","zip":"Nagi-windows","manifest":"latest.json"}'
+          arm='{"arch":"aarch64","runner":"windows-11-arm","target":"aarch64-pc-windows-msvc","zip":"Nagi-windows-arm64","manifest":"latest-arm64.json"}'
+          if [ "${{ inputs.arm64 }}" = "true" ]; then
+            echo "matrix={\"include\":[$x64,$arm]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":[$x64]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      ZIP_NAME: ${{ matrix.zip }}-${{ needs.prepare.outputs.version }}.zip
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Install Rust (rust-toolchain.toml)
         working-directory: core
         run: rustup show active-toolchain || rustup toolchain install
@@ -88,19 +136,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
-          key: windows-release-${{ inputs.llama }}
+          key: windows-release-${{ matrix.arch }}-${{ inputs.llama }}
 
-      - name: libclang の場所（llama のとき。windows-latest は LLVM が入っている）
+      # windows-latest は x64 の LLVM、windows-11-arm は ARM64 の LLVM が入っている前提。
+      # ビルドスクリプト（bindgen）はランナーと同じアーキテクチャの libclang.dll を読むので、PE の Machine を確かめる
+      - name: libclang の場所（llama のとき）
         if: inputs.llama
         run: |
+          want=${{ matrix.arch }}
           for d in "/c/Program Files/LLVM/bin" "/c/Program Files (x86)/LLVM/bin"; do
             if [ -e "$d/libclang.dll" ]; then
-              echo "LIBCLANG_PATH=$(cygpath -w "$d")" >> "$GITHUB_ENV"
-              found=1
-              break
+              machine=$(od -An -tx2 -j "$(( $(od -An -tu4 -j 60 -N 4 "$d/libclang.dll") + 4 ))" -N 2 "$d/libclang.dll" | tr -d ' ')
+              echo "$d/libclang.dll Machine=0x$machine"
+              case "$want:$machine" in
+                x86_64:8664|aarch64:aa64) echo "LIBCLANG_PATH=$(cygpath -w "$d")" >> "$GITHUB_ENV"; found=1; break ;;
+              esac
             fi
           done
-          [ -n "$found" ] || { echo "::error::libclang.dll が見つかりません"; exit 1; }
+          [ -n "$found" ] || { echo "::error::$want 用の libclang.dll が見つかりません（-f llama=false で LLM なしにできます）"; exit 1; }
 
       # DLL はあらゆるホストプロセスに読み込まれるため、Visual C++ ランタイムに依存しないよう CRT を静的リンクする。
       # --target を明示すると RUSTFLAGS はビルドスクリプト・proc-macro（ホスト側）には掛からない。
@@ -111,7 +164,8 @@ jobs:
         run: cargo build --release --target "$TARGET" -p nagi-windows-tsf
 
       # imserver は llama.cpp（C++）を含むため CRT は既定（動的）のまま。Visual C++ 再頒布可能パッケージを前提にする
-      # （install.ps1 が確認して警告を出す）。静的リンクは llama-cpp-sys-2 の LLAMA_STATIC_CRT で可能だが未検証。
+      # （install.ps1 が確認して警告を出す。ARM64 は vc_redist.arm64.exe）。静的リンクは llama-cpp-sys-2 の
+      # LLAMA_STATIC_CRT で可能だが未検証。
       - name: imserver をビルド
         working-directory: core
         run: |
@@ -138,7 +192,8 @@ jobs:
             exit 0
           fi
           printf '%s' "$PFX" | base64 --decode > "$RUNNER_TEMP/codesign.pfx"
-          signtool=$(ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"*/x64/signtool.exe 2>/dev/null | sort -V | tail -n 1)
+          # signtool はビルドの対象ではなくランナーで動くもの（ARM64 ランナーでは arm64 が無ければ x64 をエミュレーションで使う）
+          signtool=$(ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"*/${{ matrix.arch == 'aarch64' && 'arm64' || 'x64' }}/signtool.exe "/c/Program Files (x86)/Windows Kits/10/bin/"*/x64/signtool.exe 2>/dev/null | sort -V | tail -n 1)
           [ -n "$signtool" ] || { echo "::error::signtool.exe が見つかりません"; exit 1; }
           echo "enabled=true" >> "$GITHUB_OUTPUT"
           echo "signtool=$(cygpath -w "$signtool")" >> "$GITHUB_OUTPUT"
@@ -153,18 +208,19 @@ jobs:
           if [ "${{ steps.codesign.outputs.enabled }}" = "true" ]; then
             sign=(--sign-pfx "${{ steps.codesign.outputs.pfx }}" --signtool "${{ steps.codesign.outputs.signtool }}")
           fi
-          cargo xtask bundle-windows --target "$TARGET" "${sign[@]}"
-          cp "target/windows-bundle/Nagi-windows-$VERSION.zip" "../Nagi-windows-$VERSION.zip"
+          cargo xtask bundle-windows --arch "${{ matrix.arch }}" --target "$TARGET" "${sign[@]}"
+          cp "target/windows-bundle/$ZIP_NAME" "../$ZIP_NAME"
 
       # install.ps1 / uninstall.ps1 の実行確認（regsvr32 の登録と解除を含む）。ランナーでの TSF 登録が
       # 通るかは未確認のため、失敗しても警告に留める（実機の検証項目: docs/real-hardware-checklist.md §8.7）
+      # ARM64 は、ランナーが ARM64 なので ARM64 の DLL がそのまま登録できる
       - name: インストーラのスモークテスト（失敗は警告）
         continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'smoke'
-          Expand-Archive -LiteralPath "Nagi-windows-$env:VERSION.zip" -DestinationPath $root
+          Expand-Archive -LiteralPath $env:ZIP_NAME -DestinationPath $root
           $dir = Join-Path $root "Nagi-windows-$env:VERSION"
           $dest = Join-Path $env:RUNNER_TEMP 'NagiInstalled'
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'install.ps1') -SkipData -InstallDir $dest
@@ -182,39 +238,53 @@ jobs:
         run: |
           base="https://github.com/${GITHUB_REPOSITORY}/releases"
           cargo xtask sign-update \
-            --file "../Nagi-windows-$VERSION.zip" \
+            --file "../$ZIP_NAME" \
             --version "$VERSION" \
-            --download-url "$base/download/windows-v$VERSION/Nagi-windows-$VERSION.zip" \
+            --download-url "$base/download/windows-v$VERSION/$ZIP_NAME" \
             --notes-url "$base/tag/windows-v$VERSION" \
-            --out ../latest.json
-          cat ../latest.json
+            --out "../${{ matrix.manifest }}"
+          cat "../${{ matrix.manifest }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nagi-windows-${{ env.VERSION }}
+          name: nagi-windows-${{ matrix.arch }}-${{ needs.prepare.outputs.version }}
           path: |
-            Nagi-windows-${{ env.VERSION }}.zip
-            latest.json
-
-      - name: GitHub Releases に公開
-        if: inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          flags=()
-          if [ "${{ inputs.prerelease }}" = "true" ]; then flags=(--prerelease); fi
-          gh release create "windows-v$VERSION" "Nagi-windows-$VERSION.zip" latest.json \
-            --target "$GITHUB_SHA" \
-            --title "Nagi for Windows $VERSION" \
-            "${flags[@]}" \
-            --notes "Windows 10 22H2 以降 / 11（x64）。Authenticode 署名なし（SmartScreen の警告が出ることがあります。手順: docs/windows-install.md）。インストール: PowerShell で \`irm https://nagi.shiki-01.com/install.ps1 | iex\`（辞書とモデルも配布元から自動で取得する）。実機で未検証の版は prerelease。"
-
-      - name: サイトの latest.json を更新（web ワークフローを起動）
-        if: inputs.publish && !inputs.prerelease
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run web.yml --ref main
+            ${{ env.ZIP_NAME }}
+            ${{ matrix.manifest }}
 
       - name: 後片付け
         if: always()
         run: rm -f "$RUNNER_TEMP/codesign.pfx"
+
+  # すべてのビルドが成功したときだけ、1 つのリリースに全アーキテクチャの zip と latest*.json を載せる
+  release:
+    needs: [prepare, build]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nagi-windows-*-${{ needs.prepare.outputs.version }}
+          merge-multiple: true
+
+      - name: GitHub Releases に公開
+        run: |
+          ls -l
+          flags=()
+          if [ "${{ inputs.prerelease }}" = "true" ]; then flags=(--prerelease); fi
+          assets=("Nagi-windows-$VERSION.zip" latest.json)
+          if [ "${{ inputs.arm64 }}" = "true" ]; then assets+=("Nagi-windows-arm64-$VERSION.zip" latest-arm64.json); fi
+          gh release create "windows-v$VERSION" "${assets[@]}" \
+            --target "$GITHUB_SHA" \
+            --title "Nagi for Windows $VERSION" \
+            "${flags[@]}" \
+            --notes "Windows 10 22H2 以降 / 11（x64: Nagi-windows-$VERSION.zip、ARM64: Nagi-windows-arm64-$VERSION.zip）。Authenticode 署名なし（SmartScreen の警告が出ることがあります。手順: docs/windows-install.md）。インストール: PowerShell で \`irm https://nagi.shiki-01.com/install.ps1 | iex\`（CPU に合う版と、辞書・モデルを自動で取得する）。実機で未検証の版は prerelease。ARM64 版は ARM64 ネイティブのアプリだけで使える（x64 エミュレーションのアプリには出ない）。"
+
+      - name: サイトの latest.json を更新（web ワークフローを起動）
+        if: "!inputs.prerelease"
+        run: gh workflow run web.yml --ref main
