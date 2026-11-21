@@ -78,7 +78,7 @@
         <li><span>macOS</span><b>配布中</b></li>
         <li><span>Android</span><b>配布中</b></li>
         <li><span>iOS</span><b>検証中</b></li>
-        <li><span>Windows</span><b>開発中</b></li>
+        <li><span>Windows</span><b>プレビュー</b></li>
       </ul>
     {/snippet}
   </Minamo>
@@ -207,11 +207,17 @@
       <li id="windows">
         <div class="pf">
           <h3>Windows</h3>
-          <p class="req">Windows 10 22H2 以降 / 11（x64）</p>
+          <p class="req">Windows 10 22H2 以降 / 11（x64・ARM64）</p>
         </div>
-        {@render track(2)}
+        {@render track(3)}
         <div class="pf-body">
-          <p><strong>開発中</strong>。実装は一通り済んでいますが、実機での検証が終わっていないため、まだ公開していません。</p>
+          <p>
+            <strong>プレビュー版を配布中</strong>。<a href={RELEASES_URL} rel="noopener">GitHub の配布ページ</a>にある
+            <code>windows-v</code> で始まる版の <code>Nagi-setup-&lt;版&gt;.exe</code> を実行してください（x64・ARM64 共通）。
+          </p>
+          <p class="small">
+            署名の準備中のため、初回は SmartScreen の警告が出ます。「詳細情報」→「実行」で進めてください。実機での検証は続けています。
+          </p>
         </div>
       </li>
       <li>
