@@ -192,6 +192,26 @@ jobs:
       # imserver は llama.cpp（C++）を含むため CRT は既定（動的）のまま。Visual C++ 再頒布可能パッケージを前提にする
       # （install.ps1 が確認して警告を出す。ARM64 は vc_redist.arm64.exe）。静的リンクは llama-cpp-sys-2 の
       # LLAMA_STATIC_CRT で可能だが未検証。
+      # llama.cpp（ggml-cpu）は ARM64 の MSVC（cl.exe）を拒否する（"MSVC is not supported for ARM, use clang"）。
+      # ARM64 だけ VS の開発者環境（INCLUDE/LIB・Ninja）を読み込み、Ninja + clang-cl でビルドする（H-107）。
+      # cmake クレートは CMAKE_GENERATOR、cc クレートは CC/CXX の環境変数に従う
+      - name: ARM64 の C/C++ を clang-cl にする（llama のとき）
+        if: inputs.llama && matrix.arch == 'aarch64'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: ARM64 の clang-cl・Ninja の設定（llama のとき）
+        if: inputs.llama && matrix.arch == 'aarch64'
+        run: |
+          echo "$LIBCLANG_PATH" >> "$GITHUB_PATH"
+          {
+            echo "CMAKE_GENERATOR=Ninja"
+            echo "CC_aarch64_pc_windows_msvc=clang-cl"
+            echo "CXX_aarch64_pc_windows_msvc=clang-cl"
+          } >> "$GITHUB_ENV"
+          "$(cygpath -u "$LIBCLANG_PATH")/clang-cl.exe" --version
+          command -v ninja || { echo "::error::ninja が見つかりません"; exit 1; }
+
       - name: imserver をビルド
         working-directory: core
         run: |
