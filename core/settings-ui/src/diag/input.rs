@@ -33,6 +33,8 @@ pub struct FuzzyCase {
     pub expect: Expect,
     /// 外れたら NG にするか（`false` は要確認止まり。辞書・強さに依存するケース）
     pub required: bool,
+    /// 参考（結果は根拠に残すが、合否に影響させない）
+    pub reference: bool,
 }
 
 /// `docs/real-hardware-checklist.md` §9.1・§9.2 の代表ケース
@@ -44,36 +46,42 @@ pub const FUZZY_CASES: &[FuzzyCase] = &[
         typed: "arikatou",
         expect: Expect::Reading("ありがとう"),
         required: false,
+        reference: true,
     },
     FuzzyCase {
         label: "誤り辞書（ありがとうごさいます）",
         typed: "arigatougosaimasu",
         expect: Expect::Reading("ありがとうございます"),
         required: true,
+        reference: false,
     },
     FuzzyCase {
         label: "隣のキーの打ち間違い（kamji）",
         typed: "kamji",
         expect: Expect::Reading("かんじ"),
         required: false,
+        reference: false,
     },
     FuzzyCase {
         label: "濁点の付け忘れ（おねかいします）",
         typed: "onekaisimasu",
         expect: Expect::Reading("おねがいします"),
         required: false,
+        reference: false,
     },
     FuzzyCase {
         label: "普通の語（がっこう）で誤表示しない",
         typed: "gakkou",
         expect: Expect::NoFuzzy,
         required: false,
+        reference: false,
     },
     FuzzyCase {
         label: "普通の文（きょうはいいてんきです）で誤表示しない",
         typed: "kyouhaiitenkidesu",
         expect: Expect::NoFuzzy,
         required: false,
+        reference: false,
     },
 ];
 
@@ -86,6 +94,8 @@ pub struct CaseOutcome {
     pub passed: bool,
     /// 外れたら NG にするケースか
     pub required: bool,
+    /// 参考（合否に影響させない）
+    pub reference: bool,
     /// 期待が「出ること」か（`false` は誤表示がないことの検査）
     pub positive: bool,
     /// 補足（出た「もしかして」の読み・エラー。入力内容は含まない）
@@ -172,6 +182,7 @@ pub fn run_case(
                 label: case.label,
                 passed: hit,
                 required: case.required,
+                reference: case.reference,
                 positive: true,
                 note: format!("期待: 「もしかして」で {want} / 実際の補正読み: {shown}"),
             }
@@ -180,6 +191,7 @@ pub fn run_case(
             label: case.label,
             passed: fuzzy.is_empty(),
             required: false,
+            reference: false,
             positive: false,
             note: format!("期待: 「もしかして」なし / 実際の補正読み: {shown}"),
         },
@@ -194,13 +206,22 @@ pub fn judge_fuzzy(outcomes: &[CaseOutcome]) -> ItemResult {
         .map(|o| {
             format!(
                 "{}: {}（{}）",
-                if o.passed { "合格" } else { "不一致" },
+                if o.reference {
+                    "参考"
+                } else if o.passed {
+                    "合格"
+                } else {
+                    "不一致"
+                },
                 o.label,
                 o.note
             )
         })
         .collect();
-    let positives: Vec<&CaseOutcome> = outcomes.iter().filter(|o| o.positive).collect();
+    let positives: Vec<&CaseOutcome> = outcomes
+        .iter()
+        .filter(|o| o.positive && !o.reference)
+        .collect();
     let required_miss: Vec<&str> = positives
         .iter()
         .filter(|o| !o.passed && o.required)
@@ -213,7 +234,7 @@ pub fn judge_fuzzy(outcomes: &[CaseOutcome]) -> ItemResult {
         .collect();
     let false_alarm: Vec<&str> = outcomes
         .iter()
-        .filter(|o| !o.positive && !o.passed)
+        .filter(|o| !o.positive && !o.passed && !o.reference)
         .map(|o| o.label)
         .collect();
     if !positives.is_empty() && positives.iter().all(|o| !o.passed) {
@@ -252,7 +273,10 @@ pub fn judge_fuzzy(outcomes: &[CaseOutcome]) -> ItemResult {
     }
     ItemResult::ok(
         id,
-        format!("{} ケースすべてで期待どおりでした", outcomes.len()),
+        format!(
+            "{} ケースすべてで期待どおりでした",
+            outcomes.iter().filter(|o| !o.reference).count()
+        ),
     )
     .with_evidence(lines)
 }
@@ -533,6 +557,23 @@ mod tests {
     }
 
     #[test]
+    fn reference_case_does_not_affect_result() {
+        // 実機レポート: ありかとう だけ出ない（辞書に「在り難う」がある）
+        let mut e = FakeEngine::new(&[
+            ("arigatougosaimasu", "ありがとうございます"),
+            ("kamji", "かんじ"),
+            ("onekaisimasu", "おねがいします"),
+        ]);
+        let r = judge_fuzzy(&run_all_cases(&mut e));
+        assert_eq!(r.status, Status::Ok, "{r:?}");
+        assert!(
+            r.evidence
+                .iter()
+                .any(|l| l.starts_with("参考: 濁点の付け忘れ（ありかとう）"))
+        );
+    }
+
+    #[test]
     fn nothing_shown_anywhere_is_ng() {
         let mut e = FakeEngine::new(&[]);
         let r = judge_fuzzy(&run_all_cases(&mut e));
@@ -542,7 +583,7 @@ mod tests {
 
     #[test]
     fn required_miss_is_ng_optional_miss_and_false_alarm_are_warn() {
-        let mut e = FakeEngine::new(&[("arikatou", "ありがとう")]);
+        let mut e = FakeEngine::new(&[("kamji", "かんじ")]);
         let r = judge_fuzzy(&run_all_cases(&mut e));
         assert_eq!(r.status, Status::Ng, "誤り辞書（必須）が外れている: {r:?}");
         assert!(r.detail.contains("誤り辞書"));

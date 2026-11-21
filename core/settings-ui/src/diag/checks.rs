@@ -545,6 +545,7 @@ pub fn check_install_files(ctx: &Ctx) -> ItemResult {
 
 /// 更新の残りを判定する（`.old`・staging・旧版の imserver）
 pub fn judge_old_files(old_files: &[String], staging: bool, old_procs: &[String]) -> ItemResult {
+    const MAX_DLL_OLD: usize = 20;
     let id = ItemId::InstallOldFiles;
     let mut lines: Vec<String> = old_files
         .iter()
@@ -563,6 +564,27 @@ pub fn judge_old_files(old_files: &[String], staging: bool, old_procs: &[String]
             id,
             "更新の残り（.old・staging・旧版のエンジン）はありません",
         );
+    }
+    let dll_old = old_files
+        .iter()
+        .filter(|f| f.to_ascii_lowercase().starts_with("nagi_windows_tsf.dll."))
+        .count();
+    let too_many = dll_old > MAX_DLL_OLD;
+    if old_procs.is_empty() && !staging && !too_many {
+        // DLL の .old は読み込み中は消せない更新後の正常な残り。プロセスの無い imserver.exe.old も無害
+        let has_exe_old = old_files
+            .iter()
+            .any(|f| f.to_ascii_lowercase().starts_with("imserver.exe"));
+        let mut detail = format!(
+            ".old が {} 個残っています（アプリが DLL を読み込み中は削除できない、更新後の正常な残りです。次回の更新・アンインストールで片付きます）",
+            old_files.len()
+        );
+        if has_exe_old {
+            detail.push_str(
+                "。imserver.exe.old が残っていますが、そこから動いているエンジンはありません",
+            );
+        }
+        return ItemResult::ok(id, detail).with_evidence(lines);
     }
     let mut parts = Vec::new();
     if !old_files.is_empty() {
@@ -1043,7 +1065,7 @@ pub fn check_function_provider(ctx: &Ctx) -> ItemResult {
 }
 
 /// `tsf.log` を判定する
-pub fn judge_tsf_log(a: &tsflog::LogAnalysis) -> ItemResult {
+pub fn judge_tsf_log(a: &tsflog::LogAnalysis, now_unix: i64) -> ItemResult {
     let id = ItemId::TsfLog;
     let mut lines = vec![format!("読んだ行数: {}", a.lines)];
     lines.push(format!(
@@ -1081,10 +1103,23 @@ pub fn judge_tsf_log(a: &tsflog::LogAnalysis) -> ItemResult {
     if a.langbar_failed || a.add_item_failed {
         warn.push("言語バー（タスクバーの「あ / A」）の登録に失敗した記録があります".to_owned());
     }
-    if a.stopped > 0 {
+    // 同一秒の複数 pid は 1 事象。要確認は「別の秒の事象が 3 回以上、かつ最新が直近 24 時間以内」のみ
+    let stopped_recent = a
+        .stopped_last
+        .as_deref()
+        .and_then(tsflog::parse_utc)
+        .is_none_or(|t| now_unix - t <= 24 * 3600);
+    if a.stopped >= 3 && stopped_recent {
         warn.push(format!(
-            "エンジンが異常終了した記録が {} 回あります",
-            a.stopped
+            "エンジンが止まった事象が {} 回あります（最新 {}）",
+            a.stopped,
+            a.stopped_last.as_deref().unwrap_or("-")
+        ));
+    } else if a.stopped > 0 {
+        lines.push(format!(
+            "エンジン停止の事象: {} 回（最新 {}。更新・差し替えで全アプリのエンジンが一斉に止まる正常な動作を含む）",
+            a.stopped,
+            a.stopped_last.as_deref().unwrap_or("-")
         ));
     }
     if a.dropped_non_json {
@@ -1109,6 +1144,13 @@ pub fn judge_tsf_log(a: &tsflog::LogAnalysis) -> ItemResult {
     ItemResult::ok(id, "起動失敗・登録失敗の記録はありません").with_evidence(lines)
 }
 
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// `tsf.log` 項目
 pub fn check_tsf_log(ctx: &Ctx) -> ItemResult {
     let id = ItemId::TsfLog;
@@ -1116,7 +1158,7 @@ pub fn check_tsf_log(ctx: &Ctx) -> ItemResult {
         return ItemResult::skipped(id, WINDOWS_ONLY);
     }
     match read_tsf_log(ctx) {
-        Some(text) => judge_tsf_log(&tsflog::analyze(&text)),
+        Some(text) => judge_tsf_log(&tsflog::analyze(&text), now_unix()),
         None => ItemResult::warn(
             id,
             "tsf.log がありません（Nagi をまだ一度も選んでいない）",
@@ -1297,9 +1339,22 @@ mod tests {
     #[test]
     fn old_files_judgement() {
         assert_eq!(judge_old_files(&[], false, &[]).status, Status::Ok);
+        // imserver.exe.old だけでプロセスが無ければ OK
         let r = judge_old_files(&["imserver.exe.old".into()], false, &[]);
-        assert_eq!(r.status, Status::Warn);
-        assert!(r.advice.unwrap().contains("imserver.exe.old"));
+        assert_eq!(r.status, Status::Ok);
+        assert!(r.detail.contains("次回"));
+        // DLL の .old だけ（実レポート）は OK
+        let dll: Vec<String> = (0..5)
+            .map(|i| format!("nagi_windows_tsf.dll.20261121T0{i}0000.old"))
+            .collect();
+        let r = judge_old_files(&dll, false, &[]);
+        assert_eq!(r.status, Status::Ok);
+        assert!(r.detail.contains('5'));
+        // 多すぎる
+        let many: Vec<String> = (0..21)
+            .map(|i| format!("nagi_windows_tsf.dll.{i}.old"))
+            .collect();
+        assert_eq!(judge_old_files(&many, false, &[]).status, Status::Warn);
         assert_eq!(judge_old_files(&[], true, &[]).status, Status::Warn);
         assert_eq!(
             judge_old_files(&[], false, &["PID 1 (x.old)".into()]).status,
@@ -1442,20 +1497,54 @@ mod tests {
     }
 
     #[test]
+    fn tsf_log_stopped_events() {
+        let now = tsflog::parse_utc("2026-11-21T12:00:00Z").unwrap();
+        let stop = |ts: &str, pid: u32| {
+            format!("{ts} pid={pid} [engine] stopped (crash or start failure)\n")
+        };
+        // 実レポート相当: 同一秒に複数 pid → 1 事象で OK
+        let mut text = String::new();
+        for pid in [100, 200, 300, 400] {
+            text += &stop("2026-11-21T11:00:00Z", pid);
+        }
+        let r = judge_tsf_log(&tsflog::analyze(&text), now);
+        assert_eq!(r.status, Status::Ok, "{r:?}");
+        // 別の秒が 3 回 + 直近 → 要確認
+        let text = stop("2026-11-21T09:00:00Z", 1)
+            + &stop("2026-11-21T10:00:00Z", 1)
+            + &stop("2026-11-21T11:00:00Z", 1);
+        assert_eq!(
+            judge_tsf_log(&tsflog::analyze(&text), now).status,
+            Status::Warn
+        );
+        // 3 回でも最新が 24 時間より前 → OK
+        assert_eq!(
+            judge_tsf_log(&tsflog::analyze(&text), now + 3 * 86400).status,
+            Status::Ok
+        );
+    }
+
+    #[test]
     fn tsf_log_judgement() {
-        let r = judge_tsf_log(&tsflog::analyze("t pid=1 [tsf] Activate done langbar=true"));
+        let r = judge_tsf_log(
+            &tsflog::analyze("t pid=1 [tsf] Activate done langbar=true"),
+            0,
+        );
         assert_eq!(r.status, Status::Ok);
-        let r = judge_tsf_log(&tsflog::analyze(
-            "t pid=1 [engine] entering minimal profile",
-        ));
+        let r = judge_tsf_log(
+            &tsflog::analyze("t pid=1 [engine] entering minimal profile"),
+            0,
+        );
         assert_eq!(r.status, Status::Ng);
-        let r = judge_tsf_log(&tsflog::analyze(
-            "t pid=1 [tsf] Activate done langbar=false",
-        ));
+        let r = judge_tsf_log(
+            &tsflog::analyze("t pid=1 [tsf] Activate done langbar=false"),
+            0,
+        );
         assert_eq!(r.status, Status::Warn);
-        let r = judge_tsf_log(&tsflog::analyze(
-            "t pid=1 [menu] configure failed (no settings exe)",
-        ));
+        let r = judge_tsf_log(
+            &tsflog::analyze("t pid=1 [menu] configure failed (no settings exe)"),
+            0,
+        );
         assert_eq!(r.status, Status::Ng);
     }
 }

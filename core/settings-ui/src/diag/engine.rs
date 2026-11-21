@@ -512,6 +512,17 @@ pub fn check_start(ctx: &Ctx, engines: &mut Engines) -> ItemResult {
         .with_evidence(lines);
     }
     if init.profile == "minimal" {
+        let reason = status.as_ref().ok().map(|s| s.profile_reason.as_str());
+        if reason.is_some_and(is_model_loading_reason) {
+            return ItemResult::ok(
+                id,
+                format!(
+                    "起動して応答しました（初期化 {} ms）。診断用エンジンは起動直後のため辞書のみ。実際の LLM 動作は engine.memory で確認",
+                    session.init_ms
+                ),
+            )
+            .with_evidence(lines);
+        }
         return ItemResult::warn(
             id,
             "起動・応答は正常ですが、辞書のみの動作（minimal）です",
@@ -527,6 +538,11 @@ pub fn check_start(ctx: &Ctx, engines: &mut Engines) -> ItemResult {
         ),
     )
     .with_evidence(lines)
+}
+
+/// minimal の理由が「モデルを非同期に読み込み中」か（診断の imserver は起動直後なので正常）
+pub fn is_model_loading_reason(reason: &str) -> bool {
+    reason.contains("変換モデルを読み込み中です")
 }
 
 /// メモリの判定。LLM あり: 専用メモリが 1.5GB 超で要確認。LLM なし: 500MB 超で要確認

@@ -18,8 +18,10 @@ pub struct LogAnalysis {
     pub launch_failures: usize,
     /// `entering minimal profile`（辞書のみに降格）の回数
     pub minimal_entries: usize,
-    /// `stopped (crash or start failure)` の回数
+    /// `stopped (crash or start failure)` の事象の回数（同一秒の複数 pid は 1 事象に束ねる）
     pub stopped: usize,
+    /// 最新の事象の時刻（ログの先頭トークン。`YYYY-MM-DDTHH:MM:SSZ`）
+    pub stopped_last: Option<String>,
     /// `ActivateEx panicked`
     pub panicked: bool,
     /// `[menu] configure requested`（言語のオプションからの起動）
@@ -49,6 +51,7 @@ fn clip(line: &str) -> String {
 pub fn analyze(text: &str) -> LogAnalysis {
     let mut a = LogAnalysis::default();
     let mut problems: Vec<String> = Vec::new();
+    let mut last_stop_ts: Option<&str> = None;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         a.lines += 1;
         let mut problem = false;
@@ -72,8 +75,14 @@ pub fn analyze(text: &str) -> LogAnalysis {
             problem = true;
         }
         if line.contains("stopped (crash or start failure)") {
-            a.stopped += 1;
-            problem = true;
+            let ts = line.split_whitespace().next().unwrap_or("");
+            // 同一秒の複数 pid は 1 事象（更新・差し替えで全ホストのエンジンが一斉に止まる）。表示も 1 行にする
+            if last_stop_ts != Some(ts) {
+                a.stopped += 1;
+                problem = true;
+            }
+            last_stop_ts = Some(ts);
+            a.stopped_last = Some(ts.to_owned());
         }
         if line.contains("ActivateEx panicked") {
             a.panicked = true;
@@ -101,6 +110,27 @@ pub fn analyze(text: &str) -> LogAnalysis {
     let skip = problems.len().saturating_sub(MAX_EVIDENCE);
     a.evidence = problems.into_iter().skip(skip).collect();
     a
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` を UNIX 秒にする
+pub fn parse_utc(ts: &str) -> Option<i64> {
+    let b = ts.strip_suffix('Z')?;
+    let (d, t) = b.split_once('T')?;
+    let mut dp = d.split('-').map(|x| x.parse::<i64>().ok());
+    let (y, m, day) = (dp.next()??, dp.next()??, dp.next()??);
+    let mut tp = t.split(':').map(|x| x.parse::<i64>().ok());
+    let (hh, mm, ss) = (tp.next()??, tp.next()??, tp.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // days_from_civil
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + hh * 3600 + mm * 60 + ss)
 }
 
 #[cfg(test)]
@@ -145,5 +175,25 @@ mod tests {
     #[test]
     fn empty_log() {
         assert_eq!(analyze(""), LogAnalysis::default());
+    }
+
+    #[test]
+    fn stopped_same_second_is_one_event() {
+        let a = analyze(
+            "2026-11-21T01:00:00Z pid=1 [engine] stopped (crash or start failure)\n\
+2026-11-21T01:00:00Z pid=2 [engine] stopped (crash or start failure)\n\
+2026-11-21T01:00:00Z pid=3 [engine] stopped (crash or start failure)\n\
+2026-11-21T02:00:00Z pid=1 [engine] stopped (crash or start failure)\n",
+        );
+        assert_eq!(a.stopped, 2);
+        assert_eq!(a.evidence.len(), 2);
+        assert_eq!(a.stopped_last.as_deref(), Some("2026-11-21T02:00:00Z"));
+    }
+
+    #[test]
+    fn parse_utc_epoch() {
+        assert_eq!(parse_utc("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_utc("2026-11-21T00:00:00Z"), Some(1_795_219_200));
+        assert_eq!(parse_utc("bad"), None);
     }
 }
