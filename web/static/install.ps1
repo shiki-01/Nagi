@@ -1,4 +1,4 @@
-# Nagi (Japanese IME) installer for Windows 10 22H2+ / 11 (x64).
+# Nagi (Japanese IME) installer for Windows 10 22H2+ / 11 (x64 / ARM64).
 #   irm https://nagi.shiki-01.com/install.ps1 | iex
 #
 # Fetches latest.json, downloads the release zip, verifies its SHA-256, extracts it to a temporary
@@ -11,8 +11,32 @@
 # The installer inside the zip prints Japanese messages.
 #
 # Environment variables:
-#   NAGI_MANIFEST_URL  latest.json URL (default: https://nagi.shiki-01.com/updates/windows/latest.json)
+#   NAGI_MANIFEST_URL  latest.json URL (default: https://nagi.shiki-01.com/updates/windows/latest.json,
+#                      or latest-arm64.json on an ARM64 PC)
 #   NAGI_SKIP_DATA     1 = do not download the dictionary and model
+
+# True on an ARM64 PC, even from an x64-emulated PowerShell (PROCESSOR_ARCHITECTURE says AMD64 there).
+# IsWow64Process2 reports the real CPU (Windows 10 1709+); fall back to the environment variables.
+function Test-Arm64 {
+    try {
+        if (-not ('Nagi.NativeMachine' -as [type])) {
+            Add-Type -Namespace Nagi -Name NativeMachine -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine);
+'@
+        }
+        $processMachine = [uint16]0
+        $nativeMachine = [uint16]0
+        $self = [System.Diagnostics.Process]::GetCurrentProcess().Handle
+        if ([Nagi.NativeMachine]::IsWow64Process2($self, [ref]$processMachine, [ref]$nativeMachine)) {
+            return ($nativeMachine -eq 0xAA64)
+        }
+    } catch {
+    }
+    $arch = $env:PROCESSOR_ARCHITEW6432
+    if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
+    return ($arch -eq 'ARM64' -or $env:PROCESSOR_IDENTIFIER -like 'ARM*')
+}
 
 function Install-Nagi {
     $ErrorActionPreference = 'Stop'
@@ -20,11 +44,16 @@ function Install-Nagi {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
     $manifestUrl = $env:NAGI_MANIFEST_URL
-    if (-not $manifestUrl) { $manifestUrl = 'https://nagi.shiki-01.com/updates/windows/latest.json' }
+    if (-not $manifestUrl) {
+        # The x64 manifest keeps its original name (older clients read it); ARM64 has its own manifest.
+        $manifestName = 'latest.json'
+        if (Test-Arm64) { $manifestName = 'latest-arm64.json' }
+        $manifestUrl = "https://nagi.shiki-01.com/updates/windows/$manifestName"
+    }
     $work = Join-Path ([IO.Path]::GetTempPath()) ('nagi-install-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work | Out-Null
     try {
-        Write-Host 'nagi: fetching latest.json'
+        Write-Host "nagi: fetching $manifestUrl"
         $manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
         if (-not ($manifest.version -and $manifest.download_url -and $manifest.sha256)) {
             throw 'latest.json is invalid'

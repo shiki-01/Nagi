@@ -6,7 +6,7 @@
 //!
 //! zip の構成（x86_64 は `Nagi-windows-<version>.zip`、ARM64 は `Nagi-windows-arm64-<version>.zip`。
 //! どちらも最上位に `Nagi-windows-<version>/` を 1 つ置く。zip の名前だけがアーキテクチャで変わる。
-//! x86_64 の名前は 0.1.15 以前のクライアントの自動更新が参照するため変えない。decisions.md H-102）:
+//! x86_64 の名前は 0.1.15 以前のクライアントの自動更新が参照するため変えない）:
 //!
 //! ```text
 //! nagi_windows_tsf.dll   TSF の入力方式（COM の InprocServer32）

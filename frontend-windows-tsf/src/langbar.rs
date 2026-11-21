@@ -316,6 +316,20 @@ pub fn run_settings_gui(kind: &str, exe: &Path) {
     shell_open(kind, PCWSTR(file.as_ptr()), PCWSTR::null());
 }
 
+/// DLL と同じディレクトリの `nagi-settings.exe` で設定画面を開く。エンジン・スレッドマネージャに
+/// 依存しない（未アクティブの COM オブジェクトからも呼べる。`ITfFnConfigure::Show` 用）。
+/// 実行ファイルが無ければ `false`
+pub fn open_settings_gui_from_module(kind: &str) -> bool {
+    let Some(exe) = crate::dll::module_directory().map(|d| d.join(status::SETTINGS_GUI_EXE)) else {
+        return false;
+    };
+    if !exe.exists() {
+        return false;
+    }
+    run_settings_gui(kind, &exe);
+    true
+}
+
 /// 設定画面を更新セクションで開き、更新の確認を自動で実行する（`--section update --auto-check`）
 pub fn run_check_update(kind: &str, exe: &Path) {
     let file = wide(&exe.display().to_string());

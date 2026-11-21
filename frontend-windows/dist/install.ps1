@@ -3,7 +3,8 @@
   Nagi（日本語入力）をインストールする。
 
 .DESCRIPTION
-  展開した zip（Nagi-windows-X.Y.Z）の中から実行する。
+  展開した zip（Nagi-windows-X.Y.Z / ARM64 は Nagi-windows-arm64-X.Y.Z.zip の中の Nagi-windows-X.Y.Z）の中から実行する。
+  zip のアーキテクチャ（ARCH ファイル）が PC と合わなければ配置の前に止める。
     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
   1. 同梱ファイルを SHA256SUMS で検証する
@@ -47,7 +48,7 @@ $ExeName = 'imserver.exe'
 $PayloadFiles = @(
     'nagi_windows_tsf.dll', 'imserver.exe', 'nagi-settings.exe', 'uninstall.ps1', 'verify.ps1', 'apply-update.ps1', 'README.md',
     'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD_PARTY_LICENSES.md',
-    'VERSION', 'SHA256SUMS'
+    'VERSION', 'ARCH', 'SHA256SUMS'
 )
 $UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Nagi'
 
@@ -66,6 +67,51 @@ function Get-Regsvr32 {
     return (Join-Path $env:SystemRoot 'Sysnative\regsvr32.exe')
 }
 
+# この PC の CPU のアーキテクチャ（x86_64 / aarch64）。ARM64 Windows で x64 エミュレーションの PowerShell から
+# 実行されても aarch64 と判定する（環境変数 PROCESSOR_ARCHITECTURE はエミュレーション下だと AMD64 になる）。
+# IsWow64Process2 の nativeMachine は、プロセスのエミュレーションによらず本来の CPU を返す（Windows 10 1709 以降）
+function Get-NativeArchitecture {
+    try {
+        if (-not ('Nagi.NativeMachine' -as [type])) {
+            Add-Type -Namespace Nagi -Name NativeMachine -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine);
+'@
+        }
+        $processMachine = [uint16]0
+        $nativeMachine = [uint16]0
+        $self = [System.Diagnostics.Process]::GetCurrentProcess().Handle
+        if ([Nagi.NativeMachine]::IsWow64Process2($self, [ref]$processMachine, [ref]$nativeMachine)) {
+            if ($nativeMachine -eq 0xAA64) { return 'aarch64' }
+            if ($nativeMachine -eq 0x8664) { return 'x86_64' }
+        }
+    } catch {
+        # 取れなければ環境変数で判定する
+    }
+    $arch = $env:PROCESSOR_ARCHITEW6432
+    if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
+    if ($arch -eq 'ARM64' -or $env:PROCESSOR_IDENTIFIER -like 'ARM*') { return 'aarch64' }
+    if ($arch -eq 'AMD64') { return 'x86_64' }
+    return $arch
+}
+
+# zip のアーキテクチャ（ARCH ファイル。無い版は x86_64）
+function Get-PayloadArchitecture([string]$SourceDir) {
+    $path = Join-Path $SourceDir 'ARCH'
+    if (-not (Test-Path -LiteralPath $path)) { return 'x86_64' }
+    return (Get-Content -LiteralPath $path -TotalCount 1).Trim()
+}
+
+# zip と PC のアーキテクチャが合っているか。TSF の DLL は同じアーキテクチャのプロセスにしか読み込まれず、
+# 取り違えると入力方式が出ない（regsvr32 の登録も失敗する）ので、配置の前に止める
+function Assert-ArchitectureMatches([string]$SourceDir) {
+    $native = Get-NativeArchitecture
+    $payload = Get-PayloadArchitecture $SourceDir
+    if ($native -ne $payload) {
+        throw "この zip は $payload 用ですが、この PC は $native です。$native 用の zip（ARM64 は Nagi-windows-arm64-X.Y.Z.zip）を使ってください"
+    }
+}
+
 function Test-Platform {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'Windows 専用です'
@@ -73,10 +119,9 @@ function Test-Platform {
     if (-not [Environment]::Is64BitOperatingSystem) {
         throw '64bit 版の Windows が必要です'
     }
-    $arch = $env:PROCESSOR_ARCHITEW6432
-    if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
-    if ($arch -ne 'AMD64') {
-        throw "この版は x64 の Windows 用です（この PC: $arch）。ARM64 には未対応です"
+    $arch = Get-NativeArchitecture
+    if ($arch -ne 'x86_64' -and $arch -ne 'aarch64') {
+        throw "この PC のアーキテクチャには未対応です（この PC: $arch）。対応: x64 / ARM64"
     }
     # Windows 10 22H2 = 19045、Windows 11 = 22000 以降
     if ([Environment]::OSVersion.Version.Build -lt 19045) {
@@ -172,9 +217,12 @@ function New-StartMenuShortcuts([string]$TargetInstallDir) {
 # 管理者権限が要る手順: 配置・登録・「アプリと機能」への登録・スタートメニューのショートカット
 function Install-Privileged([string]$SourceDir) {
     Test-Payload $SourceDir
+    Assert-ArchitectureMatches $SourceDir
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     foreach ($name in $PayloadFiles) {
+        # ARCH が無い版（x64 のみだった頃の zip）もそのまま入れられるようにする
+        if ($name -eq 'ARCH' -and -not (Test-Path -LiteralPath (Join-Path $SourceDir $name))) { continue }
         Copy-Replacing (Join-Path $SourceDir $name) (Join-Path $InstallDir $name)
     }
     # 前回までの退避ファイル（使用中でなくなったもの）を片付ける
@@ -241,9 +289,11 @@ try {
     Say "配置と入力方式の登録を終えました: $InstallDir"
 
     # Visual C++ 再頒布可能パッケージ（imserver が使う。ほとんどの PC に入っている）
+    $redist = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+    if ((Get-PayloadArchitecture $PSScriptRoot) -eq 'aarch64') { $redist = 'https://aka.ms/vs/17/release/vc_redist.arm64.exe' }
     foreach ($runtime in @('vcruntime140.dll', 'msvcp140.dll')) {
         if (-not (Test-Path -LiteralPath (Join-Path $env:SystemRoot "System32\$runtime"))) {
-            Say "警告: $runtime が見つかりません。https://aka.ms/vs/17/release/vc_redist.x64.exe を入れてください"
+            Say "警告: $runtime が見つかりません。$redist を入れてください"
         }
     }
 

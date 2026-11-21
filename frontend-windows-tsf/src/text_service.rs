@@ -22,6 +22,7 @@ use nagi_windows::context::{build_context, should_report_before_key};
 use nagi_windows::environment::{
     EnvironmentReporter, OverridingProbe, ResumeDetector, ResumeSource,
 };
+use nagi_windows::focus::{FocusPlan, FocusTracker, selection_outside_composition};
 use nagi_windows::keynorm;
 use nagi_windows::mode::{ModeSync, compartment_values};
 use nagi_windows::process::SpawnHook;
@@ -29,16 +30,18 @@ use nagi_windows::status::{
     MenuCommand, MenuEntry, MenuTargets, PathEnv, ToastThrottle, toast_for,
 };
 use nagi_windows::supervisor::EngineEvent;
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_POINTER, LPARAM, WPARAM};
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_POINTER, HWND, LPARAM, WPARAM};
 use windows::Win32::UI::TextServices::{
     IEnumTfDisplayAttributeInfo, ITfCompartmentEventSink, ITfCompartmentEventSink_Impl,
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfContext,
     ITfDisplayAttributeInfo, ITfDisplayAttributeProvider, ITfDisplayAttributeProvider_Impl,
-    ITfDocumentMgr, ITfFunctionProvider, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr,
-    ITfRange, ITfSourceSingle, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
-    ITfTextInputProcessorEx_Impl, ITfThreadMgr,
+    ITfDocumentMgr, ITfEditRecord, ITfFnConfigure, ITfFnConfigure_Impl, ITfFunction_Impl,
+    ITfFunctionProvider, ITfKeyEventSink, ITfKeyEventSink_Impl, ITfKeystrokeMgr, ITfRange,
+    ITfSource, ITfSourceSingle, ITfTextEditSink, ITfTextEditSink_Impl, ITfTextInputProcessor_Impl,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
+    ITfThreadMgrEventSink_Impl, TF_ANCHOR_END, TF_ANCHOR_START,
 };
-use windows::core::{BOOL, GUID, Interface, Ref, Result, implement};
+use windows::core::{BOOL, BSTR, GUID, IUnknown, Interface, Ref, Result, implement};
 
 use crate::candidate_window::CandidateWindow;
 use crate::display_attr::{self, AttrAtoms};
@@ -235,6 +238,27 @@ pub(crate) struct Core {
     /// 自分でコンパートメントを書いている間（2 つの値を順に書く途中の通知を OS 側の操作と取り違えない）
     writing_mode: Cell<bool>,
     resume: RefCell<ResumeDetector>,
+    /// 直近に送った focus_in / focus_out（2 つの通知経路で二重に送らない）
+    focus: RefCell<FocusTracker>,
+    /// `ITfThreadMgrEventSink` の購読（Deactivate で解除する）
+    thread_sink: RefCell<Option<(ITfSource, u32)>>,
+    /// composition 中の文書の `ITfTextEditSink` の購読
+    text_edit: RefCell<Option<TextEditAdvise>>,
+}
+
+/// `ITfTextEditSink` の購読（composition を持つ context への）
+struct TextEditAdvise {
+    context: ITfContext,
+    source: ITfSource,
+    cookie: u32,
+}
+
+/// 同じ COM オブジェクトか（`IUnknown` の同一性で比べる）
+fn same_object<T: Interface>(a: &T, b: &T) -> bool {
+    match (a.cast::<IUnknown>(), b.cast::<IUnknown>()) {
+        (Ok(a), Ok(b)) => a.as_raw() == b.as_raw(),
+        _ => false,
+    }
 }
 
 impl Core {
@@ -267,6 +291,9 @@ impl Core {
                 interval,
                 std::time::Duration::from_secs(60),
             )),
+            focus: RefCell::new(FocusTracker::new()),
+            thread_sink: RefCell::new(None),
+            text_edit: RefCell::new(None),
         }
     }
 
@@ -289,6 +316,14 @@ impl Core {
                     core.candidate_window.reposition(core.caret.get());
                 }
             }),
+            on_composition_change: {
+                let me = Weak::clone(&self.me);
+                Rc::new(move |context: &ITfContext| {
+                    if let Some(core) = me.upgrade() {
+                        core.sync_edit_sink(context);
+                    }
+                })
+            },
         })
     }
 
@@ -329,6 +364,18 @@ impl Core {
         // fforeground = true: フォーカスが無くても先にキーを受ける（IME として標準）
         unsafe { keystroke.AdviseKeyEventSink(client_id, &key_sink, true) }
             .inspect_err(|e| log_failure("AdviseKeyEventSink", e))?;
+
+        // 文書（入力欄・タブ）の切り替え。失敗してもアプリ単位のフォーカス通知で動く
+        if let Ok(source) = thread_mgr.cast::<ITfSource>() {
+            let sink: ITfThreadMgrEventSink = ThreadMgrSink {
+                core: Rc::downgrade(self),
+            }
+            .into();
+            match unsafe { source.AdviseSink(&ITfThreadMgrEventSink::IID, &sink) } {
+                Ok(cookie) => *self.thread_sink.borrow_mut() = Some((source, cookie)),
+                Err(e) => log_failure("AdviseSink(ThreadMgrEventSink)", &e),
+            }
+        }
 
         // モード（コンパートメント）。失敗しても入力はできる（OS 側の表示とは同期しない）
         let compartment_sink: ITfCompartmentEventSink = CompartmentSink {
@@ -379,8 +426,13 @@ impl Core {
                 let _ = unsafe { single.UnadviseSingleSink(id, &ITfFunctionProvider::IID) };
             }
         }
-        // 表示中の文字列は確定してから閉じる
-        self.set_focus(false);
+        if let Some((source, cookie)) = self.thread_sink.borrow_mut().take() {
+            let _ = unsafe { source.UnadviseSink(cookie) };
+        }
+        // 表示中の文字列は確定してから閉じる（状態に関わらず送る）
+        self.focus.borrow_mut().reset();
+        self.leave_focus(self.focused_context());
+        self.release_edit_sink();
         self.engine.forget_session(&self.session_id);
         self.candidate_window.destroy();
         self.toast.destroy();
@@ -942,27 +994,194 @@ impl Core {
         false
     }
 
+    /// アプリ単位の前景の変化（`ITfKeyEventSink::OnSetFocus`）
     fn set_focus(&self, foreground: bool) {
-        // フォーカス取得・喪失をエンジンに伝える。喪失時の確定文字列は composition を閉じて反映する
-        self.focused.set(foreground);
-        crate::e2e_probe::record_event("set_focus", &format!("foreground={foreground}"));
-        if foreground {
-            // 入力する可能性のあるホストになったので、ここでエンジンを起動する（先読み。H-96）
-            self.engine.ensure_started();
-            let _ = self.engine.focus_in(&self.session_id);
-            return;
+        let plan = self.focus.borrow_mut().app_foreground(foreground);
+        self.run_focus_plan(plan, || self.focused_context());
+    }
+
+    /// 文書のフォーカスの変化（`ITfThreadMgrEventSink::OnSetFocus`）。旧文書の確定は旧文書の context に反映する
+    fn document_focus_changed(&self, new: Option<&ITfDocumentMgr>, prev: Option<&ITfDocumentMgr>) {
+        let changed = match (new, prev) {
+            (Some(a), Some(b)) => !same_object(a, b),
+            _ => false,
+        };
+        crate::tsf_log::log(
+            "focus",
+            &format!(
+                "doc focus new={} prev={} changed={changed}",
+                new.is_some(),
+                prev.is_some()
+            ),
+        );
+        let plan = self
+            .focus
+            .borrow_mut()
+            .document_focus(new.is_some(), changed);
+        self.run_focus_plan(plan, || prev.and_then(|d| unsafe { d.GetTop() }.ok()));
+    }
+
+    /// `out` → `into` の順に送る。`out_context` は旧文書の context（composition の文書が分かればそちらを優先）
+    fn run_focus_plan(&self, plan: FocusPlan, out_context: impl FnOnce() -> Option<ITfContext>) {
+        if plan.out {
+            self.leave_focus(out_context());
         }
+        if plan.into {
+            self.enter_focus();
+        }
+    }
+
+    fn enter_focus(&self) {
+        self.focused.set(true);
+        crate::e2e_probe::record_event("set_focus", "foreground=true");
+        // 入力する可能性のあるホストになったので、ここでエンジンを起動する（先読み。H-96）
+        self.engine.ensure_started();
+        let _ = self.engine.focus_in(&self.session_id);
+    }
+
+    /// フォーカス喪失をエンジンに伝え、確定文字列で composition を閉じる。`fallback` は composition の
+    /// 文書が分からないときの反映先
+    fn leave_focus(&self, fallback: Option<ITfContext>) {
+        self.focused.set(false);
+        crate::e2e_probe::record_event("set_focus", "foreground=false");
+        let context = self
+            .text_edit
+            .borrow()
+            .as_ref()
+            .map(|a| a.context.clone())
+            .or(fallback);
+        self.flush_composition(context.as_ref(), Timing::Sync);
+    }
+
+    /// エンジンの `focus_out`（確定・学習の flush）を送り、結果を `context` に反映して composition を閉じる
+    fn flush_composition(&self, context: Option<&ITfContext>, timing: Timing) {
         self.handoff.borrow_mut().clear();
         self.candidate_window.hide();
         // 前の矩形・再測定待ちを持ち越さない
         self.last_rect.set(None);
         self.remeasure_pending.set(false);
+        let mut apply_failed = false;
         if let Ok(result) = self.engine.focus_out(&self.session_id) {
             let plan = render::plan_from_result(&result);
-            if let Some(ctx) = self.focused_context() {
-                let _ = self.apply(&ctx, plan, Timing::Sync);
+            if let Some(ctx) = context {
+                apply_failed = self.apply(ctx, plan, timing).is_err();
             }
         }
+        if !self.is_composing() {
+            return;
+        }
+        // 確定文字列が無い・反映できなかった。表示中の文字列をそのまま確定して閉じる（入力を失わない）
+        if (apply_failed || timing == Timing::Sync)
+            && let (Some(ctx), Some(env)) = (context, self.env())
+        {
+            let _ = edit::run_end_keeping_text(ctx, self.client_id.get(), &env, timing);
+        }
+        if timing == Timing::Sync {
+            // 文書が無い・閉じられなかった。解放済みの composition を持ち越さない
+            *self.composition.borrow_mut() = None;
+            self.release_edit_sink();
+        }
+    }
+
+    // ---- ITfTextEditSink（キャレットの composition 範囲外への移動） ----
+
+    /// composition の有無に合わせて `ITfTextEditSink` の購読を付け外しする（編集セッションの後に呼ぶ）
+    fn sync_edit_sink(&self, context: &ITfContext) {
+        let composing = self.is_composing();
+        let current = self.text_edit.borrow().as_ref().map(|a| a.context.clone());
+        match (composing, current) {
+            (false, Some(_)) => self.release_edit_sink(),
+            (true, Some(old)) if same_object(&old, context) => {}
+            (true, old) => {
+                if old.is_some() {
+                    self.release_edit_sink();
+                }
+                self.advise_edit_sink(context);
+            }
+            (false, None) => {}
+        }
+    }
+
+    fn advise_edit_sink(&self, context: &ITfContext) {
+        let Ok(source) = context.cast::<ITfSource>() else {
+            return;
+        };
+        let sink: ITfTextEditSink = TextEditSink {
+            core: Weak::clone(&self.me),
+        }
+        .into();
+        match unsafe { source.AdviseSink(&ITfTextEditSink::IID, &sink) } {
+            Ok(cookie) => {
+                crate::tsf_log::log("edit", "text edit sink advised");
+                *self.text_edit.borrow_mut() = Some(TextEditAdvise {
+                    context: context.clone(),
+                    source,
+                    cookie,
+                });
+            }
+            Err(e) => log_failure("AdviseSink(TextEditSink)", &e),
+        }
+    }
+
+    fn release_edit_sink(&self) {
+        let taken = self.text_edit.borrow_mut().take();
+        if let Some(advise) = taken {
+            let _ = unsafe { advise.source.UnadviseSink(advise.cookie) };
+            crate::tsf_log::log("edit", "text edit sink unadvised");
+        }
+    }
+
+    /// 破棄される context なら購読と composition の参照を外す
+    fn forget_context(&self, context: &ITfContext) {
+        let matches = self
+            .text_edit
+            .borrow()
+            .as_ref()
+            .is_some_and(|a| same_object(&a.context, context));
+        if matches {
+            self.release_edit_sink();
+            *self.composition.borrow_mut() = None;
+        }
+    }
+
+    /// 破棄される文書（の top context）なら `forget_context` する
+    fn forget_document(&self, document: &ITfDocumentMgr) {
+        if let Ok(top) = unsafe { document.GetTop() } {
+            self.forget_context(&top);
+        }
+    }
+
+    /// 編集の終了通知。自分以外の編集で選択が composition の外へ出たら確定して閉じる（MS-IME と同じ）。
+    /// 判定に迷う場合（読み取り失敗・選択が変わっていない等）は何もしない
+    fn on_end_edit(&self, context: &ITfContext, ec: u32, record: &ITfEditRecord) {
+        if edit::in_own_edit() {
+            return;
+        }
+        let Some(composition) = self.composition.borrow().clone() else {
+            return;
+        };
+        if !unsafe { record.GetSelectionStatus() }.is_ok_and(|b| b.as_bool()) {
+            return;
+        }
+        let (Ok(range), Ok(selection)) = (
+            unsafe { composition.GetRange() },
+            edit::selection_range(context, ec),
+        ) else {
+            return;
+        };
+        let (Ok(start), Ok(end)) = (
+            unsafe { selection.CompareStart(ec, &range, TF_ANCHOR_START) },
+            unsafe { selection.CompareEnd(ec, &range, TF_ANCHOR_END) },
+        ) else {
+            return;
+        };
+        if !selection_outside_composition(start.cmp(&0), end.cmp(&0)) {
+            return;
+        }
+        crate::tsf_log::log("edit", "caret left composition; committing");
+        // 文書ロック中なので反映は後回し（`Deferred`）。エンジンは続けて入力できるよう focus_in し直す
+        self.flush_composition(Some(context), Timing::Deferred);
+        let _ = self.engine.focus_in(&self.session_id);
     }
 }
 
@@ -971,7 +1190,7 @@ fn ctx_ref<'a>(pic: &'a Ref<'_, ITfContext>) -> Option<&'a ITfContext> {
 }
 
 /// 入力方式本体（`ITfTextInputProcessorEx` + 表示属性の提供者）
-#[implement(ITfTextInputProcessorEx, ITfDisplayAttributeProvider)]
+#[implement(ITfTextInputProcessorEx, ITfDisplayAttributeProvider, ITfFnConfigure)]
 pub struct TextService {
     /// `Activate` から `Deactivate` の間だけ存在する
     core: RefCell<Option<Rc<Core>>>,
@@ -1044,6 +1263,118 @@ impl ITfDisplayAttributeProvider_Impl for TextService_Impl {
             return Err(E_POINTER.into());
         }
         display_attr::info_for(unsafe { &*guid })
+    }
+}
+
+/// 「言語の設定 → Nagi → オプション」。TSF は `CoCreateInstance` で TIP を作って `ITfFnConfigure` を
+/// 問い合わせるので、`Activate` 前（`core` が無い状態）でも動くこと
+impl ITfFunction_Impl for TextService_Impl {
+    fn GetDisplayName(&self) -> Result<BSTR> {
+        Ok(BSTR::from(format!(
+            "{} の設定",
+            crate::guids::PROFILE_DESCRIPTION
+        )))
+    }
+}
+
+impl ITfFnConfigure_Impl for TextService_Impl {
+    fn Show(&self, _hwndparent: HWND, _langid: u16, _rguidprofile: *const GUID) -> Result<()> {
+        guarded(
+            || Err(E_FAIL.into()),
+            || {
+                crate::tsf_log::log("menu", "configure requested");
+                if langbar::open_settings_gui_from_module("configure") {
+                    Ok(())
+                } else {
+                    crate::tsf_log::log("menu", "configure failed (no settings exe)");
+                    Err(E_FAIL.into())
+                }
+            },
+        )
+    }
+}
+
+/// 文書（入力欄・タブ）の切り替え通知。`Core` は弱い参照
+#[implement(ITfThreadMgrEventSink)]
+struct ThreadMgrSink {
+    core: Weak<Core>,
+}
+
+impl ITfThreadMgrEventSink_Impl for ThreadMgrSink_Impl {
+    fn OnInitDocumentMgr(&self, _pdim: Ref<ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnUninitDocumentMgr(&self, pdim: Ref<ITfDocumentMgr>) -> Result<()> {
+        guarded(
+            || Ok(()),
+            || {
+                // 破棄される文書の context を保持していたら参照を外す（解放済みの context に書かない）
+                if let (Some(core), Some(dim)) = (self.core.upgrade(), pdim.as_ref()) {
+                    core.forget_document(dim);
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn OnSetFocus(
+        &self,
+        pdimfocus: Ref<ITfDocumentMgr>,
+        pdimprevfocus: Ref<ITfDocumentMgr>,
+    ) -> Result<()> {
+        guarded(
+            || Ok(()),
+            || {
+                if let Some(core) = self.core.upgrade() {
+                    core.document_focus_changed(pdimfocus.as_ref(), pdimprevfocus.as_ref());
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn OnPushContext(&self, _pic: Ref<ITfContext>) -> Result<()> {
+        Ok(())
+    }
+
+    fn OnPopContext(&self, pic: Ref<ITfContext>) -> Result<()> {
+        guarded(
+            || Ok(()),
+            || {
+                if let (Some(core), Some(ctx)) = (self.core.upgrade(), pic.as_ref()) {
+                    core.forget_context(ctx);
+                }
+                Ok(())
+            },
+        )
+    }
+}
+
+/// composition 中の文書の編集通知。`Core` は弱い参照
+#[implement(ITfTextEditSink)]
+struct TextEditSink {
+    core: Weak<Core>,
+}
+
+impl ITfTextEditSink_Impl for TextEditSink_Impl {
+    fn OnEndEdit(
+        &self,
+        pic: Ref<ITfContext>,
+        ecreadonly: u32,
+        peditrecord: Ref<ITfEditRecord>,
+    ) -> Result<()> {
+        guarded(
+            || Ok(()),
+            || {
+                if let (Some(core), Some(ctx), Some(record)) =
+                    (self.core.upgrade(), pic.as_ref(), peditrecord.as_ref())
+                {
+                    core.on_end_edit(ctx, ecreadonly, record);
+                }
+                Ok(())
+            },
+        )
     }
 }
 
@@ -1123,6 +1454,7 @@ impl ITfCompositionSink_Impl for CompositionSink_Impl {
             || {
                 // アプリ側が composition を終了した（フォーカス移動・クリック等）。エンジンの状態も揃える
                 *self.core.composition.borrow_mut() = None;
+                self.core.release_edit_sink();
                 // E2E プローブ: composition が（アプリ側の都合で）空になったことを記録する
                 crate::e2e_probe::record(Some(""), "");
                 self.core.handoff.borrow_mut().clear();
