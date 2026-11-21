@@ -454,6 +454,9 @@ jobs:
   # publish=false でも走らせる（artifact の exe を落として試せる）
   installer:
     needs: [prepare, bundle]
+    # 既定の条件（上流がすべて成功）だと、Secrets が無くて sign が skipped のとき bundle の先まで
+    # skipped が伝わって飛ばされる（release も連鎖して飛ぶ）。bundle の成否だけで決める
+    if: ${{ !cancelled() && needs.bundle.result == 'success' }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
