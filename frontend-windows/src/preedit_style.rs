@@ -75,8 +75,15 @@ pub struct AttrRun {
 /// 種別 → 表示属性。macOS 版（`NagiInputController.attributes(for:)`）と同じ対応:
 /// 通常 = 細い実線、注目・選択 = 太い実線、確定済み・保留 = 点線、スタイル変換結果 = 破線
 pub fn attr_for(style: MarkStyle) -> DisplayAttr {
+    attr_for_with(style, UnderlineKind::Solid)
+}
+
+/// [`attr_for`] の、通常の文節（ライブ変換・予測を含む）の下線の種類を指定できる版
+/// （設定 `windows.preedit_underline`。H-119）。太線は選ばない（注目文節と見分けるため）。
+/// 戻り値は常に [`DISPLAY_ATTRS`] のいずれか
+pub fn attr_for_with(style: MarkStyle, normal: UnderlineKind) -> DisplayAttr {
     let (underline, bold) = match style {
-        MarkStyle::Normal => (UnderlineKind::Solid, false),
+        MarkStyle::Normal => (normal, false),
         MarkStyle::Focused | MarkStyle::Selected => (UnderlineKind::Solid, true),
         MarkStyle::Fixed | MarkStyle::Pending => (UnderlineKind::Dot, false),
         MarkStyle::Styled => (UnderlineKind::Dash, false),
@@ -173,6 +180,11 @@ pub fn runs(preedit: &PreeditView) -> Vec<StyleRun> {
 /// 重なる指定は後のもの（保留ローマ字）が優先。同じ種別が連続する区間は 1 つにまとめる。
 /// 文字列が空なら空の計画
 pub fn plan(preedit: &PreeditView) -> Vec<AttrRun> {
+    plan_with(preedit, UnderlineKind::Solid)
+}
+
+/// [`plan`] の、通常の文節の下線の種類を指定できる版
+pub fn plan_with(preedit: &PreeditView, normal: UnderlineKind) -> Vec<AttrRun> {
     let total = text_len(preedit);
     if total == 0 {
         return Vec::new();
@@ -195,7 +207,7 @@ pub fn plan(preedit: &PreeditView) -> Vec<AttrRun> {
                 start: pos,
                 end: pos + 1,
                 style,
-                attr: attr_for(style),
+                attr: attr_for_with(style, normal),
             }),
         }
     }
@@ -404,5 +416,38 @@ mod tests {
         assert_eq!(a(MarkStyle::Fixed).underline, UnderlineKind::Dot);
         assert_eq!(a(MarkStyle::Pending).underline, UnderlineKind::Dot);
         assert_eq!(a(MarkStyle::Styled).underline, UnderlineKind::Dash);
+    }
+
+    #[test]
+    fn normal_underline_is_configurable_and_always_a_registered_attribute() {
+        for kind in [
+            UnderlineKind::Solid,
+            UnderlineKind::Dot,
+            UnderlineKind::Dash,
+        ] {
+            let normal = attr_for_with(MarkStyle::Normal, kind);
+            assert_eq!(normal.underline, kind);
+            assert!(!normal.bold);
+            assert!(DISPLAY_ATTRS.contains(&normal), "{kind:?}");
+            // 注目文節は設定に関係なく太い実線のまま
+            assert_eq!(
+                attr_for_with(MarkStyle::Focused, kind),
+                attr_for(MarkStyle::Focused)
+            );
+        }
+        assert_eq!(
+            attr_for_with(MarkStyle::Normal, UnderlineKind::Solid),
+            attr_for(MarkStyle::Normal)
+        );
+        let p = PreeditView {
+            text: "ab".into(),
+            segments: vec![seg("ab", SegmentKind::Japanese, 0)],
+            ..Default::default()
+        };
+        assert_eq!(
+            plan_with(&p, UnderlineKind::Dot)[0].attr.underline,
+            UnderlineKind::Dot
+        );
+        assert_eq!(plan(&p), plan_with(&p, UnderlineKind::Solid));
     }
 }

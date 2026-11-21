@@ -25,6 +25,7 @@ use nagi_protocol::methods::{
 use nagi_protocol::utf16;
 use nagi_protocol::view::{CandidateView, CandidatesView, InputMode, PreeditView};
 use nagi_rewriter::Rewriter;
+use nagi_rewriter::{to_fullwidth_alnum, to_halfwidth_katakana};
 use nagi_romaji::{
     Composer, Piece, PieceKind, PunctuationStyle, RomajiTable, ShiftLetterMode, Stroke,
 };
@@ -32,6 +33,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 推論・変換に渡す左文脈の最大文字数（Unicode スカラー）
 const LEFT_CONTEXT_CHARS: usize = 40;
@@ -96,6 +98,19 @@ pub enum AlnumWidth {
     FollowInput,
 }
 
+/// 未入力のときの Space で入れるスペースの幅（`input.space_width`）。Shift+Space は反対の幅。
+/// かな系・全角英数のモードだけが対象（英数・半角英数は常に半角で素通し）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpaceWidth {
+    /// 半角スペース（既定。従来の動作）
+    #[default]
+    Half,
+    /// 全角スペース
+    Full,
+    /// 入力モードに従う（ひらがな・カタカナ・全角英数は全角、半角カナは半角）
+    FollowMode,
+}
+
 /// エンジンの設定（`config.toml` の `[input]` `[conversion]` に対応する部分）
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -151,6 +166,8 @@ pub struct EngineConfig {
     /// 英語の候補を選んで確定したとき、後ろに半角スペースを 1 つ足す（`input.auto_space_alpha`。H-74）。
     /// 続けて句読点を入力したら、足したスペースを消す
     pub auto_space_alpha: bool,
+    /// 未入力のときの Space で入れるスペースの幅（`input.space_width`）
+    pub space_width: SpaceWidth,
 }
 
 impl Default for EngineConfig {
@@ -179,6 +196,7 @@ impl Default for EngineConfig {
             apps: AppsConfig::default(),
             auto_english: AutoEnglishMode::default(),
             auto_space_alpha: false,
+            space_width: SpaceWidth::Half,
         }
     }
 }
@@ -532,6 +550,9 @@ enum Start {
     Convert,
     Katakana,
     Hiragana,
+    HankakuKana,
+    ZenkakuAlnum,
+    HankakuAlnum,
 }
 
 /// 状態機械エンジン
@@ -549,6 +570,11 @@ pub struct Engine {
     /// フロントが「読みの接頭辞だけを置き換える候補」への対応を宣言したか（`initialize` の
     /// `capabilities.partial_suggestions`。設定の再読み込みでは変わらない）
     partial_suggestions: bool,
+    /// フロントが拡張入力モード（カタカナ・半角カナ・全角英数・半角英数）の表示に対応しているか
+    /// （`initialize` の `capabilities.extended_input_modes`）。対応しないフロントへは基本の 2 つに読み替えて返す
+    extended_input_modes: bool,
+    /// 利用者が `ToggleLive` でライブ変換を切っているか（実行中のエンジンの間だけ。設定の再読み込みでは変わらない）
+    live_disabled: AtomicBool,
 }
 
 /// ひらがな（小書き・濁点つきを含む）と長音符か
@@ -645,7 +671,35 @@ impl Engine {
             geometry: None,
             app_modes: HashMap::new(),
             partial_suggestions: false,
+            extended_input_modes: false,
+            live_disabled: AtomicBool::new(false),
         }
+    }
+
+    /// 拡張入力モードを応答の `mode` にそのまま出すか。フロントが対応を宣言したとき
+    /// （`initialize` の `capabilities.extended_input_modes`）だけ有効にする。無効なら、
+    /// かな系は `Hiragana`、英数系は `Alphanumeric` に読み替えて返す
+    pub fn set_extended_input_modes(&mut self, enabled: bool) {
+        self.extended_input_modes = enabled;
+    }
+
+    /// 応答に出す入力モード（`set_extended_input_modes` の設定による読み替え）
+    fn wire_mode(&self, mode: InputMode) -> InputMode {
+        if self.extended_input_modes {
+            mode
+        } else {
+            mode.basic()
+        }
+    }
+
+    /// 現在のキーマップ（`get_keymap` 用）
+    pub fn keymap(&self) -> &KeyMap {
+        &self.keymap
+    }
+
+    /// 利用者が `ToggleLive` でライブ変換を切っているか
+    pub fn live_conversion_disabled(&self) -> bool {
+        self.live_disabled.load(Ordering::Relaxed)
     }
 
     /// 接頭辞だけを置き換える候補（入力中のサジェストの拡充。H-58）を出すか。フロントが対応を
@@ -840,7 +894,7 @@ impl Engine {
         params: &GlideInputParams,
         commit: &mut String,
     ) -> bool {
-        if !self.config.glide_input || sess.mode != InputMode::Hiragana {
+        if !self.config.glide_input || !sess.mode.is_kana() {
             return false;
         }
         let Some(geometry) = sess.geometry.clone() else {
@@ -2026,6 +2080,10 @@ impl Engine {
         let State::Composing = sess.state else {
             return false;
         };
+        // `ToggleLive` で切っているとき、カタカナ・半角カナのモード（かなのまま表示する）では変換しない
+        if self.live_disabled.load(Ordering::Relaxed) || sess.mode != InputMode::Hiragana {
+            return false;
+        }
         if sess.live_suppressed {
             return false;
         }
@@ -2545,6 +2603,13 @@ impl Engine {
         {
             action = Some(suggest);
         }
+        // 未入力の Space / Shift+Space: `input.space_width` に従って全角・半角のスペースを入れる
+        if ctx == KeyContext::Direct
+            && action.is_none()
+            && let Some(space) = self.direct_space_action(sess, key)
+        {
+            action = Some(space);
+        }
         // 素通しの語の入力中の Space は、変換ではなく語の確定（スペース自体はアプリに渡す）
         if sess.passthrough_run
             && matches!(sess.state, State::Composing)
@@ -2559,7 +2624,12 @@ impl Engine {
         }
         // サジェストの選択中の操作。選択キー以外は選択を解除してから従来どおり処理する
         if let Some(selected) = sess.suggest_selected
-            && !matches!(action, Some(Action::SuggestNext | Action::SuggestPrev))
+            && !matches!(
+                action,
+                Some(
+                    Action::SuggestNext | Action::SuggestPrev | Action::NextPage | Action::PrevPage
+                )
+            )
         {
             sess.suggest_selected = None;
             match action {
@@ -2591,9 +2661,11 @@ impl Engine {
             }
             Action::ToggleMode => {
                 self.commit_all(sess, commit);
-                sess.mode = match sess.mode {
-                    InputMode::Hiragana => InputMode::Alphanumeric,
-                    InputMode::Alphanumeric => InputMode::Hiragana,
+                // かな系 → 英数。それ以外（英数・全角英数・半角英数）→ ひらがな
+                sess.mode = if sess.mode.is_kana() {
+                    InputMode::Alphanumeric
+                } else {
+                    InputMode::Hiragana
                 };
                 sess.mode_touched = true;
                 sess.keep_next_words = true;
@@ -2604,6 +2676,20 @@ impl Engine {
                 false
             }
             Action::UndoCommit => self.try_undo_commit(sess),
+            Action::CommitText(text) => {
+                // 入力中・変換中の内容を先に確定してから、そのまま確定する（全角スペースなど）
+                self.commit_all(sess, commit);
+                commit.push_str(&text);
+                true
+            }
+            Action::ToggleLive => {
+                let was_disabled = self.live_disabled.fetch_xor(true, Ordering::Relaxed);
+                if !was_disabled {
+                    // 切ったら、表示中のライブ変換をひらがなに戻す
+                    sess.live_conversion = None;
+                }
+                true
+            }
             Action::Reconvert => {
                 sess.pending_reconvert = true;
                 sess.keep_next_words = true;
@@ -2647,7 +2733,7 @@ impl Engine {
         // 素通し: 未入力で先頭が対象の記号なら、その語は日本語に変換せず ASCII（Literal）で入力する
         if matches!(sess.state, State::Direct)
             && sess.composer.is_empty()
-            && sess.mode == InputMode::Hiragana
+            && sess.mode.is_kana()
             && self.config.apps.is_passthrough_start(stroke.ch)
         {
             sess.live_conversion = None;
@@ -2709,8 +2795,40 @@ impl Engine {
             Action::SuggestNext | Action::SuggestPrev => self.select_suggest(sess, action),
             Action::ToKatakana => self.start_converting(sess, Start::Katakana),
             Action::ToHiragana => self.start_converting(sess, Start::Hiragana),
+            Action::ToHankakuKana => self.start_converting(sess, Start::HankakuKana),
+            Action::ToZenkakuAlnum => self.start_converting(sess, Start::ZenkakuAlnum),
+            Action::ToHankakuAlnum => self.start_converting(sess, Start::HankakuAlnum),
+            // 入力中に見えている表記（ひらがな、カタカナ系のモードならそのカナ）の次の形にする
+            Action::CycleForm => {
+                let next = match sess.mode {
+                    InputMode::Katakana => Start::HankakuKana,
+                    InputMode::HankakuKatakana => Start::Hiragana,
+                    _ => Start::Katakana,
+                };
+                self.start_converting(sess, next);
+            }
+            Action::ConvertSelection => self.start_converting(sess, Start::Convert),
+            Action::NextPage => self.page_suggest(sess, 1),
+            Action::PrevPage => self.page_suggest(sess, -1),
             _ => {}
         }
+    }
+
+    /// 入力中のサジェストをページ単位で動かす（`NextPage` / `PrevPage`）。選ぶのはページの先頭。
+    /// 最後のページの次は最初のページへ、最初のページの前は最後のページへ戻る。サジェストが無ければ何もしない
+    fn page_suggest(&self, sess: &mut Session, delta: isize) {
+        let len = self
+            .visible_suggest(sess)
+            .map_or(0, |(_, cc)| cc.items.len());
+        if len == 0 {
+            sess.suggest_selected = None;
+            return;
+        }
+        let page = self.config.page_size.max(1);
+        let pages = len.div_ceil(page) as isize;
+        let current = sess.suggest_selected.map_or(0, |i| i / page) as isize;
+        let next = (current + delta).rem_euclid(pages) as usize;
+        sess.suggest_selected = Some((next * page).min(len - 1));
     }
 
     /// サジェストの選択を動かす。次: 未選択 → 先頭 → … → 末尾 → 先頭（循環）。
@@ -2798,7 +2916,12 @@ impl Engine {
         );
         if !matches!(
             action,
-            Action::NextCand | Action::StartConvert | Action::PrevCand | Action::SelectCand(_)
+            Action::NextCand
+                | Action::StartConvert
+                | Action::PrevCand
+                | Action::SelectCand(_)
+                | Action::NextPage
+                | Action::PrevPage
         ) && let State::Converting(conv) = &mut sess.state
         {
             self.ensure_segmented(conv);
@@ -2806,9 +2929,17 @@ impl Engine {
         let selecting =
             matches!(&sess.state, State::Converting(conv) if conv.range_anchor.is_some());
         match action {
-            Action::NextCand | Action::StartConvert | Action::PrevCand if selecting => {
+            Action::NextCand
+            | Action::StartConvert
+            | Action::PrevCand
+            | Action::ConvertSelection
+                if selecting =>
+            {
                 self.reconvert_selection(sess);
             }
+            Action::ConvertSelection => self.step_candidate(sess, 1),
+            Action::NextPage if !selecting => self.page_candidates(sess, 1),
+            Action::PrevPage if !selecting => self.page_candidates(sess, -1),
             Action::NextCand | Action::StartConvert => self.step_candidate(sess, 1),
             Action::PrevCand => self.step_candidate(sess, -1),
             Action::MoveFocus(dir) => self.move_focus(sess, dir),
@@ -2821,6 +2952,10 @@ impl Engine {
             Action::ToKatakana => self.set_focus_kana(sess, true),
             Action::ToHiragana => self.set_focus_kana(sess, false),
             Action::ToHankaku => self.set_focus_hankaku(sess),
+            Action::ToHankakuKana => self.set_focus_form(sess, FormKey::HankakuKana),
+            Action::ToZenkakuAlnum => self.set_focus_form(sess, FormKey::ZenkakuAlnum),
+            Action::ToHankakuAlnum => self.set_focus_form(sess, FormKey::HankakuAlnum),
+            Action::CycleForm => self.cycle_focus_form(sess),
             Action::SelectCand(n) => self.select_candidate_page_relative(sess, n, commit),
             Action::DeleteLearning => self.delete_learning(sess),
             _ => {}
@@ -2950,7 +3085,11 @@ impl Engine {
                         }
                         commit.push_str(rest);
                     }
-                    _ => commit.push_str(&self.committed_pieces_text(&pieces, &flushed_text)),
+                    _ => commit.push_str(&self.committed_pieces_text(
+                        sess.mode,
+                        &pieces,
+                        &flushed_text,
+                    )),
                 }
                 (!pieces.is_empty()).then_some(pieces)
             }
@@ -3038,19 +3177,23 @@ impl Engine {
 
     /// 入力中（Composing）の確定文字列。Literal の塊だけ `convert.half_width_alnum` の幅にそろえる。
     /// 塊を連結した文字列が `text`（flush 後の全文）と一致しないときは `text` をそのまま使う
-    fn committed_pieces_text(&self, pieces: &[Piece], text: &str) -> String {
-        if self.config.alnum_width == AlnumWidth::FollowInput {
-            return text.to_string();
-        }
+    fn committed_pieces_text(&self, mode: InputMode, pieces: &[Piece], text: &str) -> String {
         let joined: String = pieces.iter().map(|p| p.text.as_str()).collect();
         if joined != text {
+            // 塊と全文が対応しない（途中の保留の flush など）。かな系のモードは全文をそのカナにする
+            // （ひらがな以外の文字は変わらない）
+            return kana_mode_surface(mode, text).unwrap_or_else(|| text.to_string());
+        }
+        if self.config.alnum_width == AlnumWidth::FollowInput
+            && kana_mode_surface(mode, "").is_none()
+        {
             return text.to_string();
         }
         pieces
             .iter()
             .map(|p| match p.kind {
                 PieceKind::Literal => self.with_alnum_width(&p.text),
-                _ => Cow::Borrowed(p.text.as_str()),
+                _ => Cow::Owned(kana_mode_surface(mode, &p.text).unwrap_or_else(|| p.text.clone())),
             })
             .collect()
     }
@@ -3505,7 +3648,12 @@ impl Engine {
             return;
         }
         let left = tail_chars(&sess.left_context, LEFT_CONTEXT_CHARS);
-        let backend_candidates = self.backend.predict(&prefix, &left, CANDIDATE_LIMIT);
+        let ctx = CommitContext {
+            session_id: &sess.id,
+            app_id: sess.app_id.as_deref(),
+            secure_input: sess.secure_input,
+        };
+        let backend_candidates = self.backend.predict(&ctx, &prefix, &left, CANDIDATE_LIMIT);
         if backend_candidates.is_empty() {
             return;
         }
@@ -3663,7 +3811,10 @@ impl Engine {
         }
         let mut segments: Vec<Segment> = Vec::new();
         let mut context = sess.left_context.clone();
+        // 入力全体の読みの中での、いまの塊の先頭の位置（文字数。打ったローマ字の対応を引くため）
+        let mut offset = 0usize;
         for piece in merge_math_pieces(pieces) {
+            let piece_len = piece.text.chars().count();
             match (piece.kind, how) {
                 (PieceKind::Japanese, Start::Convert) => {
                     let left_tail = tail_chars(&context, LEFT_CONTEXT_CHARS);
@@ -3695,6 +3846,40 @@ impl Engine {
                         chunk_id: segments.len() as u32,
                     });
                 }
+                (PieceKind::Japanese, Start::HankakuKana) => {
+                    let surface = to_halfwidth_katakana(&to_katakana(&piece.text));
+                    context.push_str(&surface);
+                    segments.push(Segment {
+                        reading: piece.text,
+                        surface,
+                        kind: SegmentKind::Japanese,
+                        candidates: None,
+                        chunk_id: segments.len() as u32,
+                    });
+                }
+                (kind, Start::ZenkakuAlnum | Start::HankakuAlnum) => {
+                    // 打ったローマ字（Literal は入力そのもの）を全角・半角にする。最初は小文字
+                    // （続けて押すと変換中の `set_focus_form` が 大文字 → 先頭大文字 と進める）。
+                    // ローマ字との対応が取れない塊（かなの直接入力など）は、読みのまま
+                    let raw = match kind {
+                        PieceKind::Literal => Some(piece.text.clone()),
+                        PieceKind::Japanese => sess.raw_map.raw_for(offset, &piece.text),
+                    };
+                    let surface = raw
+                        .map(|raw| alnum_cycle(&raw, how == Start::ZenkakuAlnum, None))
+                        .unwrap_or_else(|| piece.text.clone());
+                    context.push_str(&surface);
+                    segments.push(Segment {
+                        reading: piece.text.clone(),
+                        surface,
+                        kind: match kind {
+                            PieceKind::Japanese => SegmentKind::Japanese,
+                            PieceKind::Literal => SegmentKind::Literal,
+                        },
+                        candidates: None,
+                        chunk_id: segments.len() as u32,
+                    });
+                }
                 (PieceKind::Japanese, Start::Hiragana) | (PieceKind::Literal, _) => {
                     context.push_str(&piece.text);
                     let kind = match piece.kind {
@@ -3705,6 +3890,7 @@ impl Engine {
                     segments.push(Segment::plain(&piece.text, kind, id));
                 }
             }
+            offset += piece_len;
         }
         let mut conv = Conv {
             segments,
@@ -4212,6 +4398,166 @@ impl Engine {
         }
     }
 
+    /// 未入力の Space / Shift+Space（`input.space_width`）。`None` はアプリへ素通し（半角スペース）。
+    /// 英数・半角英数のモードは常に素通し（設定の対象外）
+    fn direct_space_action(&self, sess: &Session, key: &KeyEvent) -> Option<Action> {
+        let m = key.modifiers;
+        if key.keysym != nagi_protocol::key::keysym::SPACE
+            || m.ctrl
+            || m.alt
+            || m.meta
+            || sess.mode.is_passthrough()
+        {
+            return None;
+        }
+        let full_by_setting = match self.config.space_width {
+            SpaceWidth::Half => false,
+            SpaceWidth::Full => true,
+            SpaceWidth::FollowMode => sess.mode != InputMode::HankakuKatakana,
+        };
+        // Shift+Space は反対の幅
+        let full = full_by_setting != m.shift;
+        if full {
+            Some(Action::CommitText("\u{3000}".to_string()))
+        } else if m.shift {
+            Some(Action::CommitText(" ".to_string()))
+        } else {
+            None
+        }
+    }
+
+    /// 候補ウィンドウをページ単位で動かす（`NextPage` / `PrevPage`）。選ぶのはページの先頭。
+    /// 最後のページの次は最初のページへ、最初のページの前は最後のページへ戻る。ウィンドウが出ていなければ開く
+    fn page_candidates(&self, sess: &mut Session, delta: isize) {
+        let State::Converting(conv) = &mut sess.state else {
+            return;
+        };
+        let f = conv.focus;
+        self.ensure_candidates(&sess.left_context, &sess.raw_map, conv, f);
+        conv.visible = true;
+        let page = self.config.page_size.max(1);
+        if let Some(set) = conv.segments[f].candidates.as_mut() {
+            let len = set.items.len();
+            if len == 0 {
+                return;
+            }
+            let pages = len.div_ceil(page) as isize;
+            let current = (set.selected / page) as isize;
+            let next = (current + delta).rem_euclid(pages) as usize;
+            set.selected = (next * page).min(len - 1);
+            let surface = set.items[set.selected].surface.clone();
+            conv.segments[f].surface = surface;
+        }
+    }
+
+    /// 注目文節（複数文節の選択中はその範囲）の表記を `key` の形にする。かな系（半角カナ）は日本語の文節だけ、
+    /// 英数系は打ったローマ字が分かるときだけ（Literal はその文字そのもの）。できなければ何もしない
+    fn set_focus_form(&self, sess: &mut Session, key: FormKey) {
+        let State::Converting(conv) = &mut sess.state else {
+            return;
+        };
+        let range = Self::selection_range(conv).unwrap_or(conv.focus..conv.focus + 1);
+        let Some(info) = form_range_info(conv, &sess.raw_map, &range) else {
+            return;
+        };
+        let surface = match key {
+            FormKey::HankakuKana => {
+                if !info.all_japanese {
+                    return;
+                }
+                to_halfwidth_katakana(&to_katakana(&info.reading))
+            }
+            FormKey::ZenkakuAlnum | FormKey::HankakuAlnum => {
+                let Some(raw) = &info.raw else {
+                    return;
+                };
+                alnum_cycle(raw, key == FormKey::ZenkakuAlnum, Some(&info.surface))
+            }
+        };
+        Self::apply_form_surface(conv, range, info, surface);
+    }
+
+    /// `CycleForm`: ひらがな → 全角カタカナ → 半角カナ → 全角英数 → 半角英数 → ひらがな と進める
+    /// （使えない形は飛ばす）。いまの表記がどの形でもなければ、ひらがなにする
+    fn cycle_focus_form(&self, sess: &mut Session) {
+        let State::Converting(conv) = &mut sess.state else {
+            return;
+        };
+        let range = Self::selection_range(conv).unwrap_or(conv.focus..conv.focus + 1);
+        let Some(info) = form_range_info(conv, &sess.raw_map, &range) else {
+            return;
+        };
+        let mut forms: Vec<(Vec<String>, String)> = Vec::new();
+        if info.all_japanese {
+            let kata = to_katakana(&info.reading);
+            forms.push((vec![info.reading.clone()], info.reading.clone()));
+            forms.push((vec![kata.clone()], kata.clone()));
+            let half = to_halfwidth_katakana(&kata);
+            forms.push((vec![half.clone()], half));
+        }
+        if let Some(raw) = &info.raw {
+            forms.push((alnum_variants(raw, true), to_fullwidth_alnum(raw)));
+            forms.push((alnum_variants(raw, false), raw.clone()));
+        }
+        let current = forms
+            .iter()
+            .position(|(variants, _)| variants.contains(&info.surface));
+        let next = match current {
+            Some(i) => (i + 1) % forms.len(),
+            None => 0,
+        };
+        let Some((_, surface)) = forms.get(next).cloned() else {
+            return;
+        };
+        Self::apply_form_surface(conv, range, info, surface);
+    }
+
+    /// `range` の表記を `surface` にする。1 文節ならその場で（候補が計算済みなら選択を合わせる）、
+    /// 複数文節の選択なら 1 つの文節にまとめる（選択は解除する）。候補ウィンドウは閉じる
+    fn apply_form_surface(conv: &mut Conv, range: Range<usize>, info: FormRange, surface: String) {
+        if range.len() == 1 {
+            let f = range.start;
+            if let Some(set) = conv.segments[f].candidates.as_mut() {
+                match set.items.iter().position(|c| c.surface == surface) {
+                    Some(pos) => set.selected = pos,
+                    None => {
+                        set.items.insert(
+                            0,
+                            Candidate {
+                                surface: surface.clone(),
+                                sources: vec![CandidateSource::Rewriter],
+                                reading: None,
+                            },
+                        );
+                        set.selected = 0;
+                    }
+                }
+            }
+            conv.segments[f].surface = surface;
+        } else {
+            let new_focus = range.start;
+            let kind = if info.all_literal {
+                SegmentKind::Literal
+            } else {
+                SegmentKind::Japanese
+            };
+            let new_segment = Segment {
+                reading: info.reading,
+                surface,
+                kind,
+                candidates: None,
+                chunk_id: range.start as u32,
+            };
+            conv.segments.splice(range, [new_segment]);
+            for (i, s) in conv.segments.iter_mut().enumerate() {
+                s.chunk_id = i as u32;
+            }
+            conv.focus = new_focus;
+            conv.range_anchor = None;
+        }
+        conv.visible = false;
+    }
+
     fn set_focus_kana(&self, sess: &mut Session, katakana: bool) {
         let State::Converting(conv) = &mut sess.state else {
             return;
@@ -4426,7 +4772,14 @@ impl Engine {
                                 PieceKind::Japanese => SegmentKind::Japanese,
                                 PieceKind::Literal => SegmentKind::Literal,
                             };
-                            Segment::plain(&p.text, kind, i as u32)
+                            let mut seg = Segment::plain(&p.text, kind, i as u32);
+                            // カタカナ・半角カナのモードでは、入力中からそのカナで見せる
+                            if kind == SegmentKind::Japanese
+                                && let Some(surface) = kana_mode_surface(sess.mode, &p.text)
+                            {
+                                seg.surface = surface;
+                            }
+                            seg
                         })
                         .collect(),
                 };
@@ -4674,15 +5027,131 @@ impl Engine {
             changed = true;
         }
         if sess.mode != sess.sent.mode {
+            let wire_changed = self.wire_mode(sess.mode) != self.wire_mode(sess.sent.mode);
             sess.sent.mode = sess.mode;
-            result.mode = Some(sess.mode);
-            changed = true;
+            if wire_changed {
+                result.mode = Some(self.wire_mode(sess.mode));
+                changed = true;
+            }
         }
         if changed {
             sess.revision += 1;
         }
         result.revision = sess.revision as u32;
         result
+    }
+}
+
+/// カタカナ・半角カナの入力モードで、読み（ひらがな）をそのモードの表記にする。ひらがなのモード・
+/// 英数系のモードでは `None`（読みのまま）
+fn kana_mode_surface(mode: InputMode, reading: &str) -> Option<String> {
+    match mode {
+        InputMode::Katakana => Some(to_katakana(reading)),
+        InputMode::HankakuKatakana => Some(to_halfwidth_katakana(&to_katakana(reading))),
+        _ => None,
+    }
+}
+
+/// 表記を切り替えるキー（F8 / F9 / F10）が目指す形
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FormKey {
+    HankakuKana,
+    ZenkakuAlnum,
+    HankakuAlnum,
+}
+
+/// 表記を切り替える対象の範囲（注目文節、または選択した複数文節）の情報
+struct FormRange {
+    /// 読みの連結（Literal は入力した文字そのもの）
+    reading: String,
+    /// 現在の表記の連結
+    surface: String,
+    /// 打ったローマ字（Literal はその文字そのもの）。対応が取れなければ `None`
+    raw: Option<String>,
+    all_japanese: bool,
+    all_literal: bool,
+}
+
+/// `range` の文節の読み・表記・打ったローマ字をまとめる。Fixed / Styled の文節を含むなら `None`
+fn form_range_info(conv: &Conv, raws: &RawMap, range: &Range<usize>) -> Option<FormRange> {
+    let whole: String = conv.segments.iter().map(|s| s.reading.as_str()).collect();
+    let mut offset: usize = conv.segments[..range.start]
+        .iter()
+        .map(|s| s.reading.chars().count())
+        .sum();
+    let (mut reading, mut surface) = (String::new(), String::new());
+    let mut raw = Some(String::new());
+    let (mut all_japanese, mut all_literal) = (true, true);
+    for seg in &conv.segments[range.clone()] {
+        let seg_raw = match seg.kind {
+            SegmentKind::Literal => {
+                all_japanese = false;
+                Some(seg.reading.clone())
+            }
+            SegmentKind::Japanese => {
+                all_literal = false;
+                (whole == raws.reading)
+                    .then(|| raws.raw_for(offset, &seg.reading))
+                    .flatten()
+            }
+            _ => return None,
+        };
+        raw = match (raw, seg_raw) {
+            (Some(mut acc), Some(r)) => {
+                acc.push_str(&r);
+                Some(acc)
+            }
+            _ => None,
+        };
+        reading.push_str(&seg.reading);
+        surface.push_str(&seg.surface);
+        offset += seg.reading.chars().count();
+    }
+    Some(FormRange {
+        reading,
+        surface,
+        raw,
+        all_japanese,
+        all_literal,
+    })
+}
+
+/// 英字の表記の候補（小文字 → 大文字 → 先頭だけ大文字。重複は 1 つにする）を、全角または半角で
+fn alnum_variants(raw: &str, wide: bool) -> Vec<String> {
+    let lower = raw.to_ascii_lowercase();
+    let upper = raw.to_ascii_uppercase();
+    let mut chars = lower.chars();
+    let capital: String = match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    };
+    let mut out: Vec<String> = Vec::new();
+    for v in [lower, upper, capital] {
+        let v = if wide { to_fullwidth_alnum(&v) } else { v };
+        if !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// F9 / F10（`wide` = 全角）の次の表記。`current`（いまの表記）が同じ幅の形のどれかなら次の形
+/// （小文字 → 大文字 → 先頭大文字 → 小文字）、反対の幅の形なら同じ大文字小文字の形を `wide` の幅で、
+/// どれでもなければ（かな・漢字・`None`）小文字
+fn alnum_cycle(raw: &str, wide: bool, current: Option<&str>) -> String {
+    let same = alnum_variants(raw, wide);
+    let other = alnum_variants(raw, !wide);
+    match current {
+        Some(cur) => {
+            if let Some(i) = same.iter().position(|v| v == cur) {
+                same[(i + 1) % same.len()].clone()
+            } else if let Some(i) = other.iter().position(|v| v == cur) {
+                same[i.min(same.len() - 1)].clone()
+            } else {
+                same[0].clone()
+            }
+        }
+        None => same[0].clone(),
     }
 }
 

@@ -140,7 +140,8 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<ServerOptio
 /// 通知イベントとして合わせて返す
 pub fn engine_config_from(config: &Config) -> (EngineConfig, Vec<Event>) {
     let punct = &config.input.punctuation;
-    let bindings: Vec<(KeyContext, String, String)> = config
+    // 設定のテーブルは順序が不定なので、キー名で並べて同じキーの二重指定の結果を毎回同じにする
+    let mut bindings: Vec<(KeyContext, String, String)> = config
         .keymap
         .composing
         .iter()
@@ -153,7 +154,9 @@ pub fn engine_config_from(config: &Config) -> (EngineConfig, Vec<Event>) {
                 .map(|(k, v)| (KeyContext::Converting, k.clone(), v.clone())),
         )
         .collect();
-    let (keymap, warnings) = nagi_engine::KeyMap::with_overrides(&bindings);
+    bindings.sort_by(|a, b| a.1.cmp(&b.1));
+    // 未知のプリセット名は標準として扱う（行番号つきの警告は設定の読み込み（`nagi_config::parse`）が出す）
+    let (keymap, warnings) = nagi_engine::KeyMap::with_preset(&config.keymap.preset, &bindings);
     let events = warnings
         .into_iter()
         .map(|message| Event {
@@ -208,6 +211,11 @@ pub fn engine_config_from(config: &Config) -> (EngineConfig, Vec<Event>) {
             romaji_carryover: config.input.romaji_carryover,
             glide_input: config.input.glide,
             auto_space_alpha: config.input.auto_space_alpha,
+            space_width: match config.input.space_width {
+                nagi_config::SpaceWidth::Half => nagi_engine::SpaceWidth::Half,
+                nagi_config::SpaceWidth::Full => nagi_engine::SpaceWidth::Full,
+                nagi_config::SpaceWidth::FollowMode => nagi_engine::SpaceWidth::FollowMode,
+            },
             fuzzy_input: config.input.fuzzy.enabled,
             retro_review: config.input.fuzzy.enabled && config.input.fuzzy.retro_review,
             auto_english: match config.input.auto_english.mode {
@@ -1046,5 +1054,59 @@ mod tests {
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].code, "keymap_warning");
         assert_eq!(events[0].level, NotifyLevel::Warning);
+    }
+
+    #[test]
+    fn engine_config_from_applies_keymap_preset_and_user_wins() {
+        let mut config = Config::default();
+        config.keymap.preset = "ctrl_letters".to_string();
+        config
+            .keymap
+            .composing
+            .insert("Ctrl+u".to_string(), "NoOp".to_string());
+        let (engine_config, events) = engine_config_from(&config);
+        assert!(events.is_empty(), "{events:?}");
+        let resolve = |ctx, key: &str| {
+            engine_config
+                .keymap
+                .resolve(ctx, InputMode::Hiragana, &parse_key(key).unwrap())
+        };
+        // プリセットの割当
+        assert_eq!(
+            resolve(KeyContext::Composing, "Ctrl+i"),
+            Some(Action::ToKatakana)
+        );
+        assert_eq!(
+            resolve(KeyContext::Converting, "Ctrl+p"),
+            Some(Action::ToZenkakuAlnum)
+        );
+        // 利用者の上書きが優先
+        assert_eq!(resolve(KeyContext::Composing, "Ctrl+u"), Some(Action::NoOp));
+        // 旧名 `default` と未知の名前は標準（警告は設定の読み込み側が出す）
+        for name in ["default", "bogus"] {
+            config.keymap.preset = name.to_string();
+            let (c, events) = engine_config_from(&config);
+            assert!(events.is_empty(), "{events:?}");
+            assert_eq!(c.keymap.preset(), nagi_engine::Preset::Standard);
+        }
+    }
+
+    #[test]
+    fn engine_config_from_applies_space_width() {
+        let mut config = Config::default();
+        assert_eq!(
+            engine_config_from(&config).0.space_width,
+            nagi_engine::SpaceWidth::Half
+        );
+        config.input.space_width = nagi_config::SpaceWidth::FollowMode;
+        assert_eq!(
+            engine_config_from(&config).0.space_width,
+            nagi_engine::SpaceWidth::FollowMode
+        );
+        config.input.space_width = nagi_config::SpaceWidth::Full;
+        assert_eq!(
+            engine_config_from(&config).0.space_width,
+            nagi_engine::SpaceWidth::Full
+        );
     }
 }

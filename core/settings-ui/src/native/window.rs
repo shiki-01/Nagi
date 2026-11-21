@@ -2,26 +2,31 @@
 
 use super::NativeOptions;
 use super::controls::{
-    create_child, init_accessibility, instance, release_accessibility, send, send_text, set_font,
-    set_text, wide,
+    create_child, init_accessibility, instance, release_accessibility, send, send_text,
+    set_dark_theme, set_font, set_text, wide,
 };
 use super::dpi::{
-    apply_title_bar_theme, create_fonts, ensure_dpi_awareness, is_high_contrast, outer_size,
-    system_dpi, window_dpi,
+    apply_title_bar_theme, create_fonts, ensure_dpi_awareness, monitor_dpi_at, outer_size,
+    system_dpi, window_dpi, work_areas,
 };
+use super::gfx;
 use super::page::{
     edit_text, ensure_visible, find_ctl, rebuild_page, refit_fonts, relayout, role_of,
     scroll_state, scroll_to,
 };
 use super::pages;
 use super::state::{Ident, Phase, Role, State, UpdateUi};
+use super::theme::{self, Surface};
+use super::widgets::{self, BtnKind, NavItem};
 use crate::http::{is_safe_notes_url, user_dict_dir};
 use crate::native_diag;
 use crate::native_layout::{
-    Rect, control_height, frame_layout, initial_client_size, min_client_size, sidebar_item_height,
-    sidebar_item_parts, wheel_step,
+    Rect, control_height, frame_layout, initial_client_size, min_client_size, scale,
+    sidebar_item_height, unscale, wheel_step,
 };
 use crate::native_model::{Page, SettingsView, describe_update, ids, messages, sidebar};
+use crate::native_theme::{ButtonStyle, page_glyph, status_kind};
+use crate::native_ui_state::{self, UiState, WindowState};
 use crate::native_worker::{Command, Reply, WorkerHandle};
 use crate::opener::{Opener, SystemOpener};
 use nagi_protocol::settings::SettingValue;
@@ -33,15 +38,11 @@ use windows::Win32::Foundation::{
     COLORREF, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT,
-    DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DrawFocusRect, DrawTextW, FillRect,
-    GetSysColor, GetSysColorBrush, HBRUSH, HDC, HGDIOBJ, SelectObject, SetBkMode, SetTextColor,
-    TRANSPARENT, UpdateWindow,
+    HBRUSH, HDC, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RedrawWindow, SetBkColor, SetBkMode,
+    SetTextColor, TRANSPARENT, UpdateWindow,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
-use windows::Win32::System::SystemServices::{
-    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_ETCHEDHORZ, SS_ETCHEDVERT, SS_LEFT, SS_NOPREFIX,
-};
+use windows::Win32::System::SystemServices::{SS_NOPREFIX, SS_OWNERDRAW};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, ODS_FOCUS,
@@ -52,21 +53,22 @@ use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BS_AUTOCHECKBOX, BS_PUSHBUTTON, CB_GETCURSEL, CB_GETDROPPEDSTATE, CREATESTRUCTW,
-    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW, GetParent,
-    GetScrollInfo, GetWindowLongPtrW, HICON, HMENU, IDC_ARROW, IDYES, IsDialogMessageW, IsIconic,
-    KillTimer, LB_ADDSTRING, LB_GETCURSEL, LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT,
+    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_PUSHBUTTON, CB_GETCURSEL, CB_GETDROPPEDSTATE,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+    DestroyWindow, DispatchMessageW, FindWindowW, GWLP_USERDATA, GetClientRect, GetMessageW,
+    GetParent, GetScrollInfo, GetWindowLongPtrW, GetWindowRect, HICON, HMENU, IDC_ARROW, IDYES,
+    IsDialogMessageW, IsIconic, IsZoomed, KillTimer, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT,
     LB_SETCURSEL, LB_SETITEMHEIGHT, LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY,
     LBS_OWNERDRAWFIXED, LoadCursorW, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO, MINMAXINFO, MSG,
     MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO,
-    SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER,
-    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_GETMINMAXINFO, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_SETICON, WM_SETTINGCHANGE, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSEXW,
-    WS_CHILD, WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    SIF_TRACKPOS, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWNORMAL, SWP_NOACTIVATE,
+    SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
+    WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_SETICON,
+    WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOLORCHANGE, WM_THEMECHANGED, WM_TIMER, WM_VSCROLL,
+    WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     IMAGE_ICON, LR_SHARED, LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
@@ -112,6 +114,9 @@ fn hwnd_from(raw: isize) -> HWND {
 
 pub(super) fn run(options: NativeOptions) -> Result<(), String> {
     ensure_dpi_awareness();
+    // 色（ライト・ダーク・ハイコントラスト）の判定と、角丸・円を描く GDI+。GDI+ が使えなくても動く
+    theme::init();
+    gfx::startup();
     // 読み上げ用の名前（MSAA の属性サービス）に COM が要る。失敗しても設定画面は動く
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
     if com {
@@ -122,6 +127,8 @@ pub(super) fn run(options: NativeOptions) -> Result<(), String> {
         release_accessibility();
         unsafe { CoUninitialize() };
     }
+    theme::destroy();
+    gfx::shutdown();
     result
 }
 
@@ -146,18 +153,37 @@ fn run_inner(options: NativeOptions) -> Result<(), String> {
     let _ = unsafe { InitCommonControlsEx(&init) };
     register_classes()?;
 
-    let start_page = if options.open_update || options.auto_check {
-        Page::Update
+    // 前回の UI の状態（詳細設定・ページ・ウィンドウの位置とサイズ）。読めなければ既定
+    let saved = options
+        .ui_state_path
+        .as_deref()
+        .map(native_ui_state::load)
+        .unwrap_or_default();
+    let (start_page, wanted_page) = if options.open_update || options.auto_check {
+        (Page::Update, None)
     } else {
-        Page::Status
+        initial_page(saved.page.as_deref())
     };
-    let state = Box::into_raw(Box::new(State::new(start_page)));
+    let state = Box::into_raw(Box::new(State::new(
+        start_page,
+        saved.clone(),
+        wanted_page,
+        options.ui_state_path.clone(),
+    )));
 
     let dpi = system_dpi();
     let (client_w, client_h) = initial_client_size(dpi);
     let style = WS_OVERLAPPEDWINDOW.0 | WS_CLIPCHILDREN.0;
     let ex_style = WS_EX_CONTROLPARENT.0;
     let (width, height) = outer_size(client_w, client_h, style, ex_style, dpi);
+    // 前回の位置とサイズ（モニターの作業領域に収める）。無ければ OS 任せの位置と既定のサイズ
+    let (x, y, width, height, maximized) = match saved.window {
+        Some(w) => {
+            let r = restore_rect(&w, style, ex_style);
+            (r.x, r.y, r.w, r.h, w.maximized)
+        }
+        None => (CW_USEDEFAULT, CW_USEDEFAULT, width, height, false),
+    };
     let class = wide(MAIN_CLASS);
     let title = wide(TITLE);
     let created = unsafe {
@@ -166,8 +192,8 @@ fn run_inner(options: NativeOptions) -> Result<(), String> {
             PCWSTR(class.as_ptr()),
             PCWSTR(title.as_ptr()),
             WINDOW_STYLE(style),
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            x,
+            y,
             width,
             height,
             None,
@@ -199,7 +225,7 @@ fn run_inner(options: NativeOptions) -> Result<(), String> {
     worker.send(Command::Connect);
     *st.worker.borrow_mut() = Some(worker);
 
-    let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+    let _ = unsafe { ShowWindow(hwnd, if maximized { SW_SHOWMAXIMIZED } else { SW_SHOW }) };
     let _ = unsafe { UpdateWindow(hwnd) };
     let _ = unsafe { SetFocus(Some(st.list.get())) };
     if options.auto_check {
@@ -244,11 +270,50 @@ fn activate_existing() {
     }
 }
 
+/// 保存したページから、最初に開くページを決める。固定のページ（更新・データ・動作確認）はそのまま、
+/// カテゴリは設定を読み込めてから戻す（それまでは「設定」の読み込み表示）
+fn initial_page(key: Option<&str>) -> (Page, Option<String>) {
+    let Some(key) = key else {
+        return (Page::Status, None);
+    };
+    let fixed: Vec<(Page, String)> = pages::sidebar_entries()
+        .into_iter()
+        .map(|(p, t)| (p, t.to_owned()))
+        .collect();
+    if let Some(page) = native_ui_state::resolve_page(key, &fixed) {
+        (page, None)
+    } else if key.starts_with("category:") {
+        (Page::Status, Some(key.to_owned()))
+    } else {
+        (Page::Status, None)
+    }
+}
+
+/// 保存したウィンドウの位置とサイズを、いまのモニター構成に収めた外側の矩形（px）にする
+fn restore_rect(w: &WindowState, style: u32, ex_style: u32) -> Rect {
+    // 保存した位置にあるモニターの DPI で、dp のサイズを px にする（別の DPI のモニターに寄せられたら
+    // WM_DPICHANGED で作り直される）
+    let dpi = monitor_dpi_at(w.x.saturating_add(48), w.y.saturating_add(48));
+    let (ow, oh) = outer_size(scale(w.w_dp, dpi), scale(w.h_dp, dpi), style, ex_style, dpi);
+    let (min_cw, min_ch) = min_client_size(dpi);
+    let (min_w, min_h) = outer_size(min_cw, min_ch, style, ex_style, dpi);
+    native_ui_state::clamp_to_monitors(
+        Rect {
+            x: w.x,
+            y: w.y,
+            w: ow,
+            h: oh,
+        },
+        &work_areas(),
+        min_w,
+        min_h,
+    )
+}
+
 fn register_classes() -> Result<(), String> {
     let cursor = unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default();
-    let background = HBRUSH(std::ptr::without_provenance_mut::<c_void>(
-        COLOR_WINDOW.0 as usize + 1,
-    ));
+    // 背景は WM_ERASEBKGND / WM_PAINT で自前で塗る（ダークモード・カード）
+    let background = HBRUSH::default();
     let main_name = wide(MAIN_CLASS);
     let main_class = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -326,7 +391,7 @@ unsafe extern "system" fn main_proc(
     }
 }
 
-/// パネルは背景とスクロールバーを持つだけ。通知はすべてメインウィンドウへ回す
+/// パネルは背景（ページの地とカード）とスクロールバーを持つだけ。通知・色の問い合わせはすべてメインウィンドウへ回す
 unsafe extern "system" fn panel_proc(
     hwnd: HWND,
     msg: u32,
@@ -334,12 +399,30 @@ unsafe extern "system" fn panel_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_COMMAND | WM_CTLCOLORSTATIC | WM_VSCROLL | WM_MOUSEWHEEL => {
-            match unsafe { GetParent(hwnd) } {
-                Ok(parent) => unsafe { SendMessageW(parent, msg, Some(wparam), Some(lparam)) },
-                Err(_) => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        WM_NCCREATE => {
+            let create = lparam.0 as *const CREATESTRUCTW;
+            // SAFETY: WM_NCCREATE の lparam は有効な CREATESTRUCTW。lpCreateParams は `on_create` が渡した State
+            let param = unsafe { (*create).lpCreateParams } as isize;
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, param) };
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_ERASEBKGND => LRESULT(1),
+        WM_PAINT => {
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const State;
+            // SAFETY: State はメインウィンドウが破棄されたあとまで解放されない
+            match unsafe { ptr.as_ref() } {
+                Some(st) => {
+                    widgets::paint_panel(st, hwnd);
+                    LRESULT(0)
+                }
+                None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
             }
         }
+        WM_COMMAND | WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_DRAWITEM
+        | WM_VSCROLL | WM_MOUSEWHEEL => match unsafe { GetParent(hwnd) } {
+            Ok(parent) => unsafe { SendMessageW(parent, msg, Some(wparam), Some(lparam)) },
+            Err(_) => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        },
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
@@ -379,8 +462,20 @@ fn handle_message(st: &State, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             on_dpi_changed(st, hwnd, wparam, lparam);
             LRESULT(0)
         }
+        WM_ERASEBKGND => {
+            paint_main_background(
+                st,
+                HDC(std::ptr::without_provenance_mut::<c_void>(wparam.0)),
+            );
+            LRESULT(1)
+        }
         WM_SETTINGCHANGE => {
-            apply_title_bar_theme(hwnd);
+            // ダーク / ライトの切替・ハイコントラストの切替に追従する（再起動は要らない）
+            on_theme_changed(st, false);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+            on_theme_changed(st, true);
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_COMMAND => {
@@ -390,11 +485,11 @@ fn handle_message(st: &State, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC => on_ctl_color(st, wparam, lparam),
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => on_field_color(wparam),
         WM_DRAWITEM => {
             // SAFETY: WM_DRAWITEM の lparam は有効な DRAWITEMSTRUCT
             let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
-            if item.CtlID == ids::LIST as u32 {
-                draw_sidebar_item(st, item);
+            if draw_item(st, item) {
                 LRESULT(1)
             } else {
                 LRESULT(0)
@@ -414,6 +509,9 @@ fn handle_message(st: &State, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             if wparam.0 == ids::TIMER_STATUS {
                 let _ = unsafe { KillTimer(Some(hwnd), ids::TIMER_STATUS) };
                 set_text(st.status.get(), "");
+                let _ = unsafe {
+                    windows::Win32::Graphics::Gdi::InvalidateRect(Some(st.status.get()), None, true)
+                };
             }
             LRESULT(0)
         }
@@ -431,6 +529,8 @@ fn handle_message(st: &State, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             LRESULT(0)
         }
         WM_CLOSE => {
+            // 詳細設定・ページ・ウィンドウの位置とサイズを保存する（次回の起動で復元）
+            persist_ui_state(st, true);
             // すぐ消えたように見せる（imserver の終了待ちは、メッセージループを抜けたあと）
             let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
             let _ = unsafe { DestroyWindow(hwnd) };
@@ -486,7 +586,7 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
                 ids::PANEL as usize,
             ))),
             Some(instance()),
-            None,
+            Some((st as *const State).cast::<c_void>()),
         )
     };
     let detail = create_child(
@@ -498,11 +598,12 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
         ids::DETAIL_CHECK,
         font,
     );
+    // ステータス・区切り線はオーナードロー（種類で色分けした札・テーマの色の線）。文字は読み上げ用に持つ
     let status = create_child(
         hwnd,
         "STATIC",
         "",
-        SS_LEFT.0 | SS_NOPREFIX.0 | SS_CENTERIMAGE.0 | SS_ENDELLIPSIS.0,
+        SS_OWNERDRAW.0 | SS_NOPREFIX.0,
         0,
         ids::STATUS,
         font,
@@ -520,7 +621,7 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
         hwnd,
         "STATIC",
         "",
-        SS_ETCHEDVERT.0,
+        SS_OWNERDRAW.0,
         0,
         ids::SIDEBAR_RULE,
         font,
@@ -529,7 +630,7 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
         hwnd,
         "STATIC",
         "",
-        SS_ETCHEDHORZ.0,
+        SS_OWNERDRAW.0,
         0,
         ids::FOOTER_RULE,
         font,
@@ -561,6 +662,15 @@ fn on_create(st: &State, hwnd: HWND) -> bool {
     st.sidebar_rule.set(sidebar_rule);
     st.footer_rule.set(footer_rule);
     st.panel.set(panel);
+
+    // 標準のコントロールのまま、見た目だけ自前で描く（役割・名前・キー操作は標準のまま）
+    widgets::install_list(list);
+    widgets::install_button(detail, BtnKind::Toggle, false);
+    widgets::install_button(close, BtnKind::Push(ButtonStyle::Normal), false);
+    if st.model.borrow().detail {
+        send(detail, BM_SETCHECK, 1, 0);
+    }
+    apply_chrome_theme(st);
 
     apply_title_bar_theme(hwnd);
     // WM_SETICON の種別: 0 = ICON_SMALL（タイトルバー）、1 = ICON_BIG（タスクバー・Alt+Tab）
@@ -636,6 +746,7 @@ fn on_dpi_changed(st: &State, hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         )
     };
     layout_main(st);
+    redraw_all(st);
 }
 
 /// 左の一覧を作り直し、続けてページを作り直す
@@ -643,6 +754,14 @@ fn rebuild_sidebar(st: &State) {
     let (titles, selected) = {
         let mut model = st.model.borrow_mut();
         let entries = sidebar(model.view.as_ref(), model.detail, &pages::sidebar_entries());
+        // 前回のカテゴリのページは、設定を読み込めてから戻す（無くなっていれば先頭のページ）
+        if model.view.is_some()
+            && let Some(key) = model.wanted_page.take()
+            && let Some(page) = native_ui_state::resolve_page(&key, &entries)
+        {
+            model.page = page;
+            st.ui.borrow_mut().scroll = 0;
+        }
         if !entries.iter().any(|(p, _)| *p == model.page)
             && let Some((first, _)) = entries.first()
         {
@@ -650,6 +769,7 @@ fn rebuild_sidebar(st: &State) {
             st.ui.borrow_mut().scroll = 0;
         }
         model.sidebar = entries.iter().map(|(p, _)| *p).collect();
+        model.sidebar_titles = entries.iter().map(|(_, t)| t.clone()).collect();
         let selected = model.sidebar.iter().position(|p| *p == model.page);
         (
             entries.into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
@@ -674,105 +794,252 @@ fn request_rebuild(st: &State) {
     }
 }
 
-// ---- 描画の色 ----
+// ---- 描画の色・テーマ ----
 
+/// 静的な文字（STATIC）の色と、背景のブラシ。見出し・節の見出しはカードの外（ページの地）、
+/// それ以外はカードの上。説明・案内は補助の色、エラーはエラーの色（ハイコントラストはどれもシステム色）
 fn on_ctl_color(st: &State, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hdc = HDC(std::ptr::without_provenance_mut::<c_void>(wparam.0));
     let control = hwnd_from(lparam.0);
-    let role = if control == st.status.get() {
-        st.status_is_error.get().then_some(Role::Error)
-    } else {
-        role_of(st, control)
-    };
-    let color = match role {
-        Some(Role::Desc | Role::Hint) => unsafe { GetSysColor(COLOR_GRAYTEXT) },
-        // 赤（COLORREF は 0x00BBGGRR）。ハイコントラストではシステムの文字色（赤は背景次第で読めない）
-        Some(Role::Error) if !is_high_contrast() => 0x0000_00C0,
-        _ => unsafe { GetSysColor(COLOR_WINDOWTEXT) },
+    let pal = theme::palette();
+    let (color, surface) = match role_of(st, control) {
+        Some(Role::Heading | Role::Section) => (pal.text, Surface::Page),
+        Some(Role::Desc | Role::Hint) => (pal.text_secondary, Surface::Card),
+        Some(Role::Error) => (pal.error_text, Surface::Card),
+        _ => (pal.text, Surface::Card),
     };
     unsafe {
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COLORREF(color));
-        LRESULT(GetSysColorBrush(COLOR_WINDOW).0 as isize)
+        SetTextColor(hdc, COLORREF(theme::rgb(color).colorref()));
+    }
+    LRESULT(theme::brush(surface).0 as isize)
+}
+
+/// 入力欄・選択欄（EDIT / COMBOBOX の一覧）の文字と背景
+fn on_field_color(wparam: WPARAM) -> LRESULT {
+    let hdc = HDC(std::ptr::without_provenance_mut::<c_void>(wparam.0));
+    let pal = theme::palette();
+    unsafe {
+        SetTextColor(hdc, COLORREF(theme::rgb(pal.text).colorref()));
+        SetBkColor(hdc, COLORREF(theme::rgb(pal.field_bg).colorref()));
+    }
+    LRESULT(theme::brush(Surface::Field).0 as isize)
+}
+
+/// メインウィンドウの背景: ページの地、サイドバーの列、フッター
+fn paint_main_background(st: &State, hdc: HDC) {
+    let mut rect = RECT::default();
+    let _ = unsafe { GetClientRect(st.hwnd.get(), &mut rect) };
+    let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+    let frame = frame_layout(w, h, st.dpi.get());
+    let page = theme::surface_rgb(Surface::Page);
+    let side = theme::surface_rgb(Surface::Sidebar);
+    let all = Rect { x: 0, y: 0, w, h };
+    let column = Rect {
+        x: 0,
+        y: 0,
+        w: frame.list.w,
+        h: frame.footer_rule.y,
+    };
+    let footer = Rect {
+        x: 0,
+        y: frame.footer_rule.y,
+        w,
+        h: (h - frame.footer_rule.y).max(0),
+    };
+    gfx::fill_rect(hdc, all, page);
+    gfx::fill_rect(hdc, column, side);
+    gfx::fill_rect(hdc, footer, side);
+}
+
+/// 一覧・パネルのスクロールバーなど、枠の部品のテーマ（ダークなら暗いスクロールバー）
+fn apply_chrome_theme(st: &State) {
+    let dark = theme::palette().kind == crate::native_theme::ThemeKind::Dark;
+    set_dark_theme(st.list.get(), dark, true);
+    set_dark_theme(st.panel.get(), dark, true);
+}
+
+fn redraw_all(st: &State) {
+    let _ = unsafe {
+        RedrawWindow(
+            Some(st.hwnd.get()),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+        )
+    };
+}
+
+/// テーマ（ライト・ダーク・ハイコントラスト）やシステム色が変わった。`force` は色の変更を必ず反映する
+fn on_theme_changed(st: &State, force: bool) {
+    if st.panel.get().0.is_null() {
+        return;
+    }
+    let changed = theme::refresh();
+    if !changed && !force {
+        return;
+    }
+    apply_title_bar_theme(st.hwnd.get());
+    apply_chrome_theme(st);
+    // 入力欄・選択欄のテーマもあるので、ページを作り直す（スクロール位置・フォーカスは保つ）
+    rebuild_page(st);
+    redraw_all(st);
+}
+
+fn rect_of(r: &RECT) -> Rect {
+    Rect {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
     }
 }
 
-// ---- サイドバー（オーナードロー） ----
+/// オーナードローの部品を描く。描いたら `true`
+fn draw_item(st: &State, item: &DRAWITEMSTRUCT) -> bool {
+    let hdc = item.hDC;
+    let area = rect_of(&item.rcItem);
+    let dpi = st.dpi.get();
+    let id = item.CtlID as i32;
+    match id {
+        ids::LIST => {
+            draw_sidebar_item(st, item);
+            true
+        }
+        ids::SIDEBAR_RULE | ids::FOOTER_RULE => {
+            widgets::draw_rule(hdc, area);
+            true
+        }
+        ids::STATUS => {
+            let Some(fonts) = st.fonts.get() else {
+                return false;
+            };
+            let text = widget_text(st.status.get());
+            let kind = status_kind(&text, st.status_is_error.get());
+            widgets::draw_status(hdc, area, dpi, &fonts, kind, &text);
+            true
+        }
+        _ => {
+            // 診断の結果行
+            let info = st.ui.try_borrow().ok().and_then(|ui| {
+                ui.ctls
+                    .iter()
+                    .find(|c| c.id == id)
+                    .and_then(|c| c.result.clone())
+            });
+            let (Some(info), Some(fonts)) = (info, st.fonts.get()) else {
+                return false;
+            };
+            widgets::draw_result(
+                hdc,
+                area,
+                dpi,
+                Some(fonts.normal),
+                info.badge,
+                &info.label,
+                &info.title,
+            );
+            true
+        }
+    }
+}
 
-/// サイドバーの 1 項目を描く。色はすべてシステム色（ライト・ダーク・ハイコントラストに追従）。
-/// 選択は `COLOR_HIGHLIGHT` の角の立った帯、文字は左に余白を取って縦中央
+fn widget_text(hwnd: HWND) -> String {
+    super::controls::get_text(hwnd)
+}
+
+/// サイドバーの 1 項目（アイコン + 表示名。選択は丸みのある帯とアクセントの印）
 fn draw_sidebar_item(st: &State, item: &DRAWITEMSTRUCT) {
     if item.itemID == u32::MAX {
         return; // 項目が 0 件のときのフォーカス表示
     }
-    let hdc = item.hDC;
-    let dpi = st.dpi.get();
-    let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
-    let (fill, text_x) = sidebar_item_parts(
-        Rect {
-            x: item.rcItem.left,
-            y: item.rcItem.top,
-            w: item.rcItem.right - item.rcItem.left,
-            h: item.rcItem.bottom - item.rcItem.top,
-        },
-        dpi,
-    );
-    let fill_rect = RECT {
-        left: fill.x,
-        top: fill.y,
-        right: fill.x + fill.w,
-        bottom: fill.y + fill.h,
+    let Some(fonts) = st.fonts.get() else {
+        return;
     };
+    let index = item.itemID as usize;
+    let (title, glyph) = {
+        let model = st.model.borrow();
+        let title = model.sidebar_titles.get(index).cloned().unwrap_or_default();
+        let key = model
+            .sidebar
+            .get(index)
+            .and_then(|p| native_ui_state::page_key(*p, &title))
+            .unwrap_or_default();
+        let glyph = page_glyph(&key, &title);
+        (title, glyph)
+    };
+    widgets::draw_nav_item(
+        item.hDC,
+        rect_of(&item.rcItem),
+        st.dpi.get(),
+        &fonts,
+        &NavItem {
+            text: &title,
+            glyph: Some(glyph),
+            selected: item.itemState.0 & ODS_SELECTED.0 != 0,
+            hot: widgets::hot_nav() == index as i32,
+            focused: item.itemState.0 & ODS_FOCUS.0 != 0
+                && item.itemState.0 & ODS_NOFOCUSRECT.0 == 0,
+        },
+    );
+}
+
+// ---- UI の状態の保存 ----
+
+/// 今のウィンドウの位置とサイズ。最小化・最大化中は、前回の矩形を保ったまま最大化の有無だけ更新する
+fn capture_window(st: &State) -> Option<WindowState> {
+    let hwnd = st.hwnd.get();
+    let prev = st.saved.borrow().window;
+    let zoomed = unsafe { IsZoomed(hwnd) }.as_bool();
+    if zoomed || unsafe { IsIconic(hwnd) }.as_bool() {
+        return prev.map(|w| WindowState {
+            maximized: zoomed,
+            ..w
+        });
+    }
+    let mut outer = RECT::default();
+    let mut client = RECT::default();
     unsafe {
-        FillRect(hdc, &item.rcItem, GetSysColorBrush(COLOR_WINDOW));
-        if selected {
-            FillRect(hdc, &fill_rect, GetSysColorBrush(COLOR_HIGHLIGHT));
+        GetWindowRect(hwnd, &mut outer).ok()?;
+        GetClientRect(hwnd, &mut client).ok()?;
+    }
+    let dpi = st.dpi.get();
+    Some(WindowState {
+        x: outer.left,
+        y: outer.top,
+        w_dp: unscale(client.right - client.left, dpi),
+        h_dp: unscale(client.bottom - client.top, dpi),
+        maximized: false,
+    })
+}
+
+/// 詳細設定・開いているページ（・`with_window` ならウィンドウの位置とサイズ）を保存する。
+/// 保存に失敗しても何も出さない（次回の起動が既定になるだけ）
+fn persist_ui_state(st: &State, with_window: bool) {
+    let Some(path) = st.ui_state_path.as_deref() else {
+        return;
+    };
+    let next = {
+        let model = st.model.borrow();
+        let mut next = st.saved.borrow().clone();
+        next.detail = model.detail;
+        // 「設定」（読み込み中・失敗）は保存しない（前回のページを残す）
+        let title = model
+            .sidebar
+            .iter()
+            .position(|p| *p == model.page)
+            .and_then(|i| model.sidebar_titles.get(i));
+        if let Some(key) = title.and_then(|t| native_ui_state::page_key(model.page, t)) {
+            next.page = Some(key);
         }
+        next
+    };
+    let mut next: UiState = next;
+    if with_window {
+        next.window = capture_window(st);
     }
-    let list = st.list.get();
-    let len = send(list, LB_GETTEXTLEN, item.itemID as usize, 0);
-    if len > 0 {
-        let mut buf = vec![0u16; len as usize + 1];
-        let n = send(
-            list,
-            LB_GETTEXT,
-            item.itemID as usize,
-            buf.as_mut_ptr() as isize,
-        );
-        buf.truncate(n.max(0) as usize);
-        let mut text_rect = RECT {
-            left: text_x,
-            top: fill.y,
-            right: fill_rect.right,
-            bottom: fill_rect.bottom,
-        };
-        unsafe {
-            let old = st
-                .fonts
-                .get()
-                .map(|f| SelectObject(hdc, HGDIOBJ(f.normal.0)));
-            SetBkMode(hdc, TRANSPARENT);
-            let color = if selected {
-                GetSysColor(COLOR_HIGHLIGHTTEXT)
-            } else {
-                GetSysColor(COLOR_WINDOWTEXT)
-            };
-            SetTextColor(hdc, COLORREF(color));
-            DrawTextW(
-                hdc,
-                &mut buf,
-                &mut text_rect,
-                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-            );
-            if let Some(old) = old {
-                SelectObject(hdc, old);
-            }
-        }
-    }
-    // キーボードでたどっているときの目印（選択の帯の内側に細い枠）
-    if item.itemState.0 & ODS_FOCUS.0 != 0 && item.itemState.0 & ODS_NOFOCUSRECT.0 == 0 {
-        let _ = unsafe { DrawFocusRect(hdc, &fill_rect) };
-    }
+    let _ = native_ui_state::save(path, &next);
+    *st.saved.borrow_mut() = next;
 }
 
 // ---- スクロール ----
@@ -842,6 +1109,7 @@ fn on_command(st: &State, id: i32, code: u32) {
                 model.errors.clear();
             }
             rebuild_sidebar(st);
+            persist_ui_state(st, false);
         }
         ids::UPDATE_CHECK if code == BN_CLICKED => start_update_check(st),
         ids::UPDATE_APPLY if code == BN_CLICKED => {
@@ -906,6 +1174,7 @@ fn select_page(st: &State) {
     }
     st.ui.borrow_mut().scroll = 0;
     rebuild_page(st);
+    persist_ui_state(st, false);
 }
 
 /// 設定項目のコントロールの通知

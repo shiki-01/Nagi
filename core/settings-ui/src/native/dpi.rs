@@ -1,16 +1,23 @@
 //! DPI・フォント・ダークモード（タイトルバーのみ）。
 
 use super::controls::wide;
-use windows::Win32::Foundation::{HWND, RECT};
+use crate::native_layout::Rect;
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DEFAULT_CHARSET, DeleteObject, HFONT, HGDIOBJ, LOGFONTW,
+    CreateFontIndirectW, DEFAULT_CHARSET, DeleteObject, GetDC, GetTextFaceW, HFONT, HGDIOBJ,
+    LOGFONTW, ReleaseDC, SelectObject,
+};
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::HiDpi::{
-    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
-    GetDpiForWindow, SetProcessDpiAwarenessContext, SystemParametersInfoForDpi,
+    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor,
+    GetDpiForSystem, GetDpiForWindow, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
+    SystemParametersInfoForDpi,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     NONCLIENTMETRICSW, SPI_GETHIGHCONTRAST, SPI_GETNONCLIENTMETRICS,
@@ -28,12 +35,17 @@ pub(super) struct Fonts {
     pub heading: HFONT,
     /// 節（グループ）の見出し（本文の 1.2 倍・セミボールド）
     pub section: HFONT,
+    /// サイドバーのアイコン（Segoe Fluent Icons / Segoe MDL2 Assets。どちらも無ければ `None`）
+    pub icon: Option<HFONT>,
 }
 
 impl Fonts {
     /// 破棄する（コントロールから外してから呼ぶこと）
     pub fn destroy(self) {
-        for f in [self.normal, self.heading, self.section] {
+        for f in [self.normal, self.heading, self.section]
+            .into_iter()
+            .chain(self.icon)
+        {
             let _ = unsafe { DeleteObject(HGDIOBJ(f.0)) };
         }
     }
@@ -135,7 +147,49 @@ pub(super) fn create_fonts(dpi: u32) -> Fonts {
         normal: unsafe { CreateFontIndirectW(&normal_font) },
         heading: unsafe { CreateFontIndirectW(&heading_font) },
         section: unsafe { CreateFontIndirectW(&section_font) },
+        icon: create_icon_font(dpi),
     }
+}
+
+/// アイコンのフォント。Windows 11 の Segoe Fluent Icons、無ければ Windows 10 の Segoe MDL2 Assets。
+/// フォントが無いと GDI は別のフォントに置き換えてしまうので、実際に選ばれた書体名で確かめる
+fn create_icon_font(dpi: u32) -> Option<HFONT> {
+    for face in ["Segoe Fluent Icons", "Segoe MDL2 Assets"] {
+        let logfont = LOGFONTW {
+            // 16px @96DPI
+            lfHeight: -((16 * dpi as i32 + 48) / 96),
+            lfWeight: 400,
+            lfCharSet: DEFAULT_CHARSET,
+            lfFaceName: face_name(face),
+            ..Default::default()
+        };
+        let font = unsafe { CreateFontIndirectW(&logfont) };
+        if font.is_invalid() {
+            continue;
+        }
+        if realized_face_is(font, face) {
+            return Some(font);
+        }
+        let _ = unsafe { DeleteObject(HGDIOBJ(font.0)) };
+    }
+    None
+}
+
+fn realized_face_is(font: HFONT, face: &str) -> bool {
+    let hdc = unsafe { GetDC(None) };
+    if hdc.is_invalid() {
+        return false;
+    }
+    let old = unsafe { SelectObject(hdc, HGDIOBJ(font.0)) };
+    let mut buf = [0u16; 64];
+    let n = unsafe { GetTextFaceW(hdc, Some(&mut buf)) };
+    unsafe {
+        SelectObject(hdc, old);
+        ReleaseDC(None, hdc);
+    }
+    // `GetTextFaceW` の戻り値は終端の NUL を含む文字数
+    let len = (n.max(1) as usize - 1).min(buf.len());
+    String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case(face)
 }
 
 /// ハイコントラストテーマが有効か（有効ならエラーも赤ではなくシステムの文字色にする）
@@ -157,7 +211,7 @@ pub(super) fn is_high_contrast() -> bool {
 }
 
 /// Windows のアプリのテーマがダークか（レジストリ。取れなければライト）
-fn apps_use_dark_theme() -> bool {
+pub(super) fn apps_use_dark_theme() -> bool {
     let key = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
     let value = wide("AppsUseLightTheme");
     let mut data: u32 = 1;
@@ -187,4 +241,55 @@ pub(super) fn apply_title_bar_theme(hwnd: HWND) {
             std::mem::size_of::<i32>() as u32,
         )
     };
+}
+
+/// 画面上の点 `(x, y)` に最も近いモニターの DPI（取れなければシステムの DPI）
+pub(super) fn monitor_dpi_at(x: i32, y: i32) -> u32 {
+    let monitor = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
+    let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+    let ok = !monitor.is_invalid()
+        && unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.is_ok();
+    if ok && dpi_x != 0 {
+        dpi_x
+    } else {
+        system_dpi()
+    }
+}
+
+unsafe extern "system" fn collect_work_area(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    data: LPARAM,
+) -> windows::core::BOOL {
+    // SAFETY: `work_areas` が渡した `Vec<Rect>` へのポインタ
+    let list = unsafe { &mut *(data.0 as *mut Vec<Rect>) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        let r = info.rcWork;
+        list.push(Rect {
+            x: r.left,
+            y: r.top,
+            w: r.right - r.left,
+            h: r.bottom - r.top,
+        });
+    }
+    true.into()
+}
+
+/// 全モニターの作業領域（タスクバーを除く。仮想スクリーン座標）
+pub(super) fn work_areas() -> Vec<Rect> {
+    let mut list: Vec<Rect> = Vec::new();
+    let _ = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect_work_area),
+            LPARAM(std::ptr::from_mut(&mut list) as isize),
+        )
+    };
+    list
 }

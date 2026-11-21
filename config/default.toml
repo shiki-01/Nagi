@@ -127,6 +127,14 @@ glide = false
 # false: スペースを足さない（既定）
 auto_space_alpha = false
 
+# 未入力のときの Space で入れるスペースの幅（Shift+Space はいつも反対の幅になる）
+# 何も入力していない状態（確定直後など）で Space を押したときの動作。変換中・入力中の Space は変換のまま
+# ひらがな・カタカナ・全角英数・半角カナのモードだけが対象。英数（半角英数）モードの Space は常に半角のままアプリへ渡る
+# "half": 半角スペース（既定。従来の動作）。Shift+Space で全角スペース
+# "full": 全角スペース。Shift+Space で半角スペース
+# "follow_mode": 入力モードに従う（ひらがな・カタカナ・全角英数は全角、半角カナは半角）。Shift+Space で反対
+space_width = "half"
+
 [input.auto_english]
 # 英語の自動判定
 # ローマ字のまま打った英単語（例: typescript）を、日本語入力を切り替えずに英語として入力できる
@@ -416,9 +424,19 @@ max_entries = 10000
 enabled = true
 
 [keymap]
-# キーマップのプリセット
-# "default" = 標準的な日本語入力キー配置（既定）
-preset = "default"
+# キーマップのプリセット（下の [keymap.composing] / [keymap.converting] に書いた個別の割当は、常にプリセットより優先される）
+# 変換中・入力中の割当は、どのプリセットでも次が共通（標準の割当）:
+#   F6 = ひらがな / F7 = 全角カタカナ / F8 = 半角カナ / F9 = 全角英数 / F10 = 半角英数（F9・F10 は連打で小文字 → 大文字 → 先頭大文字）
+#   Ctrl+K = カタカナ / 無変換 = 表記の循環（ひらがな → カタカナ → 半角カナ → 全角英数 → 半角英数）
+#   PageUp / PageDown = 候補のページ送り
+# "standard" = 標準的な日本語入力キー配置（既定。旧名 "default" も同じ）
+# "function_keys" = ファンクションキー重視。標準に加えて、Ctrl+K / Ctrl+N / Ctrl+P をアプリへ渡す（確定してから素通し）
+# "ctrl_letters" = Ctrl+文字キー重視。Ctrl+U = ひらがな / Ctrl+I = カタカナ / Ctrl+O = 半角カナ / Ctrl+P = 全角英数 /
+#   Ctrl+T = 半角英数 / Ctrl+G = 取消。Ctrl+P を使うので、変換中の前候補は ↑ と Shift+Space（Ctrl+N は次候補のまま）
+# "henkan_keys" = 変換/無変換キー重視。無変換 = 英数モード（入力中なら確定して切り替え）、変換 = 入力中は変換・変換中は
+#   次候補・未入力は再変換、英数モードで変換 = ひらがなモード
+# 知らない名前を書くと、行番号つきの警告を出して標準を使う
+preset = "standard"
 
 # ローマ字入力中（Composing）のキー上書き。キー仕様文字列 → Action 名
 # キー仕様: "Ctrl+j" のような "修飾+キー名" 形式（修飾: Ctrl/Shift/Alt/Meta、順不同）
@@ -432,6 +450,10 @@ preset = "default"
 # [keymap.composing]
 # "Ctrl+j" = "ToKatakana"
 
+# 使える Action 名の追加: ToHankakuKana（半角カナ）/ ToZenkakuAlnum（全角英数）/ ToHankakuAlnum（半角英数）/
+#   CycleForm（表記の循環）/ NextPage / PrevPage（候補のページ送り）/ ToggleLive（ライブ変換のオン・オフ）/
+#   ConvertSelection（選択した文節だけを再変換）/ CommitFocused（注目文節までを確定。別名 CommitPartial）
+# モード切替（SetMode）・文字の挿入は上書きできない（無変換キーなどのモード切替はプリセットが持つ）
 # 変換中（Converting）のキー上書き。上記に加えて MoveFocus:Left/Right、
 # ResizeSegment:Left/Right、ExtendSelection:Left/Right、SelectCand:1〜9、DeleteLearning が使える
 # 既定: 空（上書きなし）
@@ -457,3 +479,110 @@ auto_check = true
 # 次にアイコンが更新されたとき（モードの切り替えなど）に反映される。再起動は不要
 # 既定: "color"
 indicator_icon = "color"
+
+# ---- 変換 UI（候補ウィンドウ・通知・モード表示）----
+# 候補ウィンドウの見た目は「テンプレート」が土台を決め、下の項目を指定した部分だけがそれを上書きする
+# （明示指定が常にテンプレートに優先）。未指定（コメントアウト）の項目はテンプレートの値になる。
+# 長さの単位 dp は 96 DPI 基準の px で、画面の拡大率に合わせて拡大される。
+# 設定画面では、テンプレートは通常表示、下の詳細項目は「詳細設定を表示」で出る。
+# 値が範囲外・不明な場合は、他の設定と同じく読み込みエラー（行番号付きで通知され、以前の設定で動き続ける）。
+# ライト/ダークの切り替えと、ハイコントラスト（システムの色を最優先）には、どのテンプレートでも従う。
+# 1 ページの候補数は [conversion] の num_candidates。
+
+# 候補ウィンドウのテンプレート
+# "standard" = 標準（従来の見た目）
+# "compact"  = コンパクト（小さめの文字・狭い行間）
+# "spacious" = ゆったり（大きめの文字・広い余白・角丸・影・読みも表示）
+# "minimal"  = ミニマル（番号と候補のみ。注釈とページ表示を出さない）
+# "contrast" = くっきり（太い枠・高コントラストの配色・大きめの文字）
+# 既定: "standard"
+candidate_theme = "standard"
+
+# 文字の大きさの倍率（%）。通知・モード表示の文字にも効く。範囲: 60〜200
+# 既定: 未指定（テンプレート。標準は 100）
+# candidate_font_scale = 100
+
+# 候補 1 行の高さ（dp）。文字が収まらない大きさにはならない（自動で広がる）。範囲: 16〜64
+# 既定: 未指定（テンプレート。標準は 24）
+# candidate_row_height = 24
+
+# 左右の余白（dp）。範囲: 0〜32
+# 既定: 未指定（テンプレート。標準は 8）
+# candidate_padding = 8
+
+# ウィンドウの角の丸み（dp。0 で角丸なし）。範囲: 0〜16
+# 既定: 未指定（テンプレート。標準は 0）
+# candidate_corner_radius = 0
+
+# 影。"on" / "off"。背景を半透明（candidate_opacity < 100）にすると付かない
+# 既定: 未指定（テンプレート。標準は off）
+# candidate_shadow = "off"
+
+# 番号ラベル（数字キーで選ぶ番号）
+# "left" = 候補の左 / "right" = 右端 / "hidden" = 表示しない
+# 既定: 未指定（テンプレート。標準は left）
+# candidate_number = "left"
+
+# 注釈
+# "full" = 出所（学習・AI・辞書…）と、曖昧入力で補正した読み / "source" = 出所のみ / "none" = 表示しない
+# 既定: 未指定（テンプレート。標準は source）
+# candidate_annotation = "source"
+
+# 選択行の強調
+# "fill" = 行を塗りつぶす / "bar" = 左に細いバー / "outline" = 枠線
+# 既定: 未指定（テンプレート。標準は fill）
+# candidate_selection = "fill"
+
+# 背景の不透明度（%）。100 で不透明。ハイコントラスト時は常に不透明。範囲: 30〜100
+# 既定: 未指定（テンプレート。標準は 100）
+# candidate_opacity = 100
+
+# 配色
+# "system"   = システムのライト/ダークに従う（テンプレートの配色セットで）
+# "light"    = ライト固定 / "dark" = ダーク固定
+# "template" = テンプレート固有の配色で固定（システムの設定に関係なく）
+# ハイコントラスト時はどれを選んでもシステムの色を使う
+# 既定: 未指定（テンプレート。いずれも system）
+# candidate_color = "system"
+
+# 候補ウィンドウの最大幅（dp）。超える候補の末尾は「…」で省略する。範囲: 120〜1200
+# 既定: 未指定（テンプレート。標準は 800）
+# candidate_max_width = 800
+
+# ページ送りの表示（複数ページのときの「2/5」）
+# "footer" = 下部に表示 / "none" = 表示しない
+# 既定: 未指定（テンプレート。標準は footer）
+# candidate_page_indicator = "footer"
+
+# 入力中の文字列と候補ウィンドウの間隔（dp）。アプリごとの位置の補正
+# （%APPDATA%\Nagi\window-offsets.tsv）とは足し合わされる。範囲: 0〜40
+# 既定: 未指定（テンプレート。標準は 2）
+# candidate_gap = 2
+
+# 入力中の文字列（変換前・ライブ変換・予測）の下線。注目している文節は太い実線のまま。
+# "solid" = 実線 / "dot" = 点線 / "dash" = 破線。アプリによっては反映されない
+# 既定: 未指定（テンプレート。いずれも solid）
+# preedit_underline = "solid"
+
+# 通知（右下などに出る小さなメッセージ）を出しておく時間（秒）。範囲: 1〜30
+# 既定: 4
+toast_duration_sec = 4
+
+# 通知の表示位置（作業領域の隅）
+# "bottom_right" / "bottom_left" / "top_right" / "top_left" / "bottom_center" / "top_center"
+# 既定: "bottom_right"
+toast_position = "bottom_right"
+
+# 入力モードを切り替えたときに「あ / A」を一瞬表示するか
+# 既定: true
+mode_popup = true
+
+# モード表示を出しておく時間（ミリ秒）。範囲: 200〜5000
+# 既定: 1000
+mode_popup_duration_ms = 1000
+
+# モード表示の位置
+# "caret" = 入力位置（キャレット）の近く
+# "bottom_right" / "bottom_left" / "top_right" / "top_left" / "bottom_center" / "top_center" = 通知と同じ隅
+# 既定: "caret"
+mode_popup_position = "caret"

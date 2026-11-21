@@ -1,0 +1,210 @@
+# キーマップのプリセット（keymap.preset）と、利用者の上書きとの優先順位。ToggleLive・ConvertSelection
+
+- name: preset-ctrl-letters-converting-keys
+  config:
+    keymap: {preset: ctrl_letters}
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "Ctrl+i"
+      expect: {state: converting, segments: ["キョウ"]}
+    - key: "Ctrl+o"
+      expect: {segments: ["ｷｮｳ"]}
+    - key: "Ctrl+p"
+      expect: {segments: ["ｋｙｏｕ"]}
+    - key: "Ctrl+t"
+      expect: {segments: ["kyou"]}
+    - key: "Ctrl+u"
+      expect: {segments: ["きょう"]}
+    # Ctrl+G で取消（入力中へ戻る）、もう一度で入力を破棄
+    - key: "Ctrl+g"
+      expect: {state: composing, preedit: "きょう"}
+    - key: "Ctrl+g"
+      expect: {state: direct, preedit: ""}
+
+- name: preset-ctrl-letters-composing-keys
+  config:
+    keymap: {preset: ctrl_letters}
+  steps:
+    - {key: "a"}
+    - key: "Ctrl+o"
+      expect: {state: converting, segments: ["ｱ"]}
+
+- name: preset-ctrl-letters-ctrl-n-still-next-candidate-and-up-is-prev
+  config:
+    keymap: {preset: ctrl_letters}
+  backend: mock
+  mock:
+    sentences:
+      "あ":
+        - {reading: "あ", candidates: ["愛", "亜"]}
+  steps:
+    - {key: "a"}
+    - {key: "Space"}
+    - key: "Ctrl+n"
+      expect: {selected: 1, candidates_visible: true}
+    - key: "Up"
+      expect: {selected: 0}
+
+- name: preset-user-override-wins-over-preset
+  config:
+    keymap:
+      preset: ctrl_letters
+      composing: {"Ctrl+u": "ToKatakana"}
+  steps:
+    - {key: "a"}
+    - key: "Ctrl+u"
+      expect: {state: converting, segments: ["ア"]}
+
+- name: preset-function-keys-passes-ctrl-letters-to-app
+  config:
+    keymap: {preset: function_keys}
+  steps:
+    - {key: "a"}
+    - key: "Ctrl+k"
+      expect: {consumed: false, commit: "あ", state: direct}
+
+- name: preset-function-keys-keeps-f-keys
+  config:
+    keymap: {preset: function_keys}
+  steps:
+    - {key: "a"}
+    - key: "F7"
+      expect: {segments: ["ア"]}
+
+- name: preset-henkan-keys-muhenkan-commits-and-switches-to-alphanumeric
+  config:
+    keymap: {preset: henkan_keys}
+    extended_input_modes: true
+  steps:
+    - {key: "a"}
+    - key: "Muhenkan"
+      expect: {consumed: true, commit: "あ", mode: alphanumeric, result_mode: alphanumeric, state: direct}
+    # 英数モードの変換キーでひらがなモードへ
+    - key: "Henkan"
+      expect: {consumed: true, mode: hiragana, result_mode: hiragana}
+
+- name: preset-henkan-keys-henkan-converts
+  config:
+    keymap: {preset: henkan_keys}
+  backend: mock
+  mock:
+    sentences:
+      "あ":
+        - {reading: "あ", candidates: ["愛", "亜"]}
+  steps:
+    - {key: "a"}
+    - key: "Henkan"
+      expect: {state: converting, segments: ["愛"]}
+    - key: "Henkan"
+      expect: {candidates_visible: true, selected: 1}
+
+- name: preset-henkan-keys-henkan-in-direct-reconverts
+  config:
+    keymap: {preset: henkan_keys}
+  steps:
+    - key: "Henkan"
+      expect: {consumed: true}
+
+- name: preset-standard-henkan-in-composing-is-swallowed
+  steps:
+    - {key: "a"}
+    - key: "Henkan"
+      expect: {consumed: true, state: composing}
+
+- name: preset-default-alias-and-unknown-name-fall-back-to-standard
+  config:
+    keymap: {preset: bogus}
+  steps:
+    - {key: "a"}
+    - key: "F7"
+      expect: {segments: ["ア"]}
+
+- name: toggle-live-disables-live-conversion
+  config:
+    keymap:
+      composing: {"Ctrl+l": "ToggleLive"}
+  backend: mock
+  mock:
+    sentences:
+      "きょう":
+        - {reading: "きょう", candidates: ["今日"]}
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - action: live_convert
+      reading: "きょう"
+      expect: {preedit: "今日"}
+    # 切ると、表示中のライブ変換はひらがなに戻り、以後は変換されない
+    - key: "Ctrl+l"
+      expect: {consumed: true, preedit: "きょう", state: composing}
+    - action: live_convert
+      reading: "きょう"
+      expect: {preedit: "きょう"}
+    # もう一度で再開
+    - key: "Ctrl+l"
+      expect: {consumed: true}
+    - action: live_convert
+      reading: "きょう"
+      expect: {preedit: "今日"}
+
+- name: convert-selection-reconverts-range-and-otherwise-steps
+  config:
+    keymap:
+      converting: {"Ctrl+l": "ConvertSelection"}
+  backend: mock
+  mock:
+    sentences:
+      "きょうはいいてんき":
+        - {reading: "きょうは", candidates: ["今日は"]}
+        - {reading: "いいてんき", candidates: ["いい天気"]}
+    segments:
+      "きょうはいいてんき": ["今日は良い天気", "京は良い天気"]
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - {key: "h"}
+    - {key: "a"}
+    - {key: "i"}
+    - {key: "i"}
+    - {key: "t"}
+    - {key: "e"}
+    - {key: "n"}
+    - {key: "k"}
+    - {key: "i"}
+    - key: "Space"
+      expect: {state: converting, segments: ["今日は", "いい天気"]}
+    - key: "Ctrl+Shift+Right"
+      expect: {state: range_selecting}
+    - key: "Ctrl+l"
+      expect: {state: converting, segments: ["今日は良い天気"], candidates_visible: true}
+
+- name: commit-partial-is-an-alias-of-commit-focused
+  config:
+    keymap:
+      converting: {"Ctrl+l": "CommitPartial"}
+  backend: mock
+  mock:
+    sentences:
+      "きょうはいい":
+        - {reading: "きょうは", candidates: ["今日は"]}
+        - {reading: "いい", candidates: ["いい"]}
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - {key: "h"}
+    - {key: "a"}
+    - {key: "i"}
+    - {key: "i"}
+    - key: "Space"
+      expect: {state: converting}
+    - key: "Ctrl+l"
+      expect: {commit: "今日は", segments: ["いい"], state: converting}

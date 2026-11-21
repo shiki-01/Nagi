@@ -27,6 +27,7 @@ pub mod fuzzy_eval;
 pub mod fuzzy_stats;
 pub mod glide;
 pub mod install_data;
+pub mod keymap_tools;
 pub mod learning;
 pub mod misspell;
 pub mod pipeline;

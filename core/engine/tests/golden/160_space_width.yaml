@@ -1,0 +1,69 @@
+# 未入力のときの Space / Shift+Space（`input.space_width`）
+
+- name: space-half-default-passes-through
+  steps:
+    - key: "Space"
+      expect: {consumed: false, commit: null, state: direct}
+
+- name: shift-space-half-default-commits-fullwidth
+  steps:
+    - key: "Shift+Space"
+      expect: {consumed: true, commit: "　", state: direct}
+
+- name: space-full-commits-fullwidth-and-shift-inverts
+  config:
+    space_width: full
+  steps:
+    - key: "Space"
+      expect: {consumed: true, commit: "　"}
+    - key: "Shift+Space"
+      expect: {consumed: true, commit: " "}
+
+- name: space-follow-mode-is-fullwidth-in-hiragana
+  config:
+    space_width: follow_mode
+  steps:
+    - key: "Space"
+      expect: {consumed: true, commit: "　"}
+    - key: "Shift+Space"
+      expect: {consumed: true, commit: " "}
+
+- name: space-follow-mode-is-halfwidth-in-hankaku-katakana
+  config:
+    space_width: follow_mode
+    mode: hankaku_katakana
+  steps:
+    - key: "Space"
+      expect: {consumed: false, commit: null}
+    - key: "Shift+Space"
+      expect: {consumed: true, commit: "　"}
+
+- name: space-in-alphanumeric-always-passes-through
+  config:
+    space_width: full
+    mode: alphanumeric
+  steps:
+    - key: "Space"
+      expect: {consumed: false, commit: null}
+    - key: "Shift+Space"
+      expect: {consumed: false, commit: null}
+
+- name: space-full-does-not-change-composing-space
+  config:
+    space_width: full
+  steps:
+    - {key: "a"}
+    - key: "Space"
+      expect: {state: converting, commit: null}
+
+- name: space-full-after-commit-and-with-modifiers
+  config:
+    space_width: full
+  steps:
+    - {key: "a"}
+    - key: "Return"
+      expect: {commit: "あ"}
+    - key: "Space"
+      expect: {consumed: true, commit: "　"}
+    - key: "Ctrl+Space"
+      expect: {consumed: false, commit: null}

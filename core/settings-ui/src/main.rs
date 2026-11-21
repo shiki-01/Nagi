@@ -96,6 +96,10 @@ fn run_native(args: &Args) -> Result<(), String> {
         )),
         open_update: args.opens_update_page(),
         auto_check: args.auto_check,
+        ui_state_path: {
+            let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+            nagi_settings_ui::native_ui_state::default_path(std::env::consts::OS, &env)
+        },
     })
 }
 

@@ -1,0 +1,195 @@
+# 入力モードの拡充（カタカナ・半角カナ・全角英数・半角英数）。応答の `mode` は、対応を宣言した
+# クライアント（extended_input_modes: true）にだけ拡張モードで返り、宣言しないクライアントには
+# 基本の 2 つ（hiragana / alphanumeric）に読み替えて返す。`mode:`（期待）はコア内部のモード
+
+- name: katakana-key-sets-katakana-mode-and-types-katakana
+  config:
+    extended_input_modes: true
+  steps:
+    - key: "Katakana"
+      expect: {consumed: true, mode: katakana, result_mode: katakana}
+    - key: "k"
+      expect: {preedit: "k", pending: "k"}
+    - key: "a"
+      expect: {preedit: "カ", segments: ["カ"], readings: ["か"], state: composing}
+    - key: "Return"
+      expect: {commit: "カ", state: direct}
+
+- name: katakana-mode-is-hiragana-for-legacy-clients
+  steps:
+    - key: "Katakana"
+      expect: {consumed: true, mode: katakana, result_mode: null}
+    - {key: "a"}
+    - key: "Return"
+      expect: {commit: "ア"}
+    # かなキーでひらがなに戻る。旧クライアントの側では変化なし（モードの通知は出ない）
+    - key: "Kana"
+      expect: {mode: hiragana, result_mode: null}
+
+- name: katakana-mode-preedit-cursor-and-backspace
+  config:
+    mode: katakana
+  steps:
+    - {key: "k"}
+    - {key: "a"}
+    - {key: "s"}
+    - {key: "a"}
+    - key: "Left"
+      expect: {preedit: "カサ", cursor: 1}
+    - key: "BackSpace"
+      expect: {preedit: "サ", cursor: 0}
+
+- name: katakana-mode-space-still-converts
+  config:
+    mode: katakana
+  steps:
+    - {key: "a"}
+    - key: "Space"
+      expect: {state: converting}
+    - key: "Return"
+      expect: {commit: "あ"}
+
+- name: katakana-mode-keeps-literals-as-typed
+  config:
+    mode: katakana
+  steps:
+    - {key: "A"}
+    - {key: "b"}
+    - key: "Return"
+      expect: {commit: "Ab"}
+
+- name: hankaku-katakana-mode-types-halfwidth-kana
+  config:
+    mode: hankaku_katakana
+    extended_input_modes: true
+  steps:
+    - {key: "g"}
+    - {key: "a"}
+    - key: "n"
+      expect: {preedit: "ｶﾞn"}
+    - {key: "n"}
+    - key: "Return"
+      expect: {commit: "ｶﾞﾝ", state: direct}
+
+- name: hankaku-katakana-mode-cursor-moves-over-dakuten
+  config:
+    mode: hankaku_katakana
+  steps:
+    - {key: "g"}
+    - {key: "a"}
+    - {key: "k"}
+    - {key: "a"}
+    - key: "Left"
+      expect: {preedit: "ｶﾞｶ", cursor: 2}
+    - key: "Left"
+      expect: {cursor: 0}
+
+- name: zenkaku-alnum-mode-commits-fullwidth-directly
+  config:
+    mode: zenkaku_alnum
+    extended_input_modes: true
+  steps:
+    - key: "a"
+      expect: {consumed: true, commit: "ａ", state: direct, preedit: ""}
+    - key: "A"
+      expect: {consumed: true, commit: "Ａ"}
+    - key: "1"
+      expect: {commit: "１"}
+    - key: "!"
+      expect: {commit: "！"}
+    # スペースは入力モードに従う設定のときだけ全角（既定は半角のまま素通し）
+    - key: "Space"
+      expect: {consumed: false, commit: null}
+    - key: "Return"
+      expect: {consumed: false}
+
+- name: zenkaku-alnum-mode-space-follows-mode
+  config:
+    mode: zenkaku_alnum
+    space_width: follow_mode
+  steps:
+    - key: "Space"
+      expect: {consumed: true, commit: "　"}
+
+- name: zenkaku-alnum-mode-is-alphanumeric-for-legacy-clients
+  config:
+    mode: hiragana
+  steps:
+    - key: "Ctrl+Shift+;"
+      expect: {mode: alphanumeric, result_mode: alphanumeric}
+
+- name: hankaku-alnum-mode-passes-keys-through
+  config:
+    mode: hankaku_alnum
+  steps:
+    - key: "a"
+      expect: {consumed: false, state: direct}
+    - key: "Space"
+      expect: {consumed: false}
+    - key: "Ctrl+a"
+      expect: {consumed: false}
+
+- name: mode-keys-switch-from-any-new-mode
+  config:
+    mode: zenkaku_alnum
+    extended_input_modes: true
+  steps:
+    - key: "Kana"
+      expect: {mode: hiragana, result_mode: hiragana}
+    - key: "Eisu"
+      expect: {mode: alphanumeric, result_mode: alphanumeric}
+    - key: "Katakana"
+      expect: {mode: katakana, result_mode: katakana}
+    # 半角/全角キー: かな系 → 英数、英数系 → ひらがな
+    - key: "Zenkaku"
+      expect: {mode: alphanumeric, result_mode: alphanumeric}
+    - key: "Zenkaku"
+      expect: {mode: hiragana, result_mode: hiragana}
+
+- name: zenkaku-hankaku-from-katakana-goes-to-alphanumeric
+  config:
+    mode: katakana
+  steps:
+    - key: "Zenkaku"
+      expect: {mode: alphanumeric}
+
+- name: mode-switch-commits-katakana-preedit
+  config:
+    mode: katakana
+  steps:
+    - {key: "k"}
+    - {key: "a"}
+    - key: "Eisu"
+      expect: {commit: "カ", state: direct, mode: alphanumeric}
+
+- name: katakana-mode-disables-live-conversion
+  config:
+    mode: katakana
+  backend: mock
+  mock:
+    sentences:
+      "きょう":
+        - {reading: "きょう", candidates: ["今日"]}
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - action: live_convert
+      reading: "きょう"
+      expect: {preedit: "キョウ"}
+
+- name: katakana-key-in-composing-commits-then-switches
+  steps:
+    - {key: "a"}
+    - key: "Katakana"
+      expect: {consumed: true, commit: "あ", mode: katakana, state: direct}
+
+- name: hiragana-key-reconverts-only-in-hiragana-mode
+  config:
+    mode: katakana
+  steps:
+    - key: "Hiragana"
+      expect: {consumed: true, mode: hiragana}
+    - key: "Hiragana"
+      expect: {consumed: true, mode: hiragana}

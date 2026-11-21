@@ -3,15 +3,54 @@
 use serde::{Deserialize, Serialize};
 use typeshare::typeshare;
 
-/// 入力モード（ひらがな / 英数）
+/// 入力モード（ひらがな / 英数 / カタカナ / 半角カナ / 全角英数 / 半角英数）
+///
+/// `Hiragana` と `Alphanumeric` が基本の 2 つ。残りの 4 つは後から加えたもので、クライアントが
+/// `initialize` の `capabilities.extended_input_modes` で対応を宣言したときだけ、応答の `mode` に現れる
+/// （宣言しないクライアントには、`Katakana` / `HankakuKatakana` は `Hiragana`、`ZenkakuAlnum` /
+/// `HankakuAlnum` は `Alphanumeric` に読み替えて返す）。リクエスト側（`perform_action` の `set_mode`）は
+/// どのモードも受け付ける
 #[typeshare]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputMode {
     /// ひらがな入力モード
     Hiragana,
-    /// 英数入力モード
+    /// 英数入力モード（半角・直接入力。キーはアプリへ素通し）
     Alphanumeric,
+    /// 全角カタカナ入力モード（ローマ字入力 → カタカナ）
+    Katakana,
+    /// 半角カナ入力モード（ローマ字入力 → 半角カナ）
+    HankakuKatakana,
+    /// 全角英数入力モード（打った文字を全角で直接確定する）
+    ZenkakuAlnum,
+    /// 半角英数入力モード（現状は `Alphanumeric` と同じ動作。表示・OS のモード同期の区別用）
+    HankakuAlnum,
+}
+
+impl InputMode {
+    /// ローマ字をかなにする入力モードか（ひらがな・カタカナ・半角カナ）
+    pub const fn is_kana(self) -> bool {
+        matches!(
+            self,
+            InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana
+        )
+    }
+
+    /// キーをアプリへ素通しする入力モードか（英数・半角英数）
+    pub const fn is_passthrough(self) -> bool {
+        matches!(self, InputMode::Alphanumeric | InputMode::HankakuAlnum)
+    }
+
+    /// 旧クライアント向けの読み替え（かな系 → `Hiragana`、英数系 → `Alphanumeric`）。
+    /// 基本の 2 つはそのまま
+    pub const fn basic(self) -> InputMode {
+        match self {
+            InputMode::Hiragana | InputMode::Alphanumeric => self,
+            InputMode::Katakana | InputMode::HankakuKatakana => InputMode::Hiragana,
+            InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => InputMode::Alphanumeric,
+        }
+    }
 }
 
 /// セグメントの種別

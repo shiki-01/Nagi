@@ -15,8 +15,9 @@
 //! - `run`: HTTP サーバーのループ
 //! - `cli`: コマンドライン引数
 //! - `diag`: 実機の未確認項目をボタン一つで確認する診断（OS 非依存の判定 + Windows 依存部は `diag::sys`。`--diag` で CLI から実行）
-//! - `native_model` / `native_layout` / `native_worker` / `native_diag`: ネイティブ設定ウィンドウの OS 非依存部分
-//!   （画面モデル・レイアウト計算・バックエンド用ワーカースレッド・「動作確認」ページのモデル。`docs/decisions.md` H-104）
+//! - `native_model` / `native_layout` / `native_worker` / `native_diag` / `native_theme` / `native_ui_state`: ネイティブ設定ウィンドウの
+//!   OS 非依存部分（画面モデル・レイアウト計算・バックエンド用ワーカースレッド・「動作確認」ページのモデル・色と形・
+//!   UI 状態の保存。`docs/decisions.md` H-104・H-118）
 //! - `native`（Windows のみ）: Win32 のウィンドウ層。上の 3 つだけを見る
 
 pub mod assets;
@@ -30,6 +31,8 @@ pub mod native;
 pub mod native_diag;
 pub mod native_layout;
 pub mod native_model;
+pub mod native_theme;
+pub mod native_ui_state;
 pub mod native_worker;
 pub mod opener;
 pub mod run;

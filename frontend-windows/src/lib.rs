@@ -10,6 +10,7 @@
 //! - [`supervisor`]: エンジン子プロセスの指数バックオフ再起動と `restore_session`
 //! - [`session`]: セッションごとの最新 preedit の保持（`restore_session` の材料）
 //! - [`candidates`] — 候補ウィンドウのページング・行モデル・寸法・表示位置
+//! - [`candidate_style`] — 変換 UI（候補ウィンドウ・通知・モード表示・下線）の見た目: テンプレート + 明示値 → 実効値
 //! - [`environment`] — 電源・メモリ・負荷 → `set_environment` の params
 //! - [`context`] — 周辺テキスト・secure input → `set_context` の params
 //! - [`preedit_style`] — preedit の下線などの表示属性の描画計画
@@ -32,6 +33,7 @@
 #![forbid(unsafe_code)]
 
 pub mod anchor_wait;
+pub mod candidate_style;
 pub mod candidates;
 pub mod client;
 pub mod context;

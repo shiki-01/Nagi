@@ -20,6 +20,9 @@ use nagi_protocol::{
     CandidatesView, InputMode, KeyKind, ProcessKeyResult, StatusResult, TouchAction,
 };
 use nagi_windows::anchor_wait::{AnchorWait, ShowDecision, TimerOutcome};
+use nagi_windows::candidate_style::{
+    CandidateStyle, FOCUS_REFRESH_INTERVAL, ModePopupPosition, RefreshGate, SHOW_REFRESH_INTERVAL,
+};
 use nagi_windows::candidates::{CandidatePage, Point, Rect};
 use nagi_windows::context::{build_context, should_report_before_key};
 use nagi_windows::environment::{
@@ -34,8 +37,7 @@ use nagi_windows::status::{
 };
 use nagi_windows::supervisor::EngineEvent;
 use nagi_windows::toast::{
-    MODE_POPUP_DURATION, MODE_POPUP_ENABLED, ModeChangeCause, ModePopupInput, mode_popup_anchor,
-    mode_popup_text, should_show_mode_popup,
+    ModeChangeCause, ModePopupInput, mode_popup_anchor, mode_popup_text, should_show_mode_popup,
 };
 use nagi_windows::ui_element::CandidateListData;
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_POINTER, HWND, LPARAM, WPARAM};
@@ -276,8 +278,16 @@ pub(crate) struct Core {
     handoff: RefCell<HandoffCache<KeyOutcome>>,
     candidate_window: CandidateWindow,
     toast: ToastWindow,
-    /// モード切替ポップアップ（キャレット付近に 1 秒。通知とは別のウィンドウ）
+    /// モード切替ポップアップ（既定はキャレット付近に 1 秒。通知とは別のウィンドウ）
     mode_popup: ToastWindow,
+    /// 変換 UI の見た目（設定 `windows.candidate_*` などの実効値。H-119）
+    ui_style: Cell<CandidateStyle>,
+    /// 設定を一度でも読めたか（読めるまでは候補の表示のたびに再試行する）
+    ui_style_loaded: Cell<bool>,
+    /// 設定の読み直しの間引き
+    ui_style_gate: RefCell<RefreshGate>,
+    /// 直近に記録した、設定値の補正の理由（同じ内容を何度もログに出さない）
+    ui_style_notes: RefCell<Vec<String>>,
     /// UILess モードで `BeginUIElement` 中の候補リスト要素（出していなければ `None`）
     ui: RefCell<Option<UiSession>>,
     /// 直近の `BeginUIElement` でアプリが「自前で描く」と答えたか（モード切替ポップアップを出さない判断用。
@@ -350,6 +360,10 @@ impl Core {
             candidate_window: CandidateWindow::new(),
             toast: ToastWindow::new(),
             mode_popup: ToastWindow::new(),
+            ui_style: Cell::new(CandidateStyle::default()),
+            ui_style_loaded: Cell::new(false),
+            ui_style_gate: RefCell::new(RefreshGate::new()),
+            ui_style_notes: RefCell::new(Vec::new()),
             ui: RefCell::new(None),
             ui_less: Cell::new(false),
             user_mode_request: Cell::new(false),
@@ -670,7 +684,7 @@ impl Core {
         cause: ModeChangeCause,
     ) {
         let input = ModePopupInput {
-            enabled: MODE_POPUP_ENABLED,
+            enabled: self.ui_style.get().mode_popup,
             previous,
             mode,
             cause,
@@ -680,8 +694,16 @@ impl Core {
         if !should_show_mode_popup(&input) {
             return;
         }
-        // キャレットの矩形は文書を読んで測る（読めなければマウス位置）
         let text = mode_popup_text(mode);
+        // 画面の隅に出す設定なら、キャレットは測らない
+        if matches!(
+            self.ui_style.get().mode_popup_position,
+            ModePopupPosition::Corner(_)
+        ) {
+            self.present_mode_popup(text, None);
+            return;
+        }
+        // キャレットの矩形は文書を読んで測る（読めなければマウス位置）
         let Some(context) = self.focused_context() else {
             self.present_mode_popup(text, None);
             return;
@@ -702,16 +724,60 @@ impl Core {
         }
     }
 
-    /// 測ったキャレットの近くにポップアップを出す。測れなければマウス位置、それも無ければ出さない。
+    /// 設定の位置にポップアップを出す。キャレットの近くなら、測ったキャレットの近く（測れなければ
+    /// マウス位置、それも無ければ出さない）、画面の隅ならその隅。
     /// 測っている間にフォーカスが外れた・UILess になった場合も出さない
     fn present_mode_popup(&self, text: &str, caret: Option<Rect>) {
         if !self.focused.get() || self.ui_less.get() {
             return;
         }
+        if let ModePopupPosition::Corner(position) = self.ui_style.get().mode_popup_position {
+            self.mode_popup.show_corner(text, position);
+            return;
+        }
         let Some(anchor) = mode_popup_anchor(caret, win::try_cursor_position()) else {
             return;
         };
-        self.mode_popup.show_near(text, anchor, MODE_POPUP_DURATION);
+        self.mode_popup.show_near(text, anchor);
+    }
+
+    // ---- 変換 UI の見た目（設定） ----
+
+    /// 設定 `windows.candidate_*` などをコアから読み直し、候補ウィンドウ・通知・モード表示・下線へ渡す
+    /// （次の表示から効く。再起動は不要）。`min_interval` より短い間隔の呼び出しは何もしない。
+    /// 読めない（エンジン未接続など）・設定ファイルが壊れているときは、直前の見た目を保つ
+    fn refresh_ui_style(&self, min_interval: std::time::Duration) {
+        let now = Instant::now();
+        if !self.ui_style_gate.borrow().due(now, min_interval) {
+            return;
+        }
+        self.ui_style_gate.borrow_mut().record(now);
+        let Ok(snapshot) = self.engine.settings() else {
+            return;
+        };
+        if snapshot.error.is_some() {
+            return;
+        }
+        let (style, notes) = CandidateStyle::from_items(&snapshot.items);
+        self.ui_style_loaded.set(true);
+        if *self.ui_style_notes.borrow() != notes {
+            for note in &notes {
+                crate::tsf_log::log("ui", &format!("style note: {note}"));
+            }
+            *self.ui_style_notes.borrow_mut() = notes;
+        }
+        if style == self.ui_style.get() {
+            return;
+        }
+        crate::tsf_log::log(
+            "ui",
+            &format!("style changed theme={}", style.theme.as_str()),
+        );
+        self.ui_style.set(style);
+        self.candidate_window.set_style(style);
+        self.toast.set_style(style);
+        self.mode_popup.set_style(style);
+        render::set_normal_underline(style.underline);
     }
 
     // ---- 言語バー ----
@@ -812,6 +878,10 @@ impl Core {
     }
 
     fn show_candidates(&self, view: Option<&CandidatesView>) {
+        // 設定がまだ読めていなければ（エンジンの起動待ちなど）、表示のたびに試す
+        if !self.ui_style_loaded.get() {
+            self.refresh_ui_style(SHOW_REFRESH_INTERVAL);
+        }
         let page = view.and_then(CandidatePage::from_view);
         let data = view.and_then(CandidateListData::from_view);
         let (Some(page), Some(data)) = (page, data) else {
@@ -1404,6 +1474,8 @@ impl Core {
         // 入力する可能性のあるホストになったので、ここでエンジンを起動する（先読み。H-96）
         self.engine.ensure_started();
         let _ = self.engine.focus_in(&self.session_id);
+        // 設定画面で変えた見た目の反映（フォーカスを得るたびに、間引いて読み直す）
+        self.refresh_ui_style(FOCUS_REFRESH_INTERVAL);
     }
 
     /// フォーカス喪失をエンジンに伝え、確定文字列で composition を閉じる。`fallback` は composition の

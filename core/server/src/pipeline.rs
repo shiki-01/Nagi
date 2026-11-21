@@ -1521,17 +1521,30 @@ impl ConversionBackend for Pipeline {
             .collect()
     }
 
-    fn predict(&self, prefix: &str, left_context: &str, limit: usize) -> Vec<BackendCandidate> {
+    fn predict(
+        &self,
+        ctx: &CommitContext<'_>,
+        prefix: &str,
+        left_context: &str,
+        limit: usize,
+    ) -> Vec<BackendCandidate> {
         if prefix.is_empty() {
             return Vec::new();
         }
+        // 学習キャッシュ由来の候補は、学習を止める状況（設定・secure input・停止アプリ）では出さない
+        let learning_allowed = self.runtime.learning_allowed(ctx.secure_input, ctx.app_id);
         let overlay = self.runtime.overlay();
         let hash = context_hash(&tail(left_context, HASH_CONTEXT_CHARS));
         let mut out: Vec<BackendCandidate> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         let sup = self.suppressions();
-        for (surface, _score) in self.runtime.learn_predict(prefix, hash, limit) {
+        let learned = if learning_allowed {
+            self.runtime.learn_predict(prefix, hash, limit)
+        } else {
+            Vec::new()
+        };
+        for (surface, _score) in learned {
             // 学習の予測は読みが分からないので、抑制語は表記だけで照合する
             if !sup.contains_surface(&surface) && seen.insert(surface.clone()) {
                 out.push(BackendCandidate {

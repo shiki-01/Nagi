@@ -4,12 +4,15 @@
 //! 可変な値は `Cell` / `RefCell` に入れ、借用は短くして、借用中に Win32 を呼ばない。
 
 use super::dpi::Fonts;
+use crate::native_diag::BadgeKind;
 use crate::native_diag::DiagModel;
 use crate::native_layout::{Gap, PanelLayout, RowSpec};
 use crate::native_model::{Page, SettingsView};
+use crate::native_ui_state::UiState;
 use crate::native_worker::WorkerHandle;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use windows::Win32::Foundation::HWND;
 
 /// コントロールの役割
@@ -17,13 +20,13 @@ use windows::Win32::Foundation::HWND;
 pub(super) enum Role {
     /// ページの見出し（STATIC・大きいセミボールド）
     Heading,
-    /// 節（グループ）の見出し（STATIC・セミボールド）。直下に [`Role::Rule`]
+    /// 節（グループ）の見出し（STATIC・セミボールド）。直下のカードの見出し
     Section,
-    /// 節の見出しの下の区切り線（STATIC・`SS_ETCHEDHORZ`）
-    Rule,
+    /// 診断項目の結果行（オーナードローの STATIC。状態のバッジ + 項目名。文字は `[状態] 項目名`）
+    Result,
     /// 項目名・本文（STATIC）
     Title,
-    /// 真偽値（チェックボックス。項目名を兼ねる）
+    /// 真偽値（チェックボックス。トグルスイッチとして描く。項目名を兼ねる）
     Check,
     /// 説明（STATIC・小さめ・グレー）
     Desc,
@@ -35,10 +38,18 @@ pub(super) enum Role {
     Combo,
     /// 範囲の案内（STATIC・小さめ・グレー）
     Hint,
-    /// 「既定に戻す」
+    /// 「既定に戻す」（控えめなボタン）
     Reset,
     /// 固定の ID を持つボタン
     Button,
+}
+
+/// 診断の結果行の中身（オーナードローで描く）
+#[derive(Debug, Clone)]
+pub(super) struct ResultInfo {
+    pub badge: BadgeKind,
+    pub label: String,
+    pub title: String,
 }
 
 /// 右のパネルのコントロール 1 つ
@@ -54,6 +65,8 @@ pub(super) struct Ctl {
     pub text: String,
     /// ボタンの幅（dp）
     pub width_dp: i32,
+    /// 結果行（[`Role::Result`]）の中身
+    pub result: Option<ResultInfo>,
     /// 内容座標での上端と高さ（スクロール前。フォーカス時に見える位置へ動かすのに使う）
     pub content_y: i32,
     pub content_h: i32,
@@ -63,6 +76,8 @@ pub(super) struct Ctl {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RowFlags {
     pub has_input: bool,
+    /// カードの中の行か（見出し・節の見出しはカードの外）
+    pub in_card: bool,
     /// 前の行との間の空き
     pub gap: Gap,
 }
@@ -114,6 +129,10 @@ pub(super) struct Model {
     pub page: Page,
     /// 左の一覧の各行が指すページ
     pub sidebar: Vec<Page>,
+    /// 左の一覧の各行の表示名（`sidebar` と同じ並び。ページの保存・アイコンの選択に使う）
+    pub sidebar_titles: Vec<String>,
+    /// 前回開いていたページ（カテゴリは設定を読み込めてから戻すため、読み込みまで持ち越す）
+    pub wanted_page: Option<String>,
     /// 項目ごとのエラー（キー → メッセージ）
     pub errors: HashMap<String, String>,
     pub update: UpdateUi,
@@ -138,10 +157,19 @@ pub(super) struct State {
     pub ui: RefCell<PageUi>,
     pub status_is_error: Cell<bool>,
     pub rebuild_posted: Cell<bool>,
+    /// UI の状態の保存先（`None` なら保存しない）
+    pub ui_state_path: Option<PathBuf>,
+    /// 最後に読み込んだ・保存した UI の状態（ウィンドウの位置の持ち越しに使う）
+    pub saved: RefCell<UiState>,
 }
 
 impl State {
-    pub fn new(start_page: Page) -> Self {
+    pub fn new(
+        start_page: Page,
+        saved: UiState,
+        wanted_page: Option<String>,
+        ui_state_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             hwnd: Cell::default(),
             list: Cell::default(),
@@ -157,9 +185,11 @@ impl State {
             model: RefCell::new(Model {
                 phase: Phase::Loading,
                 view: None,
-                detail: false,
+                detail: saved.detail,
                 page: start_page,
                 sidebar: Vec::new(),
+                sidebar_titles: Vec::new(),
+                wanted_page,
                 errors: HashMap::new(),
                 update: UpdateUi::default(),
                 diag: DiagModel::default(),
@@ -168,6 +198,8 @@ impl State {
             ui: RefCell::new(PageUi::default()),
             status_is_error: Cell::new(false),
             rebuild_posted: Cell::new(false),
+            ui_state_path,
+            saved: RefCell::new(saved),
         }
     }
 }

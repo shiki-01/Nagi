@@ -10,6 +10,7 @@ pub mod engine;
 pub mod ir;
 pub mod kana;
 pub mod keymap;
+pub mod keymap_info;
 pub mod keys;
 pub mod observer;
 pub mod touch;
@@ -21,10 +22,11 @@ pub use backend::{
     KanaBackend, MockBackend, TypingHint,
 };
 pub use engine::{
-    AlnumWidth, AutoEnglishMode, Engine, EngineConfig, InitialView, SessionSnapshot, StateKind,
-    SymbolPosition,
+    AlnumWidth, AutoEnglishMode, Engine, EngineConfig, InitialView, SessionSnapshot, SpaceWidth,
+    StateKind, SymbolPosition,
 };
 pub use ir::{Candidate, CandidateSet, CursorPos, Preedit, Segment};
-pub use keymap::{KeyContext, KeyMap};
+pub use keymap::{KeyContext, KeyMap, Preset, action_spec, parse_action};
+pub use keymap_info::{BindingInput, assignable_actions, preset_infos, validate_bindings};
 pub use keys::{KeyParseError, key_from_text, parse_key};
 pub use observer::{CommitContext, CommitObserver, CommittedSegment};

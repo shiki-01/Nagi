@@ -1,0 +1,233 @@
+# F6〜F10・無変換キーによる表記の切り替え（入力中・変換中。F9 / F10 は連打で 小文字 → 大文字 → 先頭大文字）
+
+- name: form-f7-then-f8-then-f6-from-composing
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "F7"
+      expect: {state: converting, segments: ["キョウ"], readings: ["きょう"], candidates_visible: false}
+    - key: "F8"
+      expect: {state: converting, segments: ["ｷｮｳ"], readings: ["きょう"]}
+    # 同じキーを続けても半角カナのまま
+    - key: "F8"
+      expect: {segments: ["ｷｮｳ"]}
+    - key: "F6"
+      expect: {segments: ["きょう"]}
+    - key: "Return"
+      expect: {commit: "きょう", state: direct}
+
+- name: form-f8-direct-from-composing
+  steps:
+    - {key: "p"}
+    - {key: "a"}
+    - {key: "s"}
+    - {key: "o"}
+    - {key: "k"}
+    - {key: "o"}
+    - {key: "n"}
+    - {key: "n"}
+    - key: "F8"
+      expect: {state: converting, segments: ["ﾊﾟｿｺﾝ"], readings: ["ぱそこん"]}
+    - key: "Return"
+      expect: {commit: "ﾊﾟｿｺﾝ", state: direct}
+
+- name: form-f9-cycles-case-in-fullwidth
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "F9"
+      expect: {state: converting, segments: ["ｋｙｏｕ"], readings: ["きょう"]}
+    - key: "F9"
+      expect: {segments: ["ＫＹＯＵ"]}
+    - key: "F9"
+      expect: {segments: ["Ｋｙｏｕ"]}
+    - key: "F9"
+      expect: {segments: ["ｋｙｏｕ"]}
+    - key: "Return"
+      expect: {commit: "ｋｙｏｕ", state: direct}
+
+- name: form-f10-cycles-case-in-halfwidth
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "F10"
+      expect: {segments: ["kyou"], readings: ["きょう"], kinds: ["japanese"]}
+    - key: "F10"
+      expect: {segments: ["KYOU"]}
+    - key: "F10"
+      expect: {segments: ["Kyou"]}
+    - key: "F10"
+      expect: {segments: ["kyou"]}
+
+- name: form-f9-f10-switch-width-keeping-case
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "F9"
+      expect: {segments: ["ｋｙｏｕ"]}
+    - key: "F9"
+      expect: {segments: ["ＫＹＯＵ"]}
+    # 全角の大文字 → 半角にすると、同じ大文字小文字のまま
+    - key: "F10"
+      expect: {segments: ["KYOU"]}
+    - key: "F9"
+      expect: {segments: ["ＫＹＯＵ"]}
+
+- name: form-f9-after-space-conversion
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "Space"
+      expect: {state: converting}
+    - key: "F9"
+      expect: {segments: ["ｋｙｏｕ"], candidates_visible: false}
+    # Space で候補を開くと、いまの表記が先頭から始まる
+    - key: "Space"
+      expect: {candidates_visible: true}
+
+- name: form-literal-segment-f9-f10
+  steps:
+    - {key: "H"}
+    - {key: "e"}
+    - {key: "l"}
+    - {key: "l"}
+    - {key: "o"}
+    - key: "F9"
+      expect: {state: converting, segments: ["ｈｅｌｌｏ"], readings: ["Hello"], kinds: ["literal"]}
+    - key: "F10"
+      expect: {segments: ["hello"]}
+    - key: "F10"
+      expect: {segments: ["HELLO"]}
+    - key: "F10"
+      expect: {segments: ["Hello"]}
+
+- name: form-f9-focused-segment-uses-its-own-romaji
+  backend: mock
+  mock:
+    sentences:
+      "きょうはいいてんき":
+        - {reading: "きょうは", candidates: ["今日は", "京は"]}
+        - {reading: "いいてんき", candidates: ["いい天気"]}
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - {key: "h"}
+    - {key: "a"}
+    - {key: "i"}
+    - {key: "i"}
+    - {key: "t"}
+    - {key: "e"}
+    - {key: "n"}
+    - {key: "k"}
+    - {key: "i"}
+    - key: "Space"
+      expect: {segments: ["今日は", "いい天気"], focus: 0}
+    - key: "Right"
+      expect: {focus: 1}
+    - key: "F9"
+      expect: {segments: ["今日は", "ｉｉｔｅｎｋｉ"], focus: 1}
+    - key: "F10"
+      expect: {segments: ["今日は", "iitenki"]}
+    - key: "F7"
+      expect: {segments: ["今日は", "イイテンキ"]}
+    - key: "Return"
+      expect: {commit: "今日はイイテンキ"}
+
+- name: form-f8-f9-in-range-selection
+  backend: mock
+  mock:
+    sentences:
+      "きょうはいいてんき":
+        - {reading: "きょうは", candidates: ["今日は"]}
+        - {reading: "いいてんき", candidates: ["いい天気"]}
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - {key: "h"}
+    - {key: "a"}
+    - {key: "i"}
+    - {key: "i"}
+    - {key: "t"}
+    - {key: "e"}
+    - {key: "n"}
+    - {key: "k"}
+    - {key: "i"}
+    - key: "Space"
+      expect: {state: converting}
+    - key: "Ctrl+Shift+Right"
+      expect: {state: range_selecting}
+    - key: "F9"
+      expect: {state: converting, segments: ["ｋｙｏｕｈａｉｉｔｅｎｋｉ"], readings: ["きょうはいいてんき"]}
+    - key: "F8"
+      expect: {segments: ["ｷｮｳﾊｲｲﾃﾝｷ"]}
+
+- name: form-f9-without-romaji-keeps-reading
+  # かなを直接入力した（ローマ字の対応が無い）ときは英数にできない
+  steps:
+    - key: {text: "あ"}
+    - key: "F9"
+      expect: {state: converting, segments: ["あ"], readings: ["あ"]}
+
+- name: form-ctrl-modified-f-keys-are-not-forms
+  steps:
+    - {key: "a"}
+    - key: "Ctrl+F9"
+      expect: {consumed: true, state: composing, preedit: "あ"}
+    - key: "Alt+F8"
+      expect: {consumed: true, state: composing, preedit: "あ"}
+
+- name: muhenkan-cycles-forms-in-composing
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "Muhenkan"
+      expect: {state: converting, segments: ["キョウ"]}
+    - key: "Muhenkan"
+      expect: {segments: ["ｷｮｳ"]}
+    - key: "Muhenkan"
+      expect: {segments: ["ｋｙｏｕ"]}
+    - key: "Muhenkan"
+      expect: {segments: ["kyou"]}
+    - key: "Muhenkan"
+      expect: {segments: ["きょう"]}
+    - key: "Muhenkan"
+      expect: {segments: ["キョウ"]}
+
+- name: muhenkan-from-kanji-conversion-goes-to-hiragana
+  backend: mock
+  mock:
+    sentences:
+      "きょう":
+        - {reading: "きょう", candidates: ["今日"]}
+  steps:
+    - {key: "k"}
+    - {key: "y"}
+    - {key: "o"}
+    - {key: "u"}
+    - key: "Space"
+      expect: {segments: ["今日"]}
+    - key: "Muhenkan"
+      expect: {segments: ["きょう"]}
+
+- name: muhenkan-in-direct-toggles-mode
+  steps:
+    - key: "Muhenkan"
+      expect: {consumed: true, mode: alphanumeric, state: direct, result_mode: alphanumeric}
+    - key: "Muhenkan"
+      expect: {consumed: true, mode: hiragana, result_mode: hiragana}

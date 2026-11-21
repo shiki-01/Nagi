@@ -120,8 +120,20 @@ impl Preedit {
             // surface == reading なら文字数どおり
             let reading_len = seg.reading.chars().count();
             let offset = self.cursor.offset;
+            let head_reading: String = seg.reading.chars().take(offset).collect();
             if seg.surface == seg.reading {
                 let head: String = seg.surface.chars().take(offset).collect();
+                starts[self.cursor.segment] + utf16::utf16_len(&head)
+            } else if seg.surface == crate::kana::to_katakana(&seg.reading) {
+                // カタカナのモードの入力中の表示（読みと 1 文字ずつ対応する）
+                let head = crate::kana::to_katakana(&head_reading);
+                starts[self.cursor.segment] + utf16::utf16_len(&head)
+            } else if seg.surface
+                == nagi_rewriter::to_halfwidth_katakana(&crate::kana::to_katakana(&seg.reading))
+            {
+                // 半角カナのモードの入力中の表示（濁点・半濁点は半角では 2 文字になる）
+                let head =
+                    nagi_rewriter::to_halfwidth_katakana(&crate::kana::to_katakana(&head_reading));
                 starts[self.cursor.segment] + utf16::utf16_len(&head)
             } else if offset * 2 < reading_len {
                 starts[self.cursor.segment]

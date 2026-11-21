@@ -495,6 +495,25 @@ fn predict_does_nothing_when_backend_has_no_predictions() {
 }
 
 #[test]
+fn predict_is_hidden_while_secure_input_is_active() {
+    let backend = MockBackend::new().with_predictions("きょ", vec!["今日"]);
+    let mut e = Engine::new(Arc::new(backend), EngineConfig::default());
+    e.set_context(
+        "s",
+        &SetContextParams {
+            session_id: "s".into(),
+            surrounding_text: None,
+            app_id: None,
+            secure_input: Some(true),
+        },
+    );
+    type_str(&mut e, "s", "kyo");
+    press(&mut e, "s", "Tab");
+    // secure input 中は予測を開かない（入力中のまま）
+    assert_eq!(e.snapshot("s").unwrap().state, StateKind::Composing);
+}
+
+#[test]
 fn predict_respects_min_chars() {
     let backend = MockBackend::new().with_predictions("あ", vec!["亜"]);
     let mut e = Engine::new(

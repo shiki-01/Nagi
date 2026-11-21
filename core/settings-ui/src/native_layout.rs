@@ -35,6 +35,12 @@ pub fn scale(dp: i32, dpi: u32) -> i32 {
     i32::try_from((i64::from(dp) * dpi + 48).div_euclid(96)).unwrap_or(i32::MAX)
 }
 
+/// px → dp（[`scale`] の逆。四捨五入）。ウィンドウの大きさを DPI によらない形で保存するのに使う
+pub fn unscale(px: i32, dpi: u32) -> i32 {
+    let dpi = i64::from(dpi.max(1));
+    i32::try_from((i64::from(px) * 96 + dpi / 2).div_euclid(dpi)).unwrap_or(i32::MAX)
+}
+
 /// 最小のクライアント領域の幅（dp）
 pub const MIN_CLIENT_W: i32 = 760;
 /// 最小のクライアント領域の高さ（dp）
@@ -44,8 +50,8 @@ pub const INITIAL_CLIENT_W: i32 = 880;
 /// 初期のクライアント領域の高さ（dp）
 pub const INITIAL_CLIENT_H: i32 = 620;
 
-/// 区切り線の太さ（px。DPI によらず 2px。`SS_ETCHEDHORZ` / `SS_ETCHEDVERT` の描画の太さ）
-pub const RULE_PX: i32 = 2;
+/// 区切り線の太さ（px。DPI によらず 1px。オーナードローで描く）
+pub const RULE_PX: i32 = 1;
 
 /// サイドバーの幅
 const SIDEBAR_W: i32 = 200;
@@ -57,6 +63,14 @@ pub const SIDEBAR_ITEM_H: i32 = 36;
 pub const SIDEBAR_ITEM_INSET: i32 = 8;
 /// サイドバー項目の文字の左余白（選択の塗りの左端から）
 pub const SIDEBAR_TEXT_PAD: i32 = 12;
+/// サイドバー項目のアイコン欄の幅（アイコンの文字の中心をこの幅の中央に置く）
+pub const SIDEBAR_ICON_W: i32 = 20;
+/// アイコンと文字の間隔
+pub const SIDEBAR_ICON_GAP: i32 = 8;
+/// 選択中の項目の左端に付けるアクセントの印の幅・高さ
+pub const SIDEBAR_BAR_W: i32 = 4;
+/// 選択中の項目の左端に付けるアクセントの印の高さ
+pub const SIDEBAR_BAR_H: i32 = 16;
 /// フッター（区切り線を含む）の高さ
 const FOOTER_H: i32 = 56;
 /// フッターの左右の余白
@@ -69,6 +83,8 @@ const FOOTER_GAP: i32 = 16;
 const PANEL_PAD: i32 = 24;
 /// 行の中の段の間隔
 const LINE_GAP: i32 = 4;
+/// カード（項目グループの枠）の内側の余白（上下左右）
+pub const CARD_PAD: i32 = 16;
 /// 入力欄・ボタンの高さ
 pub const CONTROL_H: i32 = 28;
 /// 入力欄・コンボボックスの幅（すべての項目で同じ）
@@ -142,6 +158,11 @@ pub fn gap_between(prev: Option<RowKind>, this: RowKind) -> Gap {
         (Some(Text | Desc | Error | Buttons), Buttons) => Gap::Tight,
         _ => Gap::Row,
     }
+}
+
+/// その種類の行をカード（薄い枠 + 角丸の背景）の中に置くか。見出しと節の見出しはカードの外
+pub fn row_in_card(kind: RowKind) -> bool {
+    !matches!(kind, RowKind::Heading | RowKind::Section)
 }
 
 /// ウィンドウ全体の部品の配置
@@ -233,9 +254,13 @@ pub fn frame_layout(client_w: i32, client_h: i32, dpi: u32) -> FrameLayout {
 /// すべての項目で、入力欄は同じ左端・同じ幅、「既定に戻す」は同じ右端の列に揃える。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Columns {
-    /// 内容の左端
+    /// カードの左端（ページの見出し・節の見出しもここに揃える）
+    pub card_x: i32,
+    /// カードの幅（見出しの折り返し幅）
+    pub card_w: i32,
+    /// 内容の左端（カードの内側）
     pub x: i32,
-    /// 内容の幅（見出し・ラベル・説明・エラーの折り返し幅）
+    /// 内容の幅（ラベル・説明・エラーの折り返し幅。カードの内側）
     pub width: i32,
     /// 入力欄の幅
     pub control_w: i32,
@@ -253,7 +278,9 @@ pub struct Columns {
 
 /// 列を求める
 pub fn columns(panel_client_w: i32, dpi: u32) -> Columns {
-    let pad = scale(PANEL_PAD, dpi);
+    let outer = scale(PANEL_PAD, dpi);
+    let card_pad = scale(CARD_PAD, dpi);
+    let pad = outer + card_pad;
     let width = (panel_client_w - 2 * pad).max(scale(120, dpi));
     let control_w = scale(CONTROL_W, dpi).min(width);
     let reset_w = scale(RESET_W, dpi);
@@ -261,6 +288,8 @@ pub fn columns(panel_client_w: i32, dpi: u32) -> Columns {
     let hint_x = pad + control_w + gap;
     let reset_x = (pad + width - reset_w).max(hint_x);
     Columns {
+        card_x: outer,
+        card_w: width + 2 * card_pad,
         x: pad,
         width,
         control_w,
@@ -277,10 +306,10 @@ pub fn columns(panel_client_w: i32, dpi: u32) -> Columns {
 pub struct RowSpec {
     /// 前の行との間の空き
     pub gap: Gap,
+    /// カードの中の行か（連続する行が 1 枚のカードになる）
+    pub in_card: bool,
     /// ラベル・見出し（チェックボックスのときはそれ全体）の高さ
     pub title_h: i32,
-    /// 見出しの下の区切り線の高さ
-    pub rule_h: i32,
     /// 説明の高さ
     pub desc_h: i32,
     /// 入力欄・ボタンの行の高さ
@@ -296,8 +325,6 @@ pub struct RowLayout {
     pub top: i32,
     /// ラベルの上端
     pub title_y: i32,
-    /// 区切り線の上端
-    pub rule_y: i32,
     /// 説明の上端
     pub desc_y: i32,
     /// 入力欄の行の上端
@@ -308,24 +335,57 @@ pub struct RowLayout {
     pub height: i32,
 }
 
+/// カード 1 枚の縦の範囲（内容座標。スクロール前の y）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardSpan {
+    /// 上端
+    pub top: i32,
+    /// 下端（含まない）
+    pub bottom: i32,
+}
+
 /// パネル全体の配置
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelLayout {
     /// 各行
     pub rows: Vec<RowLayout>,
+    /// カード（`in_card` の行が連続する範囲ごとに 1 枚）
+    pub cards: Vec<CardSpan>,
+    /// カードの中の項目と項目の間に引く薄い区切りの y（項目の間の空きの中央）
+    pub dividers: Vec<i32>,
     /// 内容の高さ（上下の余白を含む。スクロール範囲の元）
     pub content_height: i32,
 }
 
-/// 行を縦に積む。部品が無い（高さ 0 の）段は詰め、段の間に [`LINE_GAP`] を入れる
+/// 行を縦に積む。部品が無い（高さ 0 の）段は詰め、段の間に [`LINE_GAP`] を入れる。
+/// `in_card` の行が連続する範囲は 1 枚のカードにし、上下に [`CARD_PAD`] の余白を取る
+/// （前の行との間の空きは、カードの外枠までの空きになる）
 pub fn layout_rows(rows: &[RowSpec], dpi: u32) -> PanelLayout {
     let pad = scale(PANEL_PAD, dpi);
+    let card_pad = scale(CARD_PAD, dpi);
     let line_gap = scale(LINE_GAP, dpi);
     let mut y = pad;
     let mut out = Vec::with_capacity(rows.len());
+    let mut cards: Vec<CardSpan> = Vec::new();
+    let mut dividers = Vec::new();
+    let mut open: Option<i32> = None;
     for (n, spec) in rows.iter().enumerate() {
         if n > 0 {
-            y += gap_px(spec.gap, dpi);
+            let gap = gap_px(spec.gap, dpi);
+            if open.is_some() && spec.in_card {
+                // 同じカードの中の項目の間: 項目と項目の間だけ区切りを引く
+                if spec.gap == Gap::Row {
+                    dividers.push(y + gap / 2);
+                }
+            } else if let Some(top) = open.take() {
+                y += card_pad;
+                cards.push(CardSpan { top, bottom: y });
+            }
+            y += gap;
+        }
+        if spec.in_card && open.is_none() {
+            open = Some(y);
+            y += card_pad;
         }
         let top = y;
         let mut place = |h: i32| -> i32 {
@@ -337,34 +397,32 @@ pub fn layout_rows(rows: &[RowSpec], dpi: u32) -> PanelLayout {
             at
         };
         let title_y = place(spec.title_h);
-        let rule_y = place(spec.rule_h);
         let desc_y = place(spec.desc_h);
         let control_y = place(spec.control_h);
         let error_y = place(spec.error_h);
-        let any = [
-            spec.title_h,
-            spec.rule_h,
-            spec.desc_h,
-            spec.control_h,
-            spec.error_h,
-        ]
-        .iter()
-        .any(|h| *h > 0);
+        let any = [spec.title_h, spec.desc_h, spec.control_h, spec.error_h]
+            .iter()
+            .any(|h| *h > 0);
         if any {
             y -= line_gap; // 最後の段の下の隙間は行の高さに含めない
         }
         out.push(RowLayout {
             top,
             title_y,
-            rule_y,
             desc_y,
             control_y,
             error_y,
             height: y - top,
         });
     }
+    if let Some(top) = open {
+        y += card_pad;
+        cards.push(CardSpan { top, bottom: y });
+    }
     PanelLayout {
         rows: out,
+        cards,
+        dividers,
         content_height: y + pad,
     }
 }
@@ -437,8 +495,23 @@ pub fn sidebar_item_height(dpi: u32) -> i32 {
     scale(SIDEBAR_ITEM_H, dpi)
 }
 
-/// サイドバー項目の描画領域 `item`（項目の全体）から、選択の塗り・文字の左端を求める
-pub fn sidebar_item_parts(item: Rect, dpi: u32) -> (Rect, i32) {
+/// サイドバー 1 項目の部品の位置（px）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidebarParts {
+    /// 選択・ホバーの丸みのある帯
+    pub fill: Rect,
+    /// 選択中だけ左端に付けるアクセントの印
+    pub bar: Rect,
+    /// アイコン欄（アイコンの文字をこの中央に置く）
+    pub icon: Rect,
+    /// アイコンがあるときの文字の左端
+    pub text_x: i32,
+    /// アイコンが無いときの文字の左端
+    pub text_x_no_icon: i32,
+}
+
+/// サイドバー項目の描画領域 `item`（項目の全体）から、帯・アクセントの印・アイコン・文字の位置を求める
+pub fn sidebar_item_parts(item: Rect, dpi: u32) -> SidebarParts {
     let inset = scale(SIDEBAR_ITEM_INSET, dpi);
     let v = scale(2, dpi);
     let fill = Rect {
@@ -447,7 +520,27 @@ pub fn sidebar_item_parts(item: Rect, dpi: u32) -> (Rect, i32) {
         w: (item.w - 2 * inset).max(0),
         h: (item.h - 2 * v).max(0),
     };
-    (fill, fill.x + scale(SIDEBAR_TEXT_PAD, dpi))
+    let bar_h = scale(SIDEBAR_BAR_H, dpi).min(fill.h);
+    let bar = Rect {
+        x: fill.x,
+        y: fill.y + (fill.h - bar_h) / 2,
+        w: scale(SIDEBAR_BAR_W, dpi).min(fill.w),
+        h: bar_h,
+    };
+    let text_x_no_icon = fill.x + scale(SIDEBAR_TEXT_PAD, dpi);
+    let icon = Rect {
+        x: text_x_no_icon,
+        y: fill.y,
+        w: scale(SIDEBAR_ICON_W, dpi),
+        h: fill.h,
+    };
+    SidebarParts {
+        fill,
+        bar,
+        icon,
+        text_x: icon.x + icon.w + scale(SIDEBAR_ICON_GAP, dpi),
+        text_x_no_icon,
+    }
 }
 
 #[cfg(test)]
@@ -471,6 +564,16 @@ mod tests {
             last = v;
         }
         let _ = scale(10, 0); // DPI 0 でも落ちない
+    }
+
+    #[test]
+    fn unscale_inverts_scale() {
+        for dpi in DPIS {
+            for dp in [0, 1, 7, 100, 760, 880, 1000] {
+                assert_eq!(unscale(scale(dp, dpi), dpi), dp, "dp={dp} dpi={dpi}");
+            }
+        }
+        let _ = unscale(10, 0);
     }
 
     #[test]
@@ -567,9 +670,9 @@ mod tests {
         for dpi in DPIS {
             let (w, h) = initial_client_size(dpi);
             let f = frame_layout(w, h, dpi);
-            // ステータスの左端 = パネル内容の左端
+            // ステータスの左端 = パネルのカードの左端
             let cols = columns(f.panel.w, dpi);
-            assert_eq!(f.status.x, f.panel.x + cols.x);
+            assert_eq!(f.status.x, f.panel.x + cols.card_x);
             // 「閉じる」の右端の余白 = 詳細設定の左の余白
             assert_eq!(w - (f.close.x + f.close.w), f.detail_check.x);
             // 詳細設定はサイドバーの列に収まる
@@ -607,6 +710,11 @@ mod tests {
             SIDEBAR_ITEM_H,
             SIDEBAR_ITEM_INSET,
             SIDEBAR_TEXT_PAD,
+            SIDEBAR_ICON_W,
+            SIDEBAR_ICON_GAP,
+            SIDEBAR_BAR_W,
+            SIDEBAR_BAR_H,
+            CARD_PAD,
             FOOTER_H,
             FOOTER_PAD,
             FOOTER_GAP,
@@ -636,7 +744,10 @@ mod tests {
             let (min_w, min_h) = min_client_size(dpi);
             let panel_w = frame_layout(min_w, min_h, dpi).panel.w;
             let c = columns(panel_w, dpi);
-            assert!(c.x > 0);
+            assert!(c.card_x > 0);
+            assert_eq!(c.x, c.card_x + scale(CARD_PAD, dpi));
+            assert_eq!(c.card_w, c.width + 2 * scale(CARD_PAD, dpi));
+            assert!(c.card_x + c.card_w <= panel_w);
             assert!(c.x + c.width <= panel_w);
             assert!(c.control_w <= c.width);
             assert!(c.hint_x >= c.x + c.control_w);
@@ -681,7 +792,6 @@ mod tests {
             RowSpec {
                 gap: Gap::Section,
                 title_h: line,
-                rule_h: RULE_PX,
                 ..RowSpec::default()
             },
             RowSpec {
@@ -704,7 +814,6 @@ mod tests {
                 let mut cursor = row.top;
                 for (h, y) in [
                     (spec.title_h, row.title_y),
-                    (spec.rule_h, row.rule_y),
                     (spec.desc_h, row.desc_y),
                     (spec.control_h, row.control_y),
                     (spec.error_h, row.error_y),
@@ -791,12 +900,92 @@ mod tests {
                 w: scale(SIDEBAR_W, dpi),
                 h: sidebar_item_height(dpi),
             };
-            let (fill, text_x) = sidebar_item_parts(item, dpi);
+            let p = sidebar_item_parts(item, dpi);
+            let fill = p.fill;
             assert!(fill.x > item.x && fill.x + fill.w < item.x + item.w);
             assert!(fill.y > item.y && fill.y + fill.h < item.y + item.h);
-            assert!(text_x > fill.x && text_x < fill.x + fill.w);
+            // 印・アイコン・文字は帯の中に収まり、左から印 < アイコン < 文字の順
+            assert!(p.bar.x >= fill.x && p.bar.y >= fill.y);
+            assert!(p.bar.y + p.bar.h <= fill.y + fill.h);
+            assert!(p.icon.x > p.bar.x + p.bar.w);
+            assert!(p.icon.x + p.icon.w < p.text_x);
+            assert!(p.text_x < fill.x + fill.w);
+            assert!(p.text_x_no_icon > fill.x && p.text_x_no_icon <= p.icon.x);
         }
-        let (fill, _) = sidebar_item_parts(Rect::default(), 96);
-        assert!(fill.w >= 0 && fill.h >= 0);
+        let p = sidebar_item_parts(Rect::default(), 96);
+        assert!(p.fill.w >= 0 && p.fill.h >= 0 && p.bar.h >= 0);
+    }
+
+    fn card_rows(dpi: u32) -> Vec<RowSpec> {
+        let line = scale(16, dpi);
+        let card = |gap| RowSpec {
+            gap,
+            in_card: true,
+            title_h: line,
+            control_h: control_height(dpi),
+            ..RowSpec::default()
+        };
+        vec![
+            RowSpec {
+                title_h: line * 2,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                gap: Gap::AfterHeading,
+                title_h: line,
+                ..RowSpec::default()
+            },
+            card(Gap::Tight),
+            card(Gap::Row),
+            card(Gap::Row),
+            RowSpec {
+                gap: Gap::Section,
+                title_h: line,
+                ..RowSpec::default()
+            },
+            card(Gap::Tight),
+        ]
+    }
+
+    #[test]
+    fn consecutive_card_rows_form_one_card_with_dividers() {
+        for dpi in DPIS {
+            let rows = card_rows(dpi);
+            let l = layout_rows(&rows, dpi);
+            // カードは節ごとに 1 枚（2 枚）。重ならず、上から順
+            assert_eq!(l.cards.len(), 2, "dpi={dpi}");
+            assert!(l.cards[0].bottom < l.cards[1].top);
+            let pad = scale(CARD_PAD, dpi);
+            // 行はカードの余白の内側に収まる
+            let first = l.rows[2];
+            let last = l.rows[4];
+            assert_eq!(first.top - l.cards[0].top, pad);
+            assert_eq!(l.cards[0].bottom - (last.top + last.height), pad);
+            // 区切りは 3 行の間の 2 か所（節の外・カードの境目には引かない）
+            assert_eq!(l.dividers.len(), 2);
+            for d in &l.dividers {
+                assert!(*d > l.cards[0].top && *d < l.cards[0].bottom);
+            }
+            assert!(l.dividers[0] < l.dividers[1]);
+            // 内容の高さは最後のカードより下
+            assert!(l.content_height > l.cards[1].bottom);
+            // 見出しの直後の空き = カードの外枠までの空き
+            assert_eq!(
+                l.cards[0].top - (l.rows[1].top + l.rows[1].height),
+                gap_px(Gap::Tight, dpi)
+            );
+        }
+        // カードの行が無ければカードも区切りも無い
+        let none = layout_rows(&sample_rows(96), 96);
+        assert!(none.cards.is_empty() && none.dividers.is_empty());
+    }
+
+    #[test]
+    fn only_headings_stay_outside_cards() {
+        use RowKind::*;
+        for kind in [Field, Text, Desc, Error, Buttons] {
+            assert!(row_in_card(kind), "{kind:?}");
+        }
+        assert!(!row_in_card(Heading) && !row_in_card(Section));
     }
 }

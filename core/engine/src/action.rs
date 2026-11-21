@@ -61,6 +61,26 @@ pub enum Action {
     /// 半角化（カタカナ→半角カナ、または半角化可能な英数記号→半角。`nagi_rewriter` 経由）。
     /// 既定のキー割当は無く、キーマップ（`[keymap.converting]`）で明示的に割り当てる
     ToHankaku,
+    /// 半角カナに変換（F8。入力中は全体、変換中は注目文節。同じキーを続けても半角カナのまま）
+    ToHankakuKana,
+    /// 全角英数に変換（F9。打ったローマ字を全角にする。続けて押すと 小文字 → 大文字 → 先頭大文字）
+    ToZenkakuAlnum,
+    /// 半角英数に変換（F10。打ったローマ字をそのまま半角で。続けて押すと 小文字 → 大文字 → 先頭大文字）
+    ToHankakuAlnum,
+    /// 表記を順に切り替える（無変換キー。ひらがな → 全角カタカナ → 半角カナ → 全角英数 → 半角英数 → ひらがな）
+    CycleForm,
+    /// 候補の次のページへ（PageDown。ページの先頭の候補を選ぶ。末尾の次は先頭へ戻る）
+    NextPage,
+    /// 候補の前のページへ（PageUp。ページの先頭の候補を選ぶ。先頭の前は末尾へ戻る）
+    PrevPage,
+    /// ライブ変換のオン/オフを切り替える（実行中のエンジンの間だけ有効。設定ファイルは書き換えない。
+    /// 設定（`conversion.live_conversion`）や環境プロファイルがオフのときは、オンにはならない）
+    ToggleLive,
+    /// 複数文節を選択中なら、その範囲を 1 つの読みとして再変換して候補を開く（選択が無ければ `NextCand` と同じ）
+    ConvertSelection,
+    /// 文字列をそのまま確定する（全角スペースなど。変換中・入力中の内容は先に確定する）。内部用で、
+    /// キーマップでは割り当てられない
+    CommitText(String),
     /// 入力モードを設定
     SetMode(InputMode),
     /// 入力モードをトグル
@@ -108,6 +128,15 @@ impl fmt::Display for Action {
             Action::ToKatakana => write!(f, "ToKatakana"),
             Action::ToHiragana => write!(f, "ToHiragana"),
             Action::ToHankaku => write!(f, "ToHankaku"),
+            Action::ToHankakuKana => write!(f, "ToHankakuKana"),
+            Action::ToZenkakuAlnum => write!(f, "ToZenkakuAlnum"),
+            Action::ToHankakuAlnum => write!(f, "ToHankakuAlnum"),
+            Action::CycleForm => write!(f, "CycleForm"),
+            Action::NextPage => write!(f, "NextPage"),
+            Action::PrevPage => write!(f, "PrevPage"),
+            Action::ToggleLive => write!(f, "ToggleLive"),
+            Action::ConvertSelection => write!(f, "ConvertSelection"),
+            Action::CommitText(t) => write!(f, "CommitText({:?})", t),
             Action::SetMode(mode) => write!(f, "SetMode({:?})", mode),
             Action::ToggleMode => write!(f, "ToggleMode"),
             Action::CommitAndPassThrough => write!(f, "CommitAndPassThrough"),

@@ -9,6 +9,8 @@
 
 use nagi_protocol::{CandidateSource, CandidatesView};
 
+use crate::candidate_style::{Annotation, NumberPlacement, PageIndicator};
+
 /// 出所アノテーションの表示名。アイコンの割り当てはフロントの責務（ここでは短い文字ラベル）
 pub fn source_label(source: CandidateSource) -> &'static str {
     match source {
@@ -46,8 +48,25 @@ pub struct CandidateRow {
     pub surface: String,
     /// 出所ラベル（例: 「学習」「AI」）
     pub label: String,
+    /// 曖昧入力で補正した読み（出所 `Fuzzy` の候補だけ）
+    pub reading: Option<String>,
     /// 選択中の行か
     pub is_selected: bool,
+}
+
+impl CandidateRow {
+    /// 注釈の表示文字列（`annotation` の設定に従う。出す内容が無ければ空）
+    pub fn annotation_text(&self, annotation: Annotation) -> String {
+        match annotation {
+            Annotation::None => String::new(),
+            Annotation::Source => self.label.clone(),
+            Annotation::Full => match (&self.reading, self.label.is_empty()) {
+                (Some(reading), true) => reading.clone(),
+                (Some(reading), false) => format!("{}  {reading}", self.label),
+                (None, _) => self.label.clone(),
+            },
+        }
+    }
 }
 
 /// 現在ページの行モデル
@@ -81,6 +100,7 @@ impl CandidatePage {
                 index: i as u32,
                 surface: view.items[i].surface.clone(),
                 label: source_labels(&view.items[i].sources),
+                reading: view.items[i].reading.clone(),
                 // 入力中のサジェストで、まだ何も選んでいないときは強調しない
                 is_selected: i == selected && view.unselected != Some(true),
             })
@@ -211,6 +231,8 @@ pub struct Metrics {
     pub bottom_inset: i32,
     /// ウィンドウ幅の下限
     pub min_width: i32,
+    /// ウィンドウ幅の上限。0 は制限なし（超える候補は末尾を省略して描く）
+    pub max_width: i32,
 }
 
 impl Default for Metrics {
@@ -224,6 +246,7 @@ impl Default for Metrics {
             top_inset: 2,
             bottom_inset: 2,
             min_width: 80,
+            max_width: 0,
         }
     }
 }
@@ -241,6 +264,7 @@ impl Metrics {
             top_inset: s(self.top_inset),
             bottom_inset: s(self.bottom_inset),
             min_width: s(self.min_width),
+            max_width: s(self.max_width),
         }
     }
 }
@@ -271,10 +295,14 @@ pub fn primary_first(monitors: &[(Rect, bool)]) -> Vec<Rect> {
 pub struct WindowLayout {
     /// ウィンドウ全体の大きさ
     pub size: Size,
-    /// 番号の描画 x
-    pub number_x: i32,
+    /// 番号の描画 x。番号を表示しないとき（幅 0）は `None`
+    pub number_x: Option<i32>,
+    /// 番号欄の幅（番号を表示しないときは 0）
+    pub number_width: i32,
     /// 候補文字列の描画 x
     pub surface_x: i32,
+    /// 候補文字列に割り当てた幅（最大幅で切り詰めた後。これを超える文字は省略して描く）
+    pub surface_width: i32,
     /// ラベルの描画 x。ラベルが 1 つも無いとき（幅 0）は `None`
     pub label_x: Option<i32>,
     /// 各行の矩形（ウィンドウ内座標。選択行の塗りつぶしに使う）
@@ -283,10 +311,45 @@ pub struct WindowLayout {
     pub footer_rect: Option<Rect>,
 }
 
-/// 行モデルから寸法を計算する
+/// 寸法の計算に使う表示の選択（テンプレート・明示指定で変わる部分）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutOptions {
+    /// 番号ラベルの表示と位置
+    pub number: NumberPlacement,
+    /// 注釈の表示
+    pub annotation: Annotation,
+    /// ページ送りの表示
+    pub page_indicator: PageIndicator,
+}
+
+impl Default for LayoutOptions {
+    /// 従来の表示（番号は左・注釈は出所・フッターあり）
+    fn default() -> Self {
+        Self {
+            number: NumberPlacement::Left,
+            annotation: Annotation::Source,
+            page_indicator: PageIndicator::Footer,
+        }
+    }
+}
+
+/// 行モデルから寸法を計算する（従来の表示。テスト・既定向け）
 pub fn layout(page: &CandidatePage, measure: &dyn TextMeasure, m: &Metrics) -> WindowLayout {
-    let number_width = measure.width("0", FontRole::Number) + m.number_extra;
-    let surface_width = page
+    layout_with(page, measure, m, &LayoutOptions::default())
+}
+
+/// 行モデルから寸法を計算する。`m.max_width` が 0 でなければ、それを超えないよう候補文字列の幅を詰める
+pub fn layout_with(
+    page: &CandidatePage,
+    measure: &dyn TextMeasure,
+    m: &Metrics,
+    opts: &LayoutOptions,
+) -> WindowLayout {
+    let number_width = match opts.number {
+        NumberPlacement::Hidden => 0,
+        _ => measure.width("0", FontRole::Number) + m.number_extra,
+    };
+    let natural_surface = page
         .rows
         .iter()
         .map(|r| measure.width(&r.surface, FontRole::Surface))
@@ -295,17 +358,33 @@ pub fn layout(page: &CandidatePage, measure: &dyn TextMeasure, m: &Metrics) -> W
     let label_width = page
         .rows
         .iter()
-        .map(|r| measure.width(&r.label, FontRole::Label))
+        .map(|r| measure.width(&r.annotation_text(opts.annotation), FontRole::Label))
         .max()
         .unwrap_or(0);
-    let mut width = m.padding + number_width + surface_width + m.padding;
-    if label_width > 0 {
-        width += m.gap + label_width;
+    let label_extra = if label_width > 0 {
+        m.gap + label_width
+    } else {
+        0
+    };
+    // 番号を右端に置くときは、注釈・候補との間に間隔を空ける
+    let right_gap = if opts.number == NumberPlacement::Right {
+        m.gap
+    } else {
+        0
+    };
+    let chrome = m.padding + number_width + label_extra + right_gap + m.padding;
+    let mut surface_width = natural_surface;
+    if m.max_width > 0 {
+        // 最大幅を超えるときは候補文字列を詰める（注釈・番号・余白は優先して残す）。
+        // 詰めすぎて読めなくならないよう、文字 3 つぶん程度は残す
+        let floor = measure.width("あああ", FontRole::Surface);
+        let room = (m.max_width - chrome).max(floor.min(natural_surface));
+        surface_width = surface_width.min(room);
     }
-    width = width.max(m.min_width);
+    let width = (chrome + surface_width).max(m.min_width);
 
     let rows = page.rows.len() as i32;
-    let footer = if page.page_count > 1 {
+    let footer = if page.page_count > 1 && opts.page_indicator == PageIndicator::Footer {
         m.footer_height
     } else {
         0
@@ -332,12 +411,21 @@ pub fn layout(page: &CandidatePage, measure: &dyn TextMeasure, m: &Metrics) -> W
             bottom: top + footer,
         }
     });
-    let surface_x = m.padding + number_width;
+    let left_number = opts.number == NumberPlacement::Left;
+    let surface_x = m.padding + if left_number { number_width } else { 0 };
+    let label_x = (label_width > 0).then_some(surface_x + surface_width + m.gap);
+    let number_x = match opts.number {
+        NumberPlacement::Left => Some(m.padding),
+        NumberPlacement::Right => Some(width - m.padding - number_width),
+        NumberPlacement::Hidden => None,
+    };
     WindowLayout {
         size: Size { width, height },
-        number_x: m.padding,
+        number_x,
+        number_width,
         surface_x,
-        label_x: (label_width > 0).then_some(surface_x + surface_width + m.gap),
+        surface_width,
+        label_x,
         row_rects,
         footer_rect,
     }
@@ -451,11 +539,16 @@ pub fn choose_anchor(
 /// `work_areas` はモニターごとの作業領域（先頭がプライマリ）。キャレットを含むものを使い、無ければ先頭。
 /// 空なら丸めない
 pub fn place_window(caret: Rect, size: Size, work_areas: &[Rect]) -> Placement {
+    place_window_with_gap(caret, size, work_areas, CARET_GAP)
+}
+
+/// [`place_window`] の、キャレットとの間隔（px）を指定できる版
+pub fn place_window_with_gap(caret: Rect, size: Size, work_areas: &[Rect], gap: i32) -> Placement {
     let anchor_point = Point {
         x: caret.left,
         y: caret.top,
     };
-    let below_top = caret.bottom + CARET_GAP;
+    let below_top = caret.bottom + gap;
     let mut origin = Point {
         x: caret.left,
         y: below_top,
@@ -467,7 +560,7 @@ pub fn place_window(caret: Rect, size: Size, work_areas: &[Rect]) -> Placement {
         .or_else(|| work_areas.first());
     if let Some(w) = work {
         if below_top + size.height > w.bottom {
-            let above_top = caret.top - size.height - CARET_GAP;
+            let above_top = caret.top - size.height - gap;
             if above_top >= w.top {
                 origin.y = above_top;
                 above = true;
@@ -479,6 +572,193 @@ pub fn place_window(caret: Rect, size: Size, work_areas: &[Rect]) -> Placement {
         origin.x = origin.x.min(w.right - size.width).max(w.left);
     }
     Placement { origin, above }
+}
+
+#[cfg(test)]
+mod style_layout_tests {
+    use super::*;
+    use nagi_protocol::{CandidateView, CandidatesView};
+
+    struct Fixed;
+    impl TextMeasure for Fixed {
+        fn width(&self, text: &str, role: FontRole) -> i32 {
+            match role {
+                FontRole::Number => 6,
+                _ => text
+                    .chars()
+                    .map(|c| if c.is_ascii() { 5 } else { 10 })
+                    .sum(),
+            }
+        }
+    }
+
+    fn page(surfaces: &[&str], pages: u32) -> CandidatePage {
+        let items = surfaces
+            .iter()
+            .map(|s| CandidateView {
+                surface: (*s).into(),
+                sources: vec![CandidateSource::Llm],
+                covers: None,
+                reading: None,
+            })
+            .collect::<Vec<_>>();
+        let size = items.len() as u32;
+        let mut view = CandidatesView {
+            items,
+            selected: 0,
+            page_size: size,
+            visible: true,
+            unselected: None,
+        };
+        if pages > 1 {
+            view.items.extend((1..pages).flat_map(|_| {
+                (0..size).map(|_| CandidateView {
+                    surface: "x".into(),
+                    sources: vec![],
+                    covers: None,
+                    reading: None,
+                })
+            }));
+        }
+        CandidatePage::from_view(&view).unwrap()
+    }
+
+    #[test]
+    fn default_options_equal_legacy_layout() {
+        let p = page(&["今日", "京"], 2);
+        let m = Metrics::default();
+        assert_eq!(
+            layout(&p, &Fixed, &m),
+            layout_with(&p, &Fixed, &m, &LayoutOptions::default())
+        );
+    }
+
+    #[test]
+    fn hidden_number_removes_the_column() {
+        let p = page(&["今日は良い天気です"], 1);
+        let m = Metrics::default();
+        let left = layout_with(&p, &Fixed, &m, &LayoutOptions::default());
+        let hidden = layout_with(
+            &p,
+            &Fixed,
+            &m,
+            &LayoutOptions {
+                number: NumberPlacement::Hidden,
+                ..LayoutOptions::default()
+            },
+        );
+        assert_eq!(hidden.number_x, None);
+        assert_eq!(hidden.surface_x, m.padding);
+        assert_eq!(left.size.width - hidden.size.width, left.number_width);
+    }
+
+    #[test]
+    fn right_number_sits_at_the_right_edge() {
+        let p = page(&["今日"], 1);
+        let m = Metrics::default();
+        let l = layout_with(
+            &p,
+            &Fixed,
+            &m,
+            &LayoutOptions {
+                number: NumberPlacement::Right,
+                ..LayoutOptions::default()
+            },
+        );
+        assert_eq!(l.surface_x, m.padding);
+        assert_eq!(l.number_x, Some(l.size.width - m.padding - l.number_width));
+        // 注釈は候補の直後、番号はそのさらに右
+        assert!(l.label_x.unwrap() + 10 + m.gap <= l.number_x.unwrap());
+    }
+
+    #[test]
+    fn annotation_none_and_no_footer_shrink_the_window() {
+        let p = page(&["今日は良い天気です"], 3);
+        let m = Metrics::default();
+        let full = layout_with(&p, &Fixed, &m, &LayoutOptions::default());
+        let bare = layout_with(
+            &p,
+            &Fixed,
+            &m,
+            &LayoutOptions {
+                annotation: Annotation::None,
+                page_indicator: PageIndicator::None,
+                ..LayoutOptions::default()
+            },
+        );
+        assert_eq!(bare.label_x, None);
+        assert_eq!(bare.footer_rect, None);
+        assert!(bare.size.width < full.size.width);
+        assert_eq!(full.size.height - bare.size.height, m.footer_height);
+    }
+
+    #[test]
+    fn max_width_shrinks_the_surface_not_the_chrome() {
+        let long = "あ".repeat(40); // 400px
+        let p = page(&[&long], 1);
+        let m = Metrics {
+            max_width: 200,
+            ..Metrics::default()
+        };
+        let l = layout_with(&p, &Fixed, &m, &LayoutOptions::default());
+        assert_eq!(l.size.width, 200);
+        assert!(l.surface_width < 400);
+        // 注釈は幅の内側に収まる
+        let label_end = l.label_x.unwrap() + Fixed.width("AI", FontRole::Label);
+        assert!(label_end + m.padding <= l.size.width);
+        // 制限なし（0）なら従来どおり自然な幅
+        let free = layout_with(&p, &Fixed, &Metrics::default(), &LayoutOptions::default());
+        assert!(free.size.width > 400);
+        assert_eq!(free.surface_width, 400);
+    }
+
+    #[test]
+    fn full_annotation_appends_the_corrected_reading() {
+        let mut row = page(&["漢字"], 1).rows.remove(0);
+        row.label = "もしかして".into();
+        row.reading = Some("かんじ".into());
+        assert_eq!(row.annotation_text(Annotation::None), "");
+        assert_eq!(row.annotation_text(Annotation::Source), "もしかして");
+        assert_eq!(row.annotation_text(Annotation::Full), "もしかして  かんじ");
+        row.reading = None;
+        assert_eq!(row.annotation_text(Annotation::Full), "もしかして");
+    }
+
+    #[test]
+    fn caret_gap_is_applied_and_still_flips() {
+        let work = Rect {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 800,
+        };
+        let size = Size {
+            width: 100,
+            height: 100,
+        };
+        let caret = Rect {
+            left: 10,
+            top: 100,
+            right: 12,
+            bottom: 120,
+        };
+        assert_eq!(
+            place_window_with_gap(caret, size, &[work], 10).origin.y,
+            130
+        );
+        assert_eq!(
+            place_window_with_gap(caret, size, &[work], CARET_GAP),
+            place_window(caret, size, &[work])
+        );
+        let low = Rect {
+            top: 700,
+            bottom: 720,
+            ..caret
+        };
+        let flipped = place_window_with_gap(low, size, &[work], 10);
+        assert!(flipped.above);
+        assert_eq!(flipped.origin.y, 700 - 100 - 10);
+    }
 }
 
 #[cfg(test)]
@@ -630,7 +910,7 @@ mod tests {
         // 番号 6+6=12、候補「候補0」= 25、ラベル「辞書」= 20
         assert_eq!(l.size.width, 8 + 12 + 25 + 8 + 12 + 20);
         assert_eq!(l.size.height, 3 * 24 + 18 + 4);
-        assert_eq!(l.number_x, 8);
+        assert_eq!(l.number_x, Some(8));
         assert_eq!(l.surface_x, 20);
         assert_eq!(l.label_x, Some(20 + 25 + 12));
         assert_eq!(l.row_rects.len(), 3);

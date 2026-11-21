@@ -20,9 +20,61 @@ pub const TOAST_MARGIN: i32 = 16;
 
 /// `work`（作業領域）の右下に `size` の通知を置く左上位置。収まらない場合は作業領域の左上に寄せる
 pub fn place_toast(work: Rect, size: Size, margin: i32) -> Point {
+    place_in_corner(work, size, margin, ToastPosition::BottomRight)
+}
+
+/// 通知・モード表示を置く作業領域の隅（設定 `windows.toast_position` / `mode_popup_position`）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToastPosition {
+    /// 右下（既定）
+    #[default]
+    BottomRight,
+    /// 左下
+    BottomLeft,
+    /// 右上
+    TopRight,
+    /// 左上
+    TopLeft,
+    /// 下の中央
+    BottomCenter,
+    /// 上の中央
+    TopCenter,
+}
+
+impl ToastPosition {
+    /// 設定値（`bottom_right` など）から。知らない値は `None`
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "bottom_right" => Self::BottomRight,
+            "bottom_left" => Self::BottomLeft,
+            "top_right" => Self::TopRight,
+            "top_left" => Self::TopLeft,
+            "bottom_center" => Self::BottomCenter,
+            "top_center" => Self::TopCenter,
+            _ => return None,
+        })
+    }
+}
+
+/// `work`（作業領域）の `position` の隅に `size` を置く左上位置。端から `margin` あける。
+/// 収まらない場合は作業領域の左上に寄せる
+pub fn place_in_corner(work: Rect, size: Size, margin: i32, position: ToastPosition) -> Point {
+    let left = work.left + margin;
+    let right = work.right - margin - size.width;
+    let center = work.left + (work.width() - size.width) / 2;
+    let top = work.top + margin;
+    let bottom = work.bottom - margin - size.height;
+    let (x, y) = match position {
+        ToastPosition::BottomRight => (right, bottom),
+        ToastPosition::BottomLeft => (left, bottom),
+        ToastPosition::TopRight => (right, top),
+        ToastPosition::TopLeft => (left, top),
+        ToastPosition::BottomCenter => (center, bottom),
+        ToastPosition::TopCenter => (center, top),
+    };
     Point {
-        x: (work.right - margin - size.width).max(work.left),
-        y: (work.bottom - margin - size.height).max(work.top),
+        x: x.max(work.left),
+        y: y.max(work.top),
     }
 }
 
@@ -109,6 +161,32 @@ mod tests {
             16,
         );
         assert_eq!(p, Point { x: 1604, y: 964 });
+    }
+
+    #[test]
+    fn corners_and_centers() {
+        let work = Rect {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 800,
+        };
+        let size = Size {
+            width: 100,
+            height: 50,
+        };
+        let at = |p| place_in_corner(work, size, 10, p);
+        assert_eq!(at(ToastPosition::BottomRight), Point { x: 890, y: 740 });
+        assert_eq!(at(ToastPosition::BottomLeft), Point { x: 10, y: 740 });
+        assert_eq!(at(ToastPosition::TopRight), Point { x: 890, y: 10 });
+        assert_eq!(at(ToastPosition::TopLeft), Point { x: 10, y: 10 });
+        assert_eq!(at(ToastPosition::BottomCenter), Point { x: 450, y: 740 });
+        assert_eq!(at(ToastPosition::TopCenter), Point { x: 450, y: 10 });
+        assert_eq!(
+            ToastPosition::parse("top_center"),
+            Some(ToastPosition::TopCenter)
+        );
+        assert_eq!(ToastPosition::parse("middle"), None);
     }
 
     #[test]

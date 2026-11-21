@@ -305,6 +305,44 @@ pub fn item_heading(id: ItemId, result: Option<&ItemResult>, running: bool) -> S
     format!("[{state}] {}", id.title())
 }
 
+/// 結果行のバッジの色分け（ステータスの表示にも使う）。色に頼らず、文字（ラベル）も必ず併記する
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgeKind {
+    /// 期待どおり
+    Ok,
+    /// 要確認
+    Warn,
+    /// 期待と違う
+    Ng,
+    /// 未確認・スキップ
+    Neutral,
+    /// 確認中・手動確認・お知らせ
+    Info,
+}
+
+/// 項目の結果のバッジの色分け。`running` は確認中
+pub fn badge_kind(result: Option<&ItemResult>, running: bool) -> BadgeKind {
+    if running {
+        return BadgeKind::Info;
+    }
+    match result.map(|r| r.status) {
+        None | Some(Status::Skipped) => BadgeKind::Neutral,
+        Some(Status::Ok) => BadgeKind::Ok,
+        Some(Status::Warn) => BadgeKind::Warn,
+        Some(Status::Ng) => BadgeKind::Ng,
+        Some(Status::Manual) => BadgeKind::Info,
+    }
+}
+
+/// 項目の結果のバッジの文字（見出しの `[...]` の中身と同じ）
+pub fn badge_label(result: Option<&ItemResult>, running: bool) -> &'static str {
+    if running {
+        "確認中"
+    } else {
+        result.map_or("未確認", |r| r.status.label())
+    }
+}
+
 /// 項目の詳細（無ければ `None`）
 pub fn item_detail(result: &ItemResult) -> Option<String> {
     let detail = result.detail.trim();
@@ -349,6 +387,16 @@ pub enum PlanRow {
     Section(String),
     /// 本文
     Text(String),
+    /// 診断項目の結果行（状態のバッジ + 項目名）。画面上の文字（読み上げの名前）は
+    /// [`PlanRow::heading`] の `[状態] 項目名`
+    Result {
+        /// バッジの色分け
+        badge: BadgeKind,
+        /// バッジの文字
+        label: String,
+        /// 項目名
+        title: String,
+    },
     /// 説明（グレーの小さめ）
     Desc(String),
     /// ボタンの行
@@ -360,9 +408,19 @@ impl PlanRow {
     pub fn kind(&self) -> RowKind {
         match self {
             PlanRow::Section(_) => RowKind::Section,
-            PlanRow::Text(_) => RowKind::Text,
+            PlanRow::Text(_) | PlanRow::Result { .. } => RowKind::Text,
             PlanRow::Desc(_) => RowKind::Desc,
             PlanRow::Buttons(_) => RowKind::Buttons,
+        }
+    }
+}
+
+impl PlanRow {
+    /// 結果行の文字列（`[状態] 項目名`。コントロールの文字 = 読み上げの名前）。結果行以外は `None`
+    pub fn heading(&self) -> Option<String> {
+        match self {
+            PlanRow::Result { label, title, .. } => Some(format!("[{label}] {title}")),
+            _ => None,
         }
     }
 }
@@ -405,11 +463,12 @@ pub fn plan_rows(model: &DiagModel) -> Vec<PlanRow> {
     rows.push(PlanRow::Section("確認項目".to_owned()));
     for &id in ItemId::ALL {
         let result = model.result(id);
-        rows.push(PlanRow::Text(item_heading(
-            id,
-            result,
-            model.is_current(id),
-        )));
+        let running_now = model.is_current(id);
+        rows.push(PlanRow::Result {
+            badge: badge_kind(result, running_now),
+            label: badge_label(result, running_now).to_owned(),
+            title: id.title().to_owned(),
+        });
         if let Some(result) = result {
             if let Some(detail) = item_detail(result) {
                 rows.push(PlanRow::Desc(detail));
@@ -644,7 +703,7 @@ mod tests {
         // 項目の見出しは全項目ぶん
         let headings = rows
             .iter()
-            .filter(|r| matches!(r, PlanRow::Text(t) if t.starts_with("[未確認] ")))
+            .filter(|r| r.heading().is_some_and(|t| t.starts_with("[未確認] ")))
             .count();
         assert_eq!(headings, ItemId::ALL.len());
     }
@@ -672,7 +731,7 @@ mod tests {
         assert!(rows.contains(&PlanRow::Desc("詳細".into())));
         assert!(
             rows.iter()
-                .any(|r| matches!(r, PlanRow::Text(t) if t.starts_with("[要確認] ")))
+                .any(|r| r.heading().is_some_and(|t| t.starts_with("[要確認] ")))
         );
     }
 
@@ -748,5 +807,57 @@ mod tests {
             })
             .collect();
         assert!(heights[0] < heights[1] && heights[1] < heights[2]);
+    }
+
+    #[test]
+    fn result_rows_carry_a_badge_and_a_spoken_heading() {
+        let mut m = DiagModel::default();
+        let rows = plan_rows(&m);
+        let results: Vec<&PlanRow> = rows
+            .iter()
+            .filter(|r| matches!(r, PlanRow::Result { .. }))
+            .collect();
+        assert_eq!(results.len(), ItemId::ALL.len());
+        // 未確認は灰色のバッジ、文字は必ず併記
+        match results[0] {
+            PlanRow::Result {
+                badge,
+                label,
+                title,
+            } => {
+                assert_eq!(*badge, BadgeKind::Neutral);
+                assert_eq!(label, "未確認");
+                assert_eq!(results[0].heading().unwrap(), format!("[未確認] {title}"));
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(PlanRow::Text("x".into()).heading(), None);
+        // 結果が入るとバッジの色が変わる
+        m.finish_all(Ok(full_report(Status::Ng)));
+        let rows = plan_rows(&m);
+        assert!(rows.iter().any(
+            |r| matches!(r, PlanRow::Result { badge: BadgeKind::Ng, label, .. } if label == "NG")
+        ));
+    }
+
+    #[test]
+    fn badge_kind_maps_every_status() {
+        let r = |s| Some(ItemResult::new(ItemId::EngineStart, s, "d"));
+        assert_eq!(badge_kind(r(Status::Ok).as_ref(), false), BadgeKind::Ok);
+        assert_eq!(badge_kind(r(Status::Warn).as_ref(), false), BadgeKind::Warn);
+        assert_eq!(badge_kind(r(Status::Ng).as_ref(), false), BadgeKind::Ng);
+        assert_eq!(
+            badge_kind(r(Status::Skipped).as_ref(), false),
+            BadgeKind::Neutral
+        );
+        assert_eq!(
+            badge_kind(r(Status::Manual).as_ref(), false),
+            BadgeKind::Info
+        );
+        assert_eq!(badge_kind(None, false), BadgeKind::Neutral);
+        // 確認中は結果より優先
+        assert_eq!(badge_kind(r(Status::Ng).as_ref(), true), BadgeKind::Info);
+        assert_eq!(badge_label(None, true), "確認中");
+        assert_eq!(badge_label(r(Status::Ng).as_ref(), false), "NG");
     }
 }

@@ -3,8 +3,8 @@
 //! 形式は `tests/golden/README.md` を参照。
 
 use nagi_engine::{
-    AppClass, AppsConfig, Engine, EngineConfig, KanaBackend, MockBackend, SessionSnapshot,
-    StateKind, key_from_text, parse_key,
+    AppClass, AppsConfig, Engine, EngineConfig, KanaBackend, KeyContext, KeyMap, MockBackend,
+    SessionSnapshot, SpaceWidth, StateKind, key_from_text, parse_key,
 };
 use nagi_protocol::methods::{
     ProcessKeyResult, RestoreSegment, RestoreSessionParams, SetContextParams,
@@ -64,6 +64,21 @@ struct ConfigSpec {
     mode: Option<String>,
     romaji_carryover: Option<bool>,
     apps: Option<AppsSpec>,
+    /// `input.space_width`（half | full | follow_mode）
+    space_width: Option<String>,
+    /// 拡張入力モードを応答の `mode` にそのまま出すか（既定 false = 基本の 2 つに読み替え）
+    extended_input_modes: Option<bool>,
+    keymap: Option<KeymapSpec>,
+}
+
+/// `[keymap]` 相当（キー仕様 → Action 名）
+#[derive(Debug, Default, Deserialize)]
+struct KeymapSpec {
+    preset: Option<String>,
+    #[serde(default)]
+    composing: BTreeMap<String, String>,
+    #[serde(default)]
+    converting: BTreeMap<String, String>,
 }
 
 /// `[apps]` 相当（分類表はパターン → code | chat | general）
@@ -168,6 +183,10 @@ fn parse_mode(s: &str) -> InputMode {
     match s {
         "hiragana" => InputMode::Hiragana,
         "alphanumeric" => InputMode::Alphanumeric,
+        "katakana" => InputMode::Katakana,
+        "hankaku_katakana" => InputMode::HankakuKatakana,
+        "zenkaku_alnum" => InputMode::ZenkakuAlnum,
+        "hankaku_alnum" => InputMode::HankakuAlnum,
         other => panic!("不明な mode: {other}"),
     }
 }
@@ -176,6 +195,10 @@ fn mode_name(m: InputMode) -> &'static str {
     match m {
         InputMode::Hiragana => "hiragana",
         InputMode::Alphanumeric => "alphanumeric",
+        InputMode::Katakana => "katakana",
+        InputMode::HankakuKatakana => "hankaku_katakana",
+        InputMode::ZenkakuAlnum => "zenkaku_alnum",
+        InputMode::HankakuAlnum => "hankaku_alnum",
     }
 }
 
@@ -231,6 +254,30 @@ fn build_engine(case: &Case) -> Engine {
         if let Some(b) = c.romaji_carryover {
             config.romaji_carryover = b;
         }
+        if let Some(w) = &c.space_width {
+            config.space_width = match w.as_str() {
+                "half" => SpaceWidth::Half,
+                "full" => SpaceWidth::Full,
+                "follow_mode" => SpaceWidth::FollowMode,
+                other => panic!("不明な space_width: {other}"),
+            };
+        }
+        if let Some(k) = &c.keymap {
+            let bindings: Vec<(KeyContext, String, String)> = k
+                .composing
+                .iter()
+                .map(|(key, a)| (KeyContext::Composing, key.clone(), a.clone()))
+                .chain(
+                    k.converting
+                        .iter()
+                        .map(|(key, a)| (KeyContext::Converting, key.clone(), a.clone())),
+                )
+                .collect();
+            let (keymap, warnings) =
+                KeyMap::with_preset(k.preset.as_deref().unwrap_or("standard"), &bindings);
+            assert!(warnings.is_empty(), "keymap の警告: {warnings:?}");
+            config.keymap = keymap;
+        }
         if let Some(a) = &c.apps {
             let class = |s: &str| match s {
                 "code" => AppClass::Code,
@@ -281,7 +328,16 @@ fn build_engine(case: &Case) -> Engine {
         }
         Some(other) => panic!("不明な backend: {other}"),
     };
-    Engine::new(backend, config)
+    let mut engine = Engine::new(backend, config);
+    if case
+        .config
+        .as_ref()
+        .and_then(|c| c.extended_input_modes)
+        .unwrap_or(false)
+    {
+        engine.set_extended_input_modes(true);
+    }
+    engine
 }
 
 fn check(

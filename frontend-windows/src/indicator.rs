@@ -73,8 +73,13 @@ pub fn tone(style: IndicatorStyle, system_uses_light_theme: Option<bool>) -> Ton
 /// モードに対応する文字（接続前などモード不明のときは既定のひらがな。`status::button_text` と同じ）
 pub fn glyph(mode: Option<InputMode>) -> ModeGlyph {
     match mode.unwrap_or(InputMode::Hiragana) {
-        InputMode::Hiragana => ModeGlyph::Hiragana,
-        InputMode::Alphanumeric => ModeGlyph::Alphanumeric,
+        // カタカナ・半角カナはひらがな、全角英数・半角英数は英数の表示にする（拡張モードの表示は後続）
+        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => {
+            ModeGlyph::Hiragana
+        }
+        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => {
+            ModeGlyph::Alphanumeric
+        }
     }
 }
 

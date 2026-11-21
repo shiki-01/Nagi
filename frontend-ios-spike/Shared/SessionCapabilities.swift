@@ -6,6 +6,10 @@ import Foundation
 /// - `partial_suggestions`: 入力中の候補バーが「読みの接頭辞だけを置き換える候補」（`CandidateView.covers`）を
 ///   選べる。選ぶと `select_candidate` でその分だけ確定して、残りの読みは入力中のまま続く（H-58）。
 ///   宣言したときだけコアが接頭辞の候補（読みの末尾を削った部分予測）を返す
+/// - `extended_input_modes`: 宣言しない（nil）。カタカナ・半角カナ・全角英数・半角英数のモードは iOS では使わないので、
+///   コアは応答の `mode` を基本の 2 つ（ひらがな・英数）に読み替えて返す
 func makeClientCapabilities(environment: SetEnvironmentParams?) -> ClientCapabilities {
-    ClientCapabilities(input_method: .touch, environment: environment, partial_suggestions: true)
+    ClientCapabilities(
+        input_method: .touch, environment: environment, partial_suggestions: true,
+        extended_input_modes: nil)
 }

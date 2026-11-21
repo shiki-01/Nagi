@@ -1155,6 +1155,7 @@ dependencies = [
 name = "nagi-windows"
 version = "0.1.18"
 dependencies = [
+ "nagi-config",
  "nagi-protocol",
  "serde",
  "serde_json",

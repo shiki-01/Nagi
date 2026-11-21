@@ -1,16 +1,23 @@
 //! 右のスクロールパネル: ページの組み立て・配置・スクロール。
 
 use super::controls::{
-    clear_accessible_name, create_child, get_text, send, send_text, set_accessible_name, set_font,
+    clear_accessible_name, create_child, get_text, send, send_text, set_accessible_name,
+    set_dark_theme, set_font,
 };
 use super::dpi::Fonts;
 use super::pages::{self, RowDef, text_row};
-use super::state::{Ctl, Ident, Model, Role, RowFlags, State};
+use super::state::{Ctl, Ident, Model, ResultInfo, Role, RowFlags, State};
+use super::theme;
+use super::widgets::{BtnKind, install_button};
+use crate::native_diag::BadgeKind;
 use crate::native_layout::{
-    self as layout, BUTTON_W, Columns, RULE_PX, RowSpec, button_row, clamp_scroll, control_height,
+    self as layout, BUTTON_W, Columns, RowSpec, button_row, clamp_scroll, control_height,
     layout_rows, scale, scroll_into_view,
 };
 use crate::native_model::{FieldView, Page, ids};
+use crate::native_theme::{
+    ButtonStyle, ThemeKind, button_style_for_id, toggle_label_offset, toggle_row_min_height,
+};
 use nagi_protocol::settings::SettingKind;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -18,7 +25,7 @@ use windows::Win32::Graphics::Gdi::{
     ReleaseDC, SelectObject,
 };
 use windows::Win32::System::SystemServices::{
-    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_ETCHEDHORZ, SS_LEFT, SS_NOPREFIX,
+    SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_LEFT, SS_NOPREFIX, SS_OWNERDRAW,
 };
 use windows::Win32::UI::Controls::{EM_SETCUEBANNER, SetScrollInfo};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
@@ -115,6 +122,8 @@ struct Builder<'a> {
     ctls: &'a mut Vec<Ctl>,
     next_id: i32,
     row: usize,
+    /// ダークテーマか（入力欄・選択欄のテーマに使う）
+    dark: bool,
 }
 
 impl Builder<'_> {
@@ -136,6 +145,7 @@ impl Builder<'_> {
             key: key.map(str::to_owned),
             text: text.to_owned(),
             width_dp,
+            result: None,
             content_y: 0,
             content_h: 0,
         });
@@ -159,20 +169,35 @@ impl Builder<'_> {
         self.add(role, hwnd, id, key, text, 0);
     }
 
-    /// 節の見出し（文字 + 下の区切り線）
+    /// 節の見出し（直下のカードの見出し）
     fn section(&mut self, text: &str) {
         self.text(Role::Section, text, None);
+    }
+
+    /// 診断項目の結果行（オーナードロー。文字は読み上げの名前として `[状態] 項目名` を持つ）
+    fn result(&mut self, badge: BadgeKind, label: &str, title: &str) {
+        let heading = format!("[{label}] {title}");
         let id = self.fresh_id();
         let hwnd = create_child(
             self.panel,
             "STATIC",
-            "",
-            SS_ETCHEDHORZ.0,
+            &heading,
+            SS_OWNERDRAW.0 | SS_NOPREFIX.0,
             0,
             id,
             self.fonts.normal,
         );
-        self.add(Role::Rule, hwnd, id, None, "", 0);
+        if self
+            .add(Role::Result, hwnd, id, None, &heading, 0)
+            .is_some()
+            && let Some(c) = self.ctls.last_mut()
+        {
+            c.result = Some(ResultInfo {
+                badge,
+                label: label.to_owned(),
+                title: title.to_owned(),
+            });
+        }
     }
 
     fn button(
@@ -192,6 +217,15 @@ impl Builder<'_> {
             id,
             self.fonts.normal,
         );
+        if let Some(hwnd) = hwnd {
+            // 「既定に戻す」は控えめに、主要な操作・取り消せない操作は目立たせる（固定 ID で決まる）
+            let style = if role == Role::Reset {
+                ButtonStyle::Subtle
+            } else {
+                button_style_for_id(id)
+            };
+            install_button(hwnd, BtnKind::Push(style), true);
+        }
         self.add(role, hwnd, id, key, text, width_dp)
     }
 
@@ -211,6 +245,10 @@ impl Builder<'_> {
                 id,
                 self.fonts.normal,
             );
+            if let Some(hwnd) = hwnd {
+                // 標準のチェックボックスのまま、見た目だけトグルスイッチにする（役割・名前・状態は変わらない）
+                install_button(hwnd, BtnKind::Toggle, true);
+            }
             if let Some(hwnd) = self.add(Role::Check, hwnd, id, Some(key), &title, 0)
                 && field.bool_value()
             {
@@ -238,6 +276,7 @@ impl Builder<'_> {
                         let index = field.choice_index().map_or(-1, |i| i as isize);
                         send(hwnd, CB_SETCURSEL, index as usize, 0);
                         set_accessible_name(hwnd, &field.label);
+                        set_dark_theme(hwnd, self.dark, false);
                         let _ = unsafe { SetWindowSubclass(hwnd, Some(combo_subclass), 1, 0) };
                     }
                 }
@@ -259,6 +298,7 @@ impl Builder<'_> {
                     }
                     if let Some(hwnd) = hwnd {
                         set_accessible_name(hwnd, &field.label);
+                        set_dark_theme(hwnd, self.dark, false);
                     }
                 }
             }
@@ -291,6 +331,14 @@ impl Builder<'_> {
                 } else {
                     self.text(*role, text, None);
                 }
+                RowFlags::default()
+            }
+            RowDef::Result {
+                badge,
+                label,
+                title,
+            } => {
+                self.result(*badge, label, title);
                 RowFlags::default()
             }
             RowDef::Buttons(buttons) => {
@@ -368,11 +416,13 @@ pub(super) fn rebuild_page(st: &State) {
             ctls: &mut ctls,
             next_id: ids::DYNAMIC_BASE,
             row: 0,
+            dark: theme::palette().kind == ThemeKind::Dark,
         };
         for (row, def) in defs.iter().enumerate() {
             builder.row = row;
             let mut f = builder.row(def);
             f.gap = pages::gap_before(row.checked_sub(1).map(|p| &defs[p]), def);
+            f.in_card = pages::in_card(def);
             flags.push(f);
         }
     }
@@ -454,28 +504,32 @@ pub(super) fn relayout(st: &State) {
     let cols = layout::columns(width, dpi);
     let control_h = control_height(dpi);
     let pad = scale(2, dpi);
+    // 見出し・節の見出しはカードの外（カードの左端に揃え、カードの幅で折り返す）
+    let outer_w = cols.card_w;
     let hdc = unsafe { GetDC(Some(panel)) };
     {
         let mut ui = st.ui.borrow_mut();
         let mut specs = vec![RowSpec::default(); ui.specs.len()];
         for (spec, flag) in specs.iter_mut().zip(&ui.flags) {
             spec.gap = flag.gap;
+            spec.in_card = flag.in_card;
         }
         for c in &ui.ctls {
             let flag = ui.flags[c.row];
             let spec = &mut specs[c.row];
             match c.role {
-                Role::Heading => {
-                    spec.title_h = measure(hdc, fonts.heading, &c.text, cols.width) + pad
-                }
-                Role::Section => {
-                    spec.title_h = measure(hdc, fonts.section, &c.text, cols.width) + pad
-                }
-                Role::Rule => spec.rule_h = RULE_PX,
+                Role::Heading => spec.title_h = measure(hdc, fonts.heading, &c.text, outer_w) + pad,
+                Role::Section => spec.title_h = measure(hdc, fonts.section, &c.text, outer_w) + pad,
+                Role::Result => spec.title_h = control_h,
                 Role::Title => spec.title_h = measure(hdc, fonts.normal, &c.text, cols.width) + pad,
                 Role::Check => {
-                    let h = measure(hdc, fonts.normal, &c.text, cols.check_w - scale(24, dpi));
-                    spec.title_h = spec.title_h.max((h + pad).max(scale(18, dpi)));
+                    let h = measure(
+                        hdc,
+                        fonts.normal,
+                        &c.text,
+                        cols.check_w - toggle_label_offset(dpi),
+                    );
+                    spec.title_h = spec.title_h.max((h + pad).max(toggle_row_min_height(dpi)));
                 }
                 Role::Desc => spec.desc_h = measure(hdc, fonts.normal, &c.text, cols.width) + pad,
                 Role::Error => spec.error_h = measure(hdc, fonts.normal, &c.text, cols.width) + pad,
@@ -538,11 +592,17 @@ fn place_all(st: &State) {
             let spec = specs[c.row];
             let flag = flags[c.row];
             let (x, y, w, h, content_h) = match c.role {
-                Role::Title | Role::Heading | Role::Section => {
+                Role::Heading | Role::Section => (
+                    cols.card_x,
+                    rl.title_y,
+                    cols.card_w,
+                    spec.title_h,
+                    spec.title_h,
+                ),
+                Role::Title | Role::Result => {
                     (cols.x, rl.title_y, cols.width, spec.title_h, spec.title_h)
                 }
                 Role::Check => (cols.x, rl.title_y, cols.check_w, spec.title_h, spec.title_h),
-                Role::Rule => (cols.x, rl.rule_y, cols.width, spec.rule_h, spec.rule_h),
                 Role::Desc => (cols.x, rl.desc_y, cols.width, spec.desc_h, spec.desc_h),
                 Role::Error => (cols.x, rl.error_y, cols.width, spec.error_h, spec.error_h),
                 Role::Edit => (cols.x, rl.control_y, cols.control_w, control_h, control_h),

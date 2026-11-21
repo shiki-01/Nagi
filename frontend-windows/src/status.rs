@@ -190,16 +190,16 @@ pub fn menu_lines(status: &StatusResult) -> Vec<String> {
 /// 言語バー・トレイに出す入力モードの短い表示
 pub fn mode_indicator(mode: InputMode) -> &'static str {
     match mode {
-        InputMode::Hiragana => "あ",
-        InputMode::Alphanumeric => "A",
+        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => "あ",
+        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => "A",
     }
 }
 
 /// ツールチップ・アクセシビリティ用のモード名
 pub fn mode_name(mode: InputMode) -> &'static str {
     match mode {
-        InputMode::Hiragana => "ひらがな",
-        InputMode::Alphanumeric => "英数",
+        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => "ひらがな",
+        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => "英数",
     }
 }
 
@@ -284,8 +284,8 @@ pub const CHECK_UPDATE_ARGUMENTS: &str = "--section update --auto-check";
 /// 操作 → メニュー項目の識別子
 pub fn command_id(command: MenuCommand) -> u32 {
     match command {
-        MenuCommand::SetMode(InputMode::Hiragana) => ID_HIRAGANA,
-        MenuCommand::SetMode(InputMode::Alphanumeric) => ID_ALPHANUMERIC,
+        MenuCommand::SetMode(mode) if mode.is_kana() => ID_HIRAGANA,
+        MenuCommand::SetMode(_) => ID_ALPHANUMERIC,
         MenuCommand::OpenSettingsGui => ID_SETTINGS_GUI,
         MenuCommand::OpenSettings => ID_SETTINGS,
         MenuCommand::OpenSettingsFolder => ID_SETTINGS_FOLDER,
@@ -317,8 +317,12 @@ pub fn command_from_id(id: u32) -> Option<MenuCommand> {
 /// ボタンを押したときの切り替え先（ひらがな ⇄ 英数）
 pub fn toggled(mode: InputMode) -> InputMode {
     match mode {
-        InputMode::Hiragana => InputMode::Alphanumeric,
-        InputMode::Alphanumeric => InputMode::Hiragana,
+        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => {
+            InputMode::Alphanumeric
+        }
+        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => {
+            InputMode::Hiragana
+        }
     }
 }
 

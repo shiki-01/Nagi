@@ -395,6 +395,46 @@ fn to_hankaku_katakana(s: &str) -> String {
     out
 }
 
+/// 文字列中の半角 ASCII（0x21-0x7E）を全角に、半角スペースを全角スペース（U+3000）にする。
+/// それ以外の文字はそのまま。[`ZenkakuAlnum`] と違い、混在した文字列・スペースも変換できる
+/// （F9 などの「形式の変換」用）
+pub fn to_fullwidth_alnum(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == ' ' {
+                '\u{3000}'
+            } else {
+                to_fullwidth_ascii(c)
+            }
+        })
+        .collect()
+}
+
+/// 文字列中の全角英数記号（U+FF01-FF5E）を半角に、全角スペース（U+3000）を半角スペースにする
+/// （[`to_fullwidth_alnum`] の逆。F10 などの「形式の変換」用）。それ以外の文字はそのまま
+pub fn to_halfwidth_alnum(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == '\u{3000}' {
+                ' '
+            } else {
+                to_halfwidth_ascii(c)
+            }
+        })
+        .collect()
+}
+
+/// 全角カタカナを半角カナにする。半角カナに無い文字（`ヮ` など）・カタカナ以外はそのまま
+/// （[`HankakuKatakana`] は 1 文字でも変換不能なら全体を断るが、こちらは変換できる文字だけ変える）
+pub fn to_halfwidth_katakana(s: &str) -> String {
+    to_hankaku_katakana(s)
+}
+
+/// 半角スペース（0x20）を許して全部が半角 ASCII か（全角化の対象になる文字列か）
+pub fn is_halfwidth_text(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c == ' ' || is_halfwidth_ascii(c))
+}
+
 /// 複数の [`Rewriter`] をまとめて呼び出す
 pub struct RewriterChain {
     rewriters: Vec<Box<dyn Rewriter>>,
@@ -568,6 +608,28 @@ mod tests {
         let chain = RewriterChain::default_chain();
         // 半角英数字なので ZenkakuAlnum のみ該当（HankakuAlnum・HankakuKatakana は空を返す）
         assert_eq!(chain.candidates("abc123"), vec!["ａｂｃ１２３".to_string()]);
+    }
+
+    #[test]
+    fn width_helpers_convert_mixed_text_and_spaces() {
+        assert_eq!(to_fullwidth_alnum("Ab 1!"), "Ａｂ\u{3000}１！");
+        assert_eq!(to_halfwidth_alnum("Ａｂ\u{3000}１！"), "Ab 1!");
+        // 対象外の文字はそのまま
+        assert_eq!(to_fullwidth_alnum("あaカ"), "あａカ");
+        assert_eq!(to_halfwidth_alnum("あａカ"), "あaカ");
+        // 往復
+        let s = "Hello World 2026";
+        assert_eq!(to_halfwidth_alnum(&to_fullwidth_alnum(s)), s);
+        assert!(is_halfwidth_text("a b"));
+        assert!(!is_halfwidth_text("あ"));
+        assert!(!is_halfwidth_text(""));
+    }
+
+    #[test]
+    fn halfwidth_katakana_is_lossy_for_unmappable_chars() {
+        assert_eq!(to_halfwidth_katakana("ガクヮ"), "ｶﾞｸヮ");
+        assert_eq!(to_halfwidth_katakana("ラーメン"), "ﾗｰﾒﾝ");
+        assert_eq!(to_halfwidth_katakana("abcひら"), "abcひら");
     }
 
     #[test]

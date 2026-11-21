@@ -3,6 +3,7 @@
 //! フロントは汎用フォームを描画するだけにするため、GUI から変更できる項目（キー・表示名・型・範囲）を
 //! ここで定義する。書き込みは `toml_edit` で行い、既存のコメント・書式・未知のキーを保つ。
 
+use crate::windows_ui::{self as ui, Choices, Range};
 use crate::{Config, ProfileMode};
 use std::path::Path;
 
@@ -177,6 +178,16 @@ fn apps_mode_choice() -> SettingKind {
 
 fn int(min: i32, max: i32, step: i32) -> SettingKind {
     SettingKind::Int { min, max, step }
+}
+
+/// `windows_ui` の選択肢から作る
+fn choice_of(choices: Choices) -> SettingKind {
+    choice(choices)
+}
+
+/// `windows_ui` の範囲から作る
+fn int_of(range: Range) -> SettingKind {
+    int(range.0, range.1, range.2)
 }
 
 fn def(
@@ -410,6 +421,29 @@ pub fn definitions() -> Vec<SettingDef> {
             "英単語の後に自動でスペース",
             "英語の候補（英語の自動判定・綴りの「もしかして」）を選んで確定したときだけ、確定した語の後ろに半角スペースを 1 つ足します。続けて句読点（、。,. ！？ など）を入力すると、足したスペースは消えます。",
             SettingKind::Bool,
+        ),
+        def(
+            "input.space_width",
+            "入力",
+            "未入力のときの Space",
+            "何も入力していないときに Space を押して入れるスペースの幅です。Shift+Space は常に反対の幅になります。ひらがな・カタカナ・全角英数・半角カナのモードだけが対象で、英数モードの Space は常に半角です。",
+            choice(&[
+                ("half", "半角スペース"),
+                ("full", "全角スペース"),
+                ("follow_mode", "入力モードに従う（ひらがななら全角）"),
+            ]),
+        ),
+        def(
+            "keymap.preset",
+            "入力",
+            "キー割当のプリセット",
+            "変換中・入力中のキー割当のひな形です。標準、ファンクションキー重視（Ctrl+文字キーはアプリへ渡す）、Ctrl+文字キー重視（Ctrl+U/I/O/P/T で表記を切り替える）、変換・無変換キー重視（無変換で英数）から選びます。config.toml の [keymap.composing] / [keymap.converting] に書いた個別の割当は、常にプリセットより優先されます。",
+            choice(&[
+                ("standard", "標準"),
+                ("function_keys", "ファンクションキー重視"),
+                ("ctrl_letters", "Ctrl+文字キー重視"),
+                ("henkan_keys", "変換・無変換キー重視"),
+            ]),
         ),
         def(
             "input.auto_english.mode",
@@ -679,6 +713,167 @@ pub fn definitions() -> Vec<SettingDef> {
         ),
         update_check,
         def(
+            "windows.candidate_theme",
+            "候補ウィンドウ",
+            "候補ウィンドウのテンプレート（Windows のみ）",
+            "候補ウィンドウの見た目の土台です。下の詳細項目（詳細設定を表示すると出ます）を指定していない部分は、このテンプレートが決めます。ライト/ダークやハイコントラストの切り替えには、どのテンプレートでも従います。",
+            choice_of(ui::THEMES),
+        )
+        .simple()
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_font_scale",
+            "候補ウィンドウ",
+            "文字の大きさ（%）",
+            "候補の文字の大きさの倍率です。通知・モード表示の文字にも効きます。未指定ならテンプレートに従います。",
+            int_of(ui::FONT_SCALE),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_row_height",
+            "候補ウィンドウ",
+            "行の高さ",
+            "候補 1 行の高さです（96 DPI 基準の px。画面の拡大率に合わせて拡大されます）。文字が収まらない大きさにはなりません。未指定ならテンプレートに従います。",
+            int_of(ui::ROW_HEIGHT),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_padding",
+            "候補ウィンドウ",
+            "左右の余白",
+            "候補の左右の余白です（96 DPI 基準の px）。未指定ならテンプレートに従います。",
+            int_of(ui::PADDING),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_corner_radius",
+            "候補ウィンドウ",
+            "角の丸み",
+            "ウィンドウの角の丸みです（0 で角丸なし。96 DPI 基準の px）。未指定ならテンプレートに従います。",
+            int_of(ui::CORNER_RADIUS),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_shadow",
+            "候補ウィンドウ",
+            "影",
+            "ウィンドウの影です。背景を半透明にしているときは付きません。未指定ならテンプレートに従います。",
+            choice_of(ui::TOGGLE),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_number",
+            "候補ウィンドウ",
+            "番号ラベル",
+            "数字キーで選ぶための番号の表示と位置です。未指定ならテンプレートに従います。",
+            choice_of(ui::NUMBER),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_annotation",
+            "候補ウィンドウ",
+            "注釈（出所・読み）",
+            "候補の横に出す注釈です。出所は「学習」「AI」「辞書」など、読みは曖昧入力で補正した読みです。未指定ならテンプレートに従います。",
+            choice_of(ui::ANNOTATION),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_selection",
+            "候補ウィンドウ",
+            "選択行の強調",
+            "選択中の候補の目立たせ方です。未指定ならテンプレートに従います。",
+            choice_of(ui::SELECTION),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_opacity",
+            "候補ウィンドウ",
+            "背景の不透明度（%）",
+            "ウィンドウ全体の不透明度です。100 で不透明。ハイコントラスト時は常に不透明です。未指定ならテンプレートに従います。",
+            int_of(ui::OPACITY),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_color",
+            "候補ウィンドウ",
+            "配色",
+            "「システムに従う」はライト/ダークの設定に追従します。「テンプレートの配色で固定」はシステムの設定に関係なくテンプレート固有の配色にします。ハイコントラスト時はどの指定でもシステムの色を使います。未指定ならテンプレートに従います。",
+            choice_of(ui::COLOR),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_max_width",
+            "候補ウィンドウ",
+            "最大幅",
+            "候補ウィンドウの幅の上限です（96 DPI 基準の px）。超える候補は末尾を「…」で省略します。未指定ならテンプレートに従います。",
+            int_of(ui::MAX_WIDTH),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_page_indicator",
+            "候補ウィンドウ",
+            "ページ送りの表示",
+            "候補が複数ページあるときの「2/5」のような表示です。未指定ならテンプレートに従います。",
+            choice_of(ui::PAGE_INDICATOR),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.candidate_gap",
+            "候補ウィンドウ",
+            "入力位置からの距離",
+            "入力中の文字列と候補ウィンドウの間隔です（96 DPI 基準の px）。アプリごとの位置の補正（window-offsets.tsv）とは足し合わされます。未指定ならテンプレートに従います。",
+            int_of(ui::CARET_GAP),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.preedit_underline",
+            "候補ウィンドウ",
+            "入力中の文字列の下線",
+            "変換前・ライブ変換・予測の文字列の下線の種類です。注目している文節は太い実線のままです。アプリによっては下線の種類が反映されません。未指定ならテンプレートに従います（実線）。",
+            choice_of(ui::UNDERLINE),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.toast_duration_sec",
+            "通知・モード表示",
+            "通知の表示時間（秒）",
+            "メニューや状態の変化を知らせる通知を出しておく時間です。",
+            int_of(ui::TOAST_DURATION_SEC),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.toast_position",
+            "通知・モード表示",
+            "通知の表示位置",
+            "通知を出す画面の隅です（作業領域の内側）。",
+            choice_of(ui::TOAST_POSITION),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.mode_popup",
+            "通知・モード表示",
+            "モード切替の表示",
+            "入力モードを切り替えたときに「あ / A」を一瞬表示します。",
+            SettingKind::Bool,
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.mode_popup_duration_ms",
+            "通知・モード表示",
+            "モード表示の表示時間（ミリ秒）",
+            "「あ / A」を出しておく時間です。",
+            int_of(ui::MODE_POPUP_DURATION_MS),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
+            "windows.mode_popup_position",
+            "通知・モード表示",
+            "モード表示の位置",
+            "「あ / A」を出す場所です。キャレットの近く、または画面の隅です。",
+            choice_of(ui::MODE_POPUP_POSITION),
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
             "windows.indicator_icon",
             "Windows の表示",
             "タスクバーのアイコン（Windows のみ）",
@@ -731,6 +926,12 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "input.romaji_carryover" => Some(Bool(config.input.romaji_carryover)),
         "input.glide" => Some(Bool(config.input.glide)),
         "input.auto_space_alpha" => Some(Bool(config.input.auto_space_alpha)),
+        "input.space_width" => Some(Text(config.input.space_width.as_str().to_string())),
+        "keymap.preset" => Some(Text(if config.keymap.preset == "default" {
+            crate::KEYMAP_PRESET_STANDARD.to_string()
+        } else {
+            config.keymap.preset.clone()
+        })),
         "input.auto_english.mode" => {
             Some(Text(config.input.auto_english.mode.as_str().to_string()))
         }
@@ -775,6 +976,28 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "apps.passthrough" => Some(Bool(config.apps.passthrough)),
         "apps.passthrough_chars" => Some(Text(config.apps.passthrough_chars.clone())),
         "windows.indicator_icon" => Some(Text(config.windows.indicator_icon.as_str().to_string())),
+        "windows.candidate_theme" => Some(Text(config.windows.candidate_theme.clone())),
+        "windows.candidate_font_scale" => config.windows.candidate_font_scale.map(Int),
+        "windows.candidate_row_height" => config.windows.candidate_row_height.map(Int),
+        "windows.candidate_padding" => config.windows.candidate_padding.map(Int),
+        "windows.candidate_corner_radius" => config.windows.candidate_corner_radius.map(Int),
+        "windows.candidate_shadow" => config.windows.candidate_shadow.clone().map(Text),
+        "windows.candidate_number" => config.windows.candidate_number.clone().map(Text),
+        "windows.candidate_annotation" => config.windows.candidate_annotation.clone().map(Text),
+        "windows.candidate_selection" => config.windows.candidate_selection.clone().map(Text),
+        "windows.candidate_opacity" => config.windows.candidate_opacity.map(Int),
+        "windows.candidate_color" => config.windows.candidate_color.clone().map(Text),
+        "windows.candidate_max_width" => config.windows.candidate_max_width.map(Int),
+        "windows.candidate_page_indicator" => {
+            config.windows.candidate_page_indicator.clone().map(Text)
+        }
+        "windows.candidate_gap" => config.windows.candidate_gap.map(Int),
+        "windows.preedit_underline" => config.windows.preedit_underline.clone().map(Text),
+        "windows.toast_duration_sec" => Some(Int(config.windows.toast_duration_sec)),
+        "windows.toast_position" => Some(Text(config.windows.toast_position.clone())),
+        "windows.mode_popup" => Some(Bool(config.windows.mode_popup)),
+        "windows.mode_popup_duration_ms" => Some(Int(config.windows.mode_popup_duration_ms)),
+        "windows.mode_popup_position" => Some(Text(config.windows.mode_popup_position.clone())),
         _ => None,
     }
 }
@@ -1101,6 +1324,81 @@ mod tests {
         }
         let (_, issues) = crate::parse(&src).unwrap();
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn windows_ui_definitions_are_desktop_and_template_driven() {
+        let defs = definitions();
+        let ui_defs: Vec<_> = defs
+            .iter()
+            .filter(|d| d.key.starts_with("windows.") && d.key != "windows.indicator_icon")
+            .collect();
+        assert_eq!(ui_defs.len(), 20);
+        for d in &ui_defs {
+            assert_eq!(d.platforms, SettingPlatforms::Desktop, "{}", d.key);
+            // テンプレートだけがシンプルモードに出る
+            let expected = if d.key == "windows.candidate_theme" {
+                SettingLevel::Simple
+            } else {
+                SettingLevel::Detail
+            };
+            assert_eq!(d.level, expected, "{}", d.key);
+            assert!(!d.requires_restart, "{}", d.key);
+        }
+        let states = read(None).unwrap();
+        let state = |k: &str| states.iter().find(|s| s.def.key == k).unwrap();
+        assert_eq!(
+            state("windows.candidate_theme").value,
+            Some(SettingValue::Text("standard".into()))
+        );
+        // テンプレート任せの項目は未指定（値なし）
+        for k in [
+            "windows.candidate_font_scale",
+            "windows.candidate_shadow",
+            "windows.candidate_color",
+            "windows.preedit_underline",
+        ] {
+            assert_eq!(state(k).value, None, "{k}");
+        }
+        assert_eq!(
+            state("windows.toast_duration_sec").value,
+            Some(SettingValue::Int(4))
+        );
+    }
+
+    #[test]
+    fn windows_ui_values_edit_and_reject_out_of_range() {
+        let r = apply_changes(
+            None,
+            &[
+                set(
+                    "windows.candidate_theme",
+                    SettingValue::Text("spacious".into()),
+                ),
+                set("windows.candidate_font_scale", SettingValue::Int(120)),
+                set("windows.candidate_font_scale", SettingValue::Int(999)),
+                set("windows.candidate_shadow", SettingValue::Text("off".into())),
+                set("windows.candidate_number", SettingValue::Text("up".into())),
+                set("windows.mode_popup", SettingValue::Bool(false)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(r.applied.len(), 4);
+        assert_eq!(r.errors.len(), 2);
+        let (c, issues) = crate::parse(&r.source).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(c.windows.candidate_theme, "spacious");
+        assert_eq!(c.windows.candidate_font_scale, Some(120));
+        assert_eq!(c.windows.candidate_shadow.as_deref(), Some("off"));
+        assert!(!c.windows.mode_popup);
+        // 明示指定の削除でテンプレート任せに戻る
+        let back = apply_changes(
+            Some(&r.source),
+            &[("windows.candidate_font_scale".to_string(), None)],
+        )
+        .unwrap();
+        let (c, _) = crate::parse(&back.source).unwrap();
+        assert_eq!(c.windows.candidate_font_scale, None);
     }
 
     #[test]
@@ -1445,6 +1743,38 @@ mod tests {
         let (c, issues) = crate::parse(&r.source).unwrap();
         assert!(issues.is_empty(), "{issues:?}");
         assert!(c.input.auto_space_alpha);
+    }
+
+    #[test]
+    fn space_width_and_keymap_preset_definitions() {
+        let defs = definitions();
+        for key in ["input.space_width", "keymap.preset"] {
+            let d = defs.iter().find(|d| d.key == key).unwrap();
+            assert_eq!(d.platforms, SettingPlatforms::Both, "{key}");
+        }
+        let r = apply_changes(
+            None,
+            &[
+                set(
+                    "input.space_width",
+                    SettingValue::Text("follow_mode".into()),
+                ),
+                set("keymap.preset", SettingValue::Text("ctrl_letters".into())),
+            ],
+        )
+        .unwrap();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let (c, issues) = crate::parse(&r.source).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(c.input.space_width, crate::SpaceWidth::FollowMode);
+        assert_eq!(c.keymap.preset, "ctrl_letters");
+        // 選択肢にない値は拒否される
+        let r = apply_changes(
+            None,
+            &[set("input.space_width", SettingValue::Text("wide".into()))],
+        )
+        .unwrap();
+        assert_eq!(r.errors.len(), 1);
     }
 
     #[test]

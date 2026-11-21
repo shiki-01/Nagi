@@ -14,5 +14,9 @@ nagi-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+# 設定の選択肢・範囲・既定値との食い違いを検出するテスト用（`candidate_style`）
+nagi-config = { workspace = true }
+
 [lints]
 workspace = true

@@ -4,8 +4,32 @@
 //! ここは「応答のどのフィールドをどの順で TSF に反映するか」だけを表す。
 //! COM を触る側（`edit` モジュール）はこの [`EditPlan`] を実行するだけにして、Linux でもテストできるようにする。
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use nagi_protocol::{PreeditView, ProcessKeyResult};
-use nagi_windows::preedit_style::{self, AttrRun};
+use nagi_windows::preedit_style::{self, AttrRun, UnderlineKind};
+
+/// 通常の文節（ライブ変換・予測を含む）の下線の種類（設定 `windows.preedit_underline`）。
+/// プロセス全体で 1 つ（設定の読み直しで更新する。`plan_from_*` の呼び出し元を増やさないため）
+static NORMAL_UNDERLINE: AtomicU8 = AtomicU8::new(0);
+
+/// 下線の種類を設定する。次の `plan_from_*` から効く
+pub fn set_normal_underline(kind: UnderlineKind) {
+    let v = match kind {
+        UnderlineKind::Solid => 0,
+        UnderlineKind::Dot => 1,
+        UnderlineKind::Dash => 2,
+    };
+    NORMAL_UNDERLINE.store(v, Ordering::Relaxed);
+}
+
+fn normal_underline() -> UnderlineKind {
+    match NORMAL_UNDERLINE.load(Ordering::Relaxed) {
+        1 => UnderlineKind::Dot,
+        2 => UnderlineKind::Dash,
+        _ => UnderlineKind::Solid,
+    }
+}
 
 /// 表示中の preedit の更新
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +102,7 @@ fn preedit_update(preedit: Option<&PreeditView>) -> PreeditUpdate {
             PreeditUpdate::Set {
                 text: p.text.clone(),
                 cursor: p.cursor.min(len),
-                attrs: preedit_style::plan(p),
+                attrs: preedit_style::plan_with(p, normal_underline()),
             }
         }
     }

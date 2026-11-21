@@ -12,12 +12,13 @@ use nagi_protocol::jsonrpc::{
 };
 use nagi_protocol::methods::{
     AcceptRetroReviewParams, ConfigError, EmptyResult, FuzzyStatsItem, GetFuzzyStatsResult,
-    GlideInputParams, ImportSkipReason, ImportUserDictParams, ImportUserDictResult,
-    InitializeParams, InitializeResult, InsertReadingTouchParams, ListSuppressedResult,
-    NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams, ReloadConfigResult,
-    RestoreSessionParams, SelectCandidateParams, ServerCapabilities, SessionParams,
-    SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams, SuppressCandidateParams,
-    SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams, UserDictFormat, method,
+    GetKeymapParams, GlideInputParams, ImportSkipReason, ImportUserDictParams,
+    ImportUserDictResult, InitializeParams, InitializeResult, InsertReadingTouchParams,
+    ListSuppressedResult, NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams,
+    ReloadConfigResult, RestoreSessionParams, SelectCandidateParams, ServerCapabilities,
+    SessionParams, SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams,
+    SuppressCandidateParams, SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams,
+    UserDictFormat, ValidateKeymapParams, method,
 };
 use nagi_protocol::settings::{UpdateSettingsParams, UpdateSettingsResult};
 use nagi_protocol::view::InputMode;
@@ -81,6 +82,14 @@ fn params<T: DeserializeOwned>(req: &Request) -> Result<T, ErrorObject> {
             format!("params が不正です（{:?}）", e.classify()),
         )
     })
+}
+
+/// `params` を省略できるメソッド用（省略・`null` は既定値）
+fn params_or_default<T: DeserializeOwned + Default>(req: &Request) -> Result<T, ErrorObject> {
+    match &req.params {
+        None | Some(Value::Null) => Ok(T::default()),
+        Some(_) => params(req),
+    }
 }
 
 impl Server {
@@ -659,6 +668,9 @@ impl Server {
                     // 接頭辞だけを置き換える候補（H-58）は、フロントが対応を宣言したときだけ出す
                     self.engine_lock()
                         .set_partial_suggestions(caps.partial_suggestions == Some(true));
+                    // 拡張入力モード（カタカナ・半角カナ・全角英数・半角英数）は、対応を宣言したときだけ出す
+                    self.engine_lock()
+                        .set_extended_input_modes(caps.extended_input_modes == Some(true));
                 }
                 to_value(InitializeResult {
                     protocol_version: PROTOCOL_VERSION,
@@ -673,6 +685,7 @@ impl Server {
                         suppression: Some(true),
                         fuzzy_stats: Some(true),
                         retro_review: Some(true),
+                        keymap: Some(true),
                     },
                 })
             }
@@ -781,6 +794,20 @@ impl Server {
                 let p: SetEnvironmentParams = params(req)?;
                 self.runtime.set_environment(&p);
                 to_value(EmptyResult {})
+            }
+            method::GET_KEYMAP => {
+                self.require_initialized()?;
+                let p: GetKeymapParams = params_or_default(req)?;
+                let engine = self.engine_lock();
+                to_value(crate::keymap_tools::keymap_result(
+                    engine.keymap(),
+                    p.preset.as_deref(),
+                ))
+            }
+            method::VALIDATE_KEYMAP => {
+                self.require_initialized()?;
+                let p: ValidateKeymapParams = params(req)?;
+                to_value(crate::keymap_tools::validate_fragment(&p.toml))
             }
             method::GET_KEY_TABLE => {
                 self.require_initialized()?;

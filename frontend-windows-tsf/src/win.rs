@@ -6,8 +6,9 @@
 use std::ffi::c_void;
 use std::sync::Mutex;
 
+use nagi_windows::candidate_style::font_px;
 use nagi_windows::candidates::{self, FontRole, Point, Rect, TextMeasure, scale_px};
-use nagi_windows::theme::{Palette, Rgb, SystemColors, ThemeInput, select_palette};
+use nagi_windows::theme::{Rgb, SystemColors, ThemeInput};
 use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
@@ -126,14 +127,22 @@ pub fn instance() -> windows::Win32::Foundation::HINSTANCE {
 /// 最後のウィンドウを壊したらクラスも登録解除する（再ロード時に古いプロシージャを指さないように）
 pub struct WindowClass {
     name: &'static str,
+    /// ウィンドウクラスのスタイル（`CS_*`。影の `CS_DROPSHADOW` など）
+    style: u32,
     count: Mutex<u32>,
 }
 
 impl WindowClass {
     /// 名前を指定して作る（登録はしない）
     pub const fn new(name: &'static str) -> Self {
+        Self::with_style(name, 0)
+    }
+
+    /// 名前とクラススタイル（`CS_*` の値）を指定して作る（登録はしない）
+    pub const fn with_style(name: &'static str, style: u32) -> Self {
         Self {
             name,
+            style,
             count: Mutex::new(0),
         }
     }
@@ -150,7 +159,7 @@ impl WindowClass {
             let name = wide(self.name);
             let class = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-                style: WNDCLASS_STYLES(0),
+                style: WNDCLASS_STYLES(self.style),
                 lpfnWndProc: wndproc,
                 hInstance: instance(),
                 hIcon: HICON::default(),
@@ -185,18 +194,15 @@ pub unsafe fn default_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
-/// 候補ウィンドウの文字の大きさ（96 DPI 基準の px。macOS 版 `CandidatePanel` と同じ）
-const FONT_SURFACE: i32 = 15;
-const FONT_NUMBER: i32 = 13;
-const FONT_LABEL: i32 = 11;
-
-/// 用途別のフォントと文字幅の計測（GDI）。`dpi` を掛けた大きさで作る
+/// 用途別のフォントと文字幅の計測（GDI）。文字の倍率（`percent`）と `dpi` を掛けた大きさで作る
+/// （基準の大きさは macOS 版 `CandidatePanel` と同じ。`nagi_windows::candidate_style::font_px`）
 pub struct Fonts {
     dc: HDC,
     surface: HFONT,
     number: HFONT,
     label: HFONT,
     dpi: u32,
+    percent: i32,
 }
 
 pub fn make_font(px: i32, dpi: u32) -> HFONT {
@@ -222,23 +228,24 @@ pub fn make_font(px: i32, dpi: u32) -> HFONT {
 }
 
 impl Fonts {
-    /// `dpi` 用のフォントを作る
-    pub fn new(dpi: u32) -> Self {
+    /// `dpi`・倍率 `percent`（%）用のフォントを作る
+    pub fn new(dpi: u32, percent: i32) -> Self {
         let screen = unsafe { GetDC(None) };
         let dc = unsafe { CreateCompatibleDC(Some(screen)) };
         unsafe { ReleaseDC(None, screen) };
         Self {
             dc,
-            surface: make_font(FONT_SURFACE, dpi),
-            number: make_font(FONT_NUMBER, dpi),
-            label: make_font(FONT_LABEL, dpi),
+            surface: make_font(font_px(FontRole::Surface, percent), dpi),
+            number: make_font(font_px(FontRole::Number, percent), dpi),
+            label: make_font(font_px(FontRole::Label, percent), dpi),
             dpi,
+            percent,
         }
     }
 
-    /// この DPI 用か
-    pub fn dpi(&self) -> u32 {
-        self.dpi
+    /// この DPI・倍率で作ったものか（違えば作り直す）
+    pub fn matches(&self, dpi: u32, percent: i32) -> bool {
+        self.dpi == dpi && self.percent == percent
     }
 
     /// 用途に対応するフォント
@@ -304,8 +311,8 @@ pub unsafe fn drop_user_data<T>(ptr: isize) {
 
 // ---- テーマ（ダークモード / ハイコントラスト）----
 
-/// 現在のパレットのキャッシュ。無効化されるまでレジストリを読み直さない
-static THEME: Mutex<Option<Palette>> = Mutex::new(None);
+/// 現在のテーマ情報のキャッシュ。無効化されるまでレジストリを読み直さない
+static THEME: Mutex<Option<ThemeInput>> = Mutex::new(None);
 
 fn read_apps_use_light_theme() -> Option<u32> {
     let mut data = 0u32;
@@ -356,14 +363,13 @@ fn read_high_contrast() -> Option<SystemColors> {
     })
 }
 
-/// 現在のテーマのパレット（キャッシュ済み。変更通知で `theme_message` が破棄する）
-pub fn palette() -> Palette {
+/// 現在のテーマ情報（ライト/ダーク・ハイコントラスト。キャッシュ済み。変更通知で `theme_message` が破棄する）。
+/// 配色は設定（`CandidateStyle::palette`）がこれから決める
+pub fn theme_input() -> ThemeInput {
     let mut guard = THEME.lock().unwrap_or_else(|e| e.into_inner());
-    *guard.get_or_insert_with(|| {
-        select_palette(ThemeInput {
-            apps_use_light_theme: read_apps_use_light_theme(),
-            high_contrast: read_high_contrast(),
-        })
+    *guard.get_or_insert_with(|| ThemeInput {
+        apps_use_light_theme: read_apps_use_light_theme(),
+        high_contrast: read_high_contrast(),
     })
 }
 

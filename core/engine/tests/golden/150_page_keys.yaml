@@ -1,0 +1,53 @@
+# 候補のページ送り（PageUp / PageDown）。ページの先頭の候補を選び、端では折り返す
+
+- name: page-down-up-cycles-pages-in-converting
+  config:
+    page_size: 3
+  backend: mock
+  mock:
+    sentences:
+      "あ":
+        - {reading: "あ", candidates: ["a1", "a2", "a3", "a4", "a5", "a6", "a7"]}
+  steps:
+    - {key: "a"}
+    - {key: "Space"}
+    - key: "Space"
+      expect: {candidates_visible: true, selected: 1}
+    # 候補は 7 件 + ひらがな・カタカナ・全角英数・半角英数 = 最大 11 件。1 ページ 3 件
+    - key: "PageDown"
+      expect: {selected: 3, candidates_visible: true}
+    - key: "PageDown"
+      expect: {selected: 6}
+    - key: "PageDown"
+      expect: {selected: 9}
+    - key: "PageDown"
+      expect: {selected: 0}
+    - key: "PageUp"
+      expect: {selected: 9}
+    - key: "PageUp"
+      expect: {selected: 6}
+
+- name: page-down-opens-window-when-hidden
+  config:
+    page_size: 2
+  backend: mock
+  mock:
+    sentences:
+      "あ":
+        - {reading: "あ", candidates: ["a1", "a2", "a3", "a4"]}
+  steps:
+    - {key: "a"}
+    - key: "Space"
+      expect: {candidates_visible: false}
+    - key: "PageDown"
+      expect: {candidates_visible: true, selected: 2}
+    - key: "Return"
+      expect: {commit: "a3"}
+
+- name: page-keys-with-no-suggestions-are-consumed-noop
+  steps:
+    - {key: "a"}
+    - key: "PageDown"
+      expect: {consumed: true, state: composing, preedit: "あ"}
+    - key: "PageUp"
+      expect: {consumed: true, state: composing, preedit: "あ"}

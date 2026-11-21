@@ -207,9 +207,17 @@ pub trait ConversionBackend: Send + Sync {
     }
 
     /// 予測変換の候補（学習キャッシュ・ユーザー辞書の前方一致。良い順、最大 `limit` 件）。
-    /// `prefix` は入力中の読み（ひらがな）。既定実装は非対応（空を返す）
-    fn predict(&self, prefix: &str, left_context: &str, limit: usize) -> Vec<BackendCandidate> {
-        let _ = (prefix, left_context, limit);
+    /// `prefix` は入力中の読み（ひらがな）。`ctx` は secure input・アプリの学習停止を判断するための状況で、
+    /// 学習を止める状況では、学習キャッシュ由来の候補を出さないこと（ユーザー辞書は利用者が登録したものなので出してよい）。
+    /// 既定実装は非対応（空を返す）
+    fn predict(
+        &self,
+        ctx: &CommitContext<'_>,
+        prefix: &str,
+        left_context: &str,
+        limit: usize,
+    ) -> Vec<BackendCandidate> {
+        let _ = (ctx, prefix, left_context, limit);
         Vec::new()
     }
 
@@ -512,7 +520,17 @@ impl ConversionBackend for MockBackend {
             .collect()
     }
 
-    fn predict(&self, prefix: &str, _left_context: &str, limit: usize) -> Vec<BackendCandidate> {
+    fn predict(
+        &self,
+        ctx: &CommitContext<'_>,
+        prefix: &str,
+        _left_context: &str,
+        limit: usize,
+    ) -> Vec<BackendCandidate> {
+        // 予測は学習キャッシュ相当のものなので、secure input 中は出さない
+        if ctx.secure_input {
+            return Vec::new();
+        }
         self.predictions
             .get(prefix)
             .cloned()

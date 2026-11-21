@@ -91,14 +91,14 @@ fn get_settings_returns_defaults_and_not_explicit() {
         true
     );
     // タッチ入力のみの項目（濁点の循環順・タッチ座標の利用・グライド入力）は iOS、
-    // Windows のタスクバーのアイコンはデスクトップ、それ以外は両方
+    // Windows の項目（タスクバーのアイコン・変換 UI）はデスクトップ、それ以外は両方
     assert!(items.iter().all(|i| {
         let expected = if i["key"] == "input.dakuten_cycle"
             || i["key"] == "input.fuzzy.use_touch_coords"
             || i["key"] == "input.glide"
         {
             "ios"
-        } else if i["key"] == "windows.indicator_icon" {
+        } else if i["key"].as_str().is_some_and(|k| k.starts_with("windows.")) {
             "desktop"
         } else {
             "both"

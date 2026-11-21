@@ -6,8 +6,8 @@
 //! `window.rs` の `on_command` に処理を足す。
 
 use super::state::{Model, Phase, Role};
-use crate::native_diag::{self, PlanRow};
-use crate::native_layout::{Gap, RowKind, gap_between};
+use crate::native_diag::{self, BadgeKind, PlanRow};
+use crate::native_layout::{Gap, RowKind, gap_between, row_in_card};
 use crate::native_model::{FieldView, Page, ids};
 
 /// ボタン 1 つの定義（幅は [`crate::native_layout::BUTTON_W`] で全ボタン共通）
@@ -30,6 +30,12 @@ pub(super) enum RowDef {
     Text { role: Role, text: String },
     /// ボタンの行（横に並べる）
     Buttons(Vec<BtnDef>),
+    /// 診断項目の結果行（状態のバッジ + 項目名）
+    Result {
+        badge: BadgeKind,
+        label: String,
+        title: String,
+    },
 }
 
 /// 文字だけの行
@@ -104,6 +110,7 @@ fn kind_of(def: &RowDef) -> RowKind {
     match def {
         RowDef::Field { .. } => RowKind::Field,
         RowDef::Buttons(_) => RowKind::Buttons,
+        RowDef::Result { .. } => RowKind::Text,
         RowDef::Text { role, .. } => match role {
             Role::Heading => RowKind::Heading,
             Role::Section => RowKind::Section,
@@ -112,6 +119,11 @@ fn kind_of(def: &RowDef) -> RowKind {
             _ => RowKind::Text,
         },
     }
+}
+
+/// その行をカードの中に置くか
+pub(super) fn in_card(def: &RowDef) -> bool {
+    row_in_card(kind_of(def))
 }
 
 /// 前の行との間の空き
@@ -187,6 +199,15 @@ fn diag_rows(model: &Model) -> Vec<RowDef> {
             PlanRow::Section(text) => section(text),
             PlanRow::Text(text) => text_row(Role::Title, text),
             PlanRow::Desc(text) => desc(text),
+            PlanRow::Result {
+                badge,
+                label,
+                title,
+            } => RowDef::Result {
+                badge,
+                label,
+                title,
+            },
             PlanRow::Buttons(buttons) => RowDef::Buttons(
                 buttons
                     .into_iter()

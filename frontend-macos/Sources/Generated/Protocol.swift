@@ -193,11 +193,16 @@ public struct ClientCapabilities: Codable {
 	/// （`CandidateView.covers` が読み全体より短い候補を選ぶと、その分だけ確定して残りは入力中のまま続く
 	/// ことにフロントが対応している。iOS の候補バー）。省略・`false` は従来どおりの少数の候補
 	public let partial_suggestions: Bool?
+	/// `Some(true)` なら、応答の `mode` に `katakana` / `hankaku_katakana` / `zenkaku_alnum` /
+	/// `hankaku_alnum` が現れてもよい（フロントがそれらの入力モードを解釈できる）。省略・`false` の
+	/// クライアントには、かな系は `hiragana`、英数系は `alphanumeric` に読み替えて返す
+	public let extended_input_modes: Bool?
 
-	public init(input_method: InputMethod?, environment: SetEnvironmentParams?, partial_suggestions: Bool?) {
+	public init(input_method: InputMethod?, environment: SetEnvironmentParams?, partial_suggestions: Bool?, extended_input_modes: Bool?) {
 		self.input_method = input_method
 		self.environment = environment
 		self.partial_suggestions = partial_suggestions
+		self.extended_input_modes = extended_input_modes
 	}
 }
 
@@ -274,6 +279,114 @@ public struct GetFuzzyStatsResult: Codable {
 
 	public init(items: [FuzzyStatsItem]) {
 		self.items = items
+	}
+}
+
+/// `get_keymap` メソッドの要求パラメータ
+public struct GetKeymapParams: Codable {
+	/// 一覧を作るプリセット。省略すると現在の設定（`keymap.preset`）。指定すると、そのプリセットに
+	/// 切り替えたときの一覧（現在の利用者の上書きは常にプリセットに優先して残る）
+	public let preset: String?
+
+	public init(preset: String?) {
+		self.preset = preset
+	}
+}
+
+/// 同梱のキーマッププリセット
+public struct KeymapPresetInfo: Codable {
+	/// `keymap.preset` に書く名前
+	public let name: String
+	/// 表示名（日本語）
+	public let label: String
+	/// 説明（日本語）
+	public let description: String
+
+	public init(name: String, label: String, description: String) {
+		self.name = name
+		self.label = label
+		self.description = description
+	}
+}
+
+/// キー割当の文脈
+public enum KeymapContext: String, Codable {
+	/// 全文脈・全入力モードで有効（モード切替キーなど）
+	case common
+	/// 未入力（Direct）
+	case direct
+	/// ローマ字入力中（Composing）。`[keymap.composing]` で上書きできる
+	case composing
+	/// 変換中（Converting。候補選択・範囲選択を含む）。`[keymap.converting]` で上書きできる
+	case converting
+}
+
+/// 割り当てられる Action
+public struct KeymapActionInfo: Codable {
+	/// Action 名（`[keymap.*]` の値）
+	public let name: String
+	/// 表示名（日本語）
+	public let label: String
+	/// 割り当てられる文脈（`composing` / `converting`）
+	public let contexts: [KeymapContext]
+
+	public init(name: String, label: String, contexts: [KeymapContext]) {
+		self.name = name
+		self.label = label
+		self.contexts = contexts
+	}
+}
+
+/// キー割当の出所
+public enum KeymapSource: String, Codable {
+	/// 内蔵の既定の割当
+	case `default`
+	/// 選択中のプリセットの割当
+	case preset
+	/// 利用者の `[keymap.*]` の上書き
+	case user
+}
+
+/// 有効なキー割当 1 件
+public struct KeymapBinding: Codable {
+	/// 文脈
+	public let context: KeymapContext
+	/// キー仕様文字列（`Ctrl+Shift+Right` 形式。`[keymap.*]` にそのまま書ける）
+	public let key: String
+	/// Action 名（`[keymap.*]` の値と同じ書式。`SetMode:Alphanumeric` のように上書きできないものも含む）
+	public let action: String
+	/// 出所
+	public let source: KeymapSource
+	/// `common` のうち、どの入力モードで有効か（`kana` = かな系のみ、`passthrough` = 英数系のみ）。
+	/// 省略はすべてのモード
+	public let when_mode: String?
+
+	public init(context: KeymapContext, key: String, action: String, source: KeymapSource, when_mode: String?) {
+		self.context = context
+		self.key = key
+		self.action = action
+		self.source = source
+		self.when_mode = when_mode
+	}
+}
+
+/// `get_keymap` メソッドの応答
+public struct GetKeymapResult: Codable {
+	/// 一覧の対象のプリセット名（正規の名前。未知の名前を指定した場合は `standard`）
+	public let preset: String
+	/// 同梱のプリセット
+	public let presets: [KeymapPresetInfo]
+	/// 割り当てられる Action の一覧
+	public let actions: [KeymapActionInfo]
+	/// 有効な割当（文脈別。同じ文脈・同じキーは出所の優先が高い 1 件だけ）。印字可能な文字キー
+	/// （文字入力）と、数字による候補選択以外の文字入力は含まない
+	public let bindings: [KeymapBinding]
+
+	public init(preset: String, presets: [KeymapPresetInfo], actions: [KeymapActionInfo], bindings: [KeymapBinding]) {
+		self.preset = preset
+		self.presets = presets
+		self.actions = actions
+		self.bindings = bindings
 	}
 }
 
@@ -409,12 +522,26 @@ public struct InitializeParams: Codable {
 	}
 }
 
-/// 入力モード（ひらがな / 英数）
+/// 入力モード（ひらがな / 英数 / カタカナ / 半角カナ / 全角英数 / 半角英数）
+/// 
+/// `Hiragana` と `Alphanumeric` が基本の 2 つ。残りの 4 つは後から加えたもので、クライアントが
+/// `initialize` の `capabilities.extended_input_modes` で対応を宣言したときだけ、応答の `mode` に現れる
+/// （宣言しないクライアントには、`Katakana` / `HankakuKatakana` は `Hiragana`、`ZenkakuAlnum` /
+/// `HankakuAlnum` は `Alphanumeric` に読み替えて返す）。リクエスト側（`perform_action` の `set_mode`）は
+/// どのモードも受け付ける
 public enum InputMode: String, Codable {
 	/// ひらがな入力モード
 	case hiragana
-	/// 英数入力モード
+	/// 英数入力モード（半角・直接入力。キーはアプリへ素通し）
 	case alphanumeric
+	/// 全角カタカナ入力モード（ローマ字入力 → カタカナ）
+	case katakana
+	/// 半角カナ入力モード（ローマ字入力 → 半角カナ）
+	case hankakuKatakana = "hankaku_katakana"
+	/// 全角英数入力モード（打った文字を全角で直接確定する）
+	case zenkakuAlnum = "zenkaku_alnum"
+	/// 半角英数入力モード（現状は `Alphanumeric` と同じ動作。表示・OS のモード同期の区別用）
+	case hankakuAlnum = "hankaku_alnum"
 }
 
 /// サーバーの機能
@@ -435,14 +562,18 @@ public struct ServerCapabilities: Codable {
 	/// 古いサーバーは省略する（省略は非対応と同じ）。実際に通知が来るかは設定
 	/// `input.fuzzy.retro_review` による
 	public let retro_review: Bool?
+	/// キー割当の取得・検証（`get_keymap` / `validate_keymap`）に対応しているか。古いサーバーは
+	/// 省略する（省略は非対応と同じ）
+	public let keymap: Bool?
 
-	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool, suppression: Bool?, fuzzy_stats: Bool?, retro_review: Bool?) {
+	public init(reconvert: Bool, live_conversion: Bool, style_conversion: Bool, suppression: Bool?, fuzzy_stats: Bool?, retro_review: Bool?, keymap: Bool?) {
 		self.reconvert = reconvert
 		self.live_conversion = live_conversion
 		self.style_conversion = style_conversion
 		self.suppression = suppression
 		self.fuzzy_stats = fuzzy_stats
 		self.retro_review = retro_review
+		self.keymap = keymap
 	}
 }
 
@@ -724,6 +855,48 @@ public struct KeyTableResult: Codable {
 	public init(keys: [KeyTableEntry], variants: [[String]]) {
 		self.keys = keys
 		self.variants = variants
+	}
+}
+
+/// キー割当の検証結果の種別
+public enum KeymapIssueKind: String, Codable {
+	/// TOML の構文・形式の誤り（その行は無視される）
+	case syntax
+	/// 解釈できないキー（その行は無視される）
+	case invalidKey = "invalid_key"
+	/// 解釈できない Action（その行は無視される）
+	case invalidAction = "invalid_action"
+	/// 未知のプリセット名（標準が使われる）
+	case unknownPreset = "unknown_preset"
+	/// 同じ文脈で同じキーを 2 回以上割り当てている（後のものが有効）
+	case duplicateBinding = "duplicate_binding"
+	/// 重要なキー（Enter / Esc / Space / 矢印 / Backspace）の割当を変えている
+	case overridesEssentialKey = "overrides_essential_key"
+	/// 文字入力のキー（修飾なしの印字文字・候補選択の数字）を奪う
+	case shadowsTextInput = "shadows_text_input"
+	/// OS が先に処理するキー（Alt+F4・Win/Cmd 系など）なので届かないことがある
+	case osReserved = "os_reserved"
+}
+
+/// キー割当の検証で見つかった問題 1 件。`errors` は無視される行、`warnings` は有効だが注意が要るもの
+public struct KeymapIssue: Codable {
+	/// 種別
+	public let kind: KeymapIssueKind
+	/// 断片内の行番号（1 始まり。特定できなければ 0）
+	public let line: UInt32
+	/// 文脈（キー・Action に関する問題のとき）
+	public let context: KeymapContext?
+	/// キー仕様文字列（書かれたまま）
+	public let key: String?
+	/// 日本語の説明
+	public let message: String
+
+	public init(kind: KeymapIssueKind, line: UInt32, context: KeymapContext?, key: String?, message: String) {
+		self.kind = kind
+		self.line = line
+		self.context = context
+		self.key = key
+		self.message = message
 	}
 }
 
@@ -1711,6 +1884,31 @@ public struct UpdateSettingsResult: Codable {
 		self.applied = applied
 		self.errors = errors
 		self.snapshot = snapshot
+	}
+}
+
+/// `validate_keymap` メソッドの要求パラメータ
+public struct ValidateKeymapParams: Codable {
+	/// `[keymap.composing]` / `[keymap.converting]`（と任意で `[keymap]` の `preset`）だけを含む
+	/// TOML の断片
+	public let toml: String
+
+	public init(toml: String) {
+		self.toml = toml
+	}
+}
+
+/// `validate_keymap` メソッドの応答
+public struct ValidateKeymapResult: Codable {
+	/// 無視される行（構文・キー・Action の誤り）
+	public let errors: [KeymapIssue]
+	/// 有効だが注意が要るもの（二重割当・重要キーの上書き・文字入力との衝突・OS 予約キー）。
+	/// 拒否ではなく確認のための情報
+	public let warnings: [KeymapIssue]
+
+	public init(errors: [KeymapIssue], warnings: [KeymapIssue]) {
+		self.errors = errors
+		self.warnings = warnings
 	}
 }
 

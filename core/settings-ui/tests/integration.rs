@@ -100,9 +100,21 @@ fn http(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: &st
     }
     req.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
     stream.write_all(req.as_bytes()).unwrap();
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).unwrap();
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((&raw, ""));
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or((raw.len(), raw.len()), |i| (i, i + 4));
+    let head = String::from_utf8_lossy(&raw[..split.0]).into_owned();
+    let mut body = raw[split.1..].to_vec();
+    // 本文が大きい（約 32KB 超）と tiny-http は chunked で返す
+    if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        body = dechunk(&body);
+    }
     let status = head
         .split_whitespace()
         .nth(1)
@@ -111,7 +123,25 @@ fn http(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: &st
     Reply {
         status,
         headers: head.to_ascii_lowercase(),
-        body: body.to_owned(),
+        body: String::from_utf8(body).unwrap(),
+    }
+}
+
+/// `Transfer-Encoding: chunked` の本文を戻す
+fn dechunk(mut rest: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") else {
+            return out;
+        };
+        let size =
+            usize::from_str_radix(std::str::from_utf8(&rest[..eol]).unwrap().trim(), 16).unwrap();
+        rest = &rest[eol + 2..];
+        if size == 0 {
+            return out;
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
     }
 }
 

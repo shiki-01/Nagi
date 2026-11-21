@@ -16,8 +16,14 @@
     shift_letter: literal_continue   # | single_upper
     punctuation: "、。"              # | "，．" | "，。"
     page_size: 9
-    mode: hiragana                   # | alphanumeric（初期モード）
+    mode: hiragana                   # | alphanumeric | katakana | hankaku_katakana | zenkaku_alnum | hankaku_alnum（初期モード）
     romaji_carryover: true           # | false（Backspace でのローマ字の引き継ぎ。H-23）
+    space_width: half                # | full | follow_mode（未入力の Space / Shift+Space の幅。`input.space_width`）
+    extended_input_modes: false      # true のとき、応答の mode に katakana / hankaku_katakana / zenkaku_alnum / hankaku_alnum をそのまま出す
+                                     # （false = hiragana / alphanumeric に読み替え。`mode:`（期待）は常にコア内部のモード）
+    keymap:                          # [keymap] 相当。preset は standard | function_keys | ctrl_letters | henkan_keys
+      preset: ctrl_letters
+      composing: {"Ctrl+l": "ToggleLive"}   # キー仕様 → Action 名（converting: も同様）
     apps:                            # アプリごとの既定モード・素通し（H-49）
       classes: {com.apple.Terminal: code, "com.jetbrains.*": code}   # パターン → code | chat | general
       code_mode: alphanumeric        # chat_mode / general_mode も。keep（省略）= 前回のまま
@@ -38,7 +44,7 @@
         cursor: 1          # PreeditView.cursor（UTF-16）
         focus: 0           # null = 注目文節なし
         state: composing   # direct | composing | converting
-        mode: hiragana     # 現在の入力モード
+        mode: hiragana     # 現在の入力モード（hiragana | alphanumeric | katakana | hankaku_katakana | zenkaku_alnum | hankaku_alnum）
         candidates: ["今日は", "京は"]   # 候補ウィンドウの surface。[] は非表示
         candidates_visible: true
         selected: 1

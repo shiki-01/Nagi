@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod keymap_fragment;
 pub mod settings;
+pub mod windows_ui;
 
 /// エラー・警告の重大度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +169,36 @@ impl DakutenCycle {
 }
 
 impl fmt::Display for DakutenCycle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// 未入力のときの Space で入れるスペースの幅（`input.space_width`）。Shift+Space はいつも反対の幅。
+/// ひらがな・カタカナ・全角英数・半角カナのモードだけが対象で、英数モードの Space は常に半角のままアプリへ渡る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceWidth {
+    /// 半角スペース（既定。従来の動作）。
+    Half,
+    /// 全角スペース。
+    Full,
+    /// 入力モードに従う（ひらがな・カタカナ・全角英数は全角、半角カナは半角）。
+    FollowMode,
+}
+
+impl SpaceWidth {
+    /// 文字列表現を返す。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SpaceWidth::Half => "half",
+            SpaceWidth::Full => "full",
+            SpaceWidth::FollowMode => "follow_mode",
+        }
+    }
+}
+
+impl fmt::Display for SpaceWidth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -505,6 +537,8 @@ pub struct InputSection {
     pub glide: bool,
     /// 英語の候補を選んで確定したとき、後ろに半角スペースを足す（続けて句読点を入力すると消える。H-74）。既定: false。
     pub auto_space_alpha: bool,
+    /// 未入力のときの Space で入れるスペースの幅。Shift+Space は反対の幅。既定: Half。
+    pub space_width: SpaceWidth,
     /// 曖昧入力（タイプミス補正の候補）。
     pub fuzzy: FuzzySection,
     /// 英語の自動判定。
@@ -520,6 +554,7 @@ impl Default for InputSection {
             romaji_carryover: true,
             glide: false,
             auto_space_alpha: false,
+            space_width: SpaceWidth::Half,
             fuzzy: FuzzySection::default(),
             auto_english: AutoEnglishSection::default(),
         }
@@ -1008,11 +1043,24 @@ impl AppsSection {
     }
 }
 
+/// 標準のキーマッププリセット名（`keymap.preset` の既定）。
+pub const KEYMAP_PRESET_STANDARD: &str = "standard";
+
+/// 同梱のキーマッププリセット名（正規の名前）。エンジン側の定義（`nagi_engine::keymap::presets`）と
+/// 一致していること（`nagi-server` のテストで検査する）。
+pub const KEYMAP_PRESETS: &[&str] = &["standard", "function_keys", "ctrl_letters", "henkan_keys"];
+
+/// `keymap.preset` として受け付ける名前か（正規の名前、または旧名 `default`）。
+pub fn is_known_keymap_preset(name: &str) -> bool {
+    name == "default" || KEYMAP_PRESETS.contains(&name)
+}
+
 /// キーマップセクション。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KeymapSection {
-    /// キーマップのプリセット名。既定: "default"。
+    /// キーマップのプリセット名（`standard` / `function_keys` / `ctrl_letters` / `henkan_keys`。
+    /// 旧名 `default` は `standard` と同じ）。既定: "standard"。
     pub preset: String,
     /// ローマ字入力中（Composing）のキー上書き。キー: キー仕様文字列（"Ctrl+j" 等）、
     /// 値: Action 仕様文字列。既定: 空。
@@ -1024,7 +1072,7 @@ pub struct KeymapSection {
 impl Default for KeymapSection {
     fn default() -> Self {
         KeymapSection {
-            preset: "default".to_string(),
+            preset: KEYMAP_PRESET_STANDARD.to_string(),
             composing: Default::default(),
             converting: Default::default(),
         }
@@ -1081,11 +1129,94 @@ impl fmt::Display for IndicatorIcon {
 
 /// Windows のフロントエンドだけが使う設定のセクション（`[windows]`）。
 /// コアは値を保持して `get_settings` で返すだけで、解釈はフロントエンドが行う。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowsSection {
     /// タスクバー（入力インジケーター）・言語バーのアイコンの色。既定: `color`。
     pub indicator_icon: IndicatorIcon,
+    /// 候補ウィンドウのテンプレート（`windows_ui::THEMES`）。下の `Option` の項目の既定値を決める。
+    /// 既定: `standard`。
+    pub candidate_theme: String,
+    /// 文字の大きさの倍率（%）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_font_scale: Option<i32>,
+    /// 候補 1 行の高さ（dp）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_row_height: Option<i32>,
+    /// 左右の余白（dp）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_padding: Option<i32>,
+    /// 角丸の半径（dp）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_corner_radius: Option<i32>,
+    /// 影（`on` / `off`）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_shadow: Option<String>,
+    /// 番号ラベル（`left` / `right` / `hidden`）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_number: Option<String>,
+    /// 注釈（`full` / `source` / `none`）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_annotation: Option<String>,
+    /// 選択行の強調（`fill` / `bar` / `outline`）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_selection: Option<String>,
+    /// 背景の不透明度（%）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_opacity: Option<i32>,
+    /// 配色（`system` / `light` / `dark` / `template`）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_color: Option<String>,
+    /// 候補ウィンドウの最大幅（dp）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_max_width: Option<i32>,
+    /// ページ送りの表示（`footer` / `none`）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_page_indicator: Option<String>,
+    /// 入力中の文字列と候補ウィンドウの間隔（dp）。未指定ならテンプレート。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_gap: Option<i32>,
+    /// 入力中の文字列の下線（`solid` / `dot` / `dash`）。未指定ならテンプレート（実線）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preedit_underline: Option<String>,
+    /// 通知の表示時間（秒）。既定: 4。
+    pub toast_duration_sec: i32,
+    /// 通知の表示位置。既定: `bottom_right`。
+    pub toast_position: String,
+    /// 入力モード切替のときにキャレット付近へ「あ / A」を出すか。既定: true。
+    pub mode_popup: bool,
+    /// モード表示の表示時間（ミリ秒）。既定: 1000。
+    pub mode_popup_duration_ms: i32,
+    /// モード表示の位置（`caret` または通知と同じ隅）。既定: `caret`。
+    pub mode_popup_position: String,
+}
+
+impl Default for WindowsSection {
+    fn default() -> Self {
+        WindowsSection {
+            indicator_icon: IndicatorIcon::default(),
+            candidate_theme: "standard".to_string(),
+            candidate_font_scale: None,
+            candidate_row_height: None,
+            candidate_padding: None,
+            candidate_corner_radius: None,
+            candidate_shadow: None,
+            candidate_number: None,
+            candidate_annotation: None,
+            candidate_selection: None,
+            candidate_opacity: None,
+            candidate_color: None,
+            candidate_max_width: None,
+            candidate_page_indicator: None,
+            candidate_gap: None,
+            preedit_underline: None,
+            toast_duration_sec: 4,
+            toast_position: "bottom_right".to_string(),
+            mode_popup: true,
+            mode_popup_duration_ms: 1000,
+            mode_popup_position: "caret".to_string(),
+        }
+    }
 }
 
 /// Nagi の全設定。
@@ -1216,6 +1347,9 @@ impl Config {
         if let Err(reason) = parse_time_zone(&self.convert.time_zone) {
             errors.push(format!("convert.time_zone は {reason}"));
         }
+
+        // [windows] の変換 UI（候補ウィンドウ・通知・モード表示）
+        errors.extend(windows_ui::validate(&self.windows));
 
         // learning.max_entries: 100 <= max_entries <= 1000000
         if !(100..=1_000_000).contains(&self.learning.max_entries) {
@@ -1413,6 +1547,7 @@ fn get_known_section_keys(section: &str) -> &'static [&'static str] {
             "romaji_carryover",
             "glide",
             "auto_space_alpha",
+            "space_width",
             "fuzzy",
             "auto_english",
         ],
@@ -1448,7 +1583,29 @@ fn get_known_section_keys(section: &str) -> &'static [&'static str] {
             "passthrough_chars",
             "classes",
         ],
-        "windows" => &["indicator_icon"],
+        "windows" => &[
+            "indicator_icon",
+            "candidate_theme",
+            "candidate_font_scale",
+            "candidate_row_height",
+            "candidate_padding",
+            "candidate_corner_radius",
+            "candidate_shadow",
+            "candidate_number",
+            "candidate_annotation",
+            "candidate_selection",
+            "candidate_opacity",
+            "candidate_color",
+            "candidate_max_width",
+            "candidate_page_indicator",
+            "candidate_gap",
+            "preedit_underline",
+            "toast_duration_sec",
+            "toast_position",
+            "mode_popup",
+            "mode_popup_duration_ms",
+            "mode_popup_position",
+        ],
         _ => &[],
     }
 }
@@ -1523,6 +1680,18 @@ pub fn parse(source: &str) -> Result<(Config, Vec<Issue>), Vec<Issue>> {
             line: locate(source, &unknown),
             severity: Severity::Warning,
             message: format!("未知のキーです（無視します）: {unknown}"),
+        });
+    }
+    // 3b. 未知のキーマッププリセット（警告。標準が使われる）
+    if !is_known_keymap_preset(&config.keymap.preset) {
+        issues.push(Issue {
+            line: locate(source, "keymap.preset"),
+            severity: Severity::Warning,
+            message: format!(
+                "keymap.preset の値が不明です（標準を使います）: {}（使える値: {}）",
+                config.keymap.preset,
+                KEYMAP_PRESETS.join(" / ")
+            ),
         });
     }
     // 4. 値の範囲検査（メッセージの先頭が `section.key`）
@@ -2153,6 +2322,51 @@ preset = "default"
                 .all(|i| !i.message.contains("composing") && !i.message.contains("converting")),
             "{warnings:?}"
         );
+    }
+
+    #[test]
+    fn test_keymap_preset_known_names_and_legacy_default() {
+        assert_eq!(Config::default().keymap.preset, "standard");
+        for name in KEYMAP_PRESETS.iter().chain(&["default"]) {
+            let src = format!("[keymap]\npreset = \"{name}\"\n");
+            let (config, issues) = parse(&src).expect("既知のプリセットは読める");
+            assert_eq!(config.keymap.preset, *name);
+            assert!(issues.is_empty(), "{name}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn test_keymap_unknown_preset_warns_with_line() {
+        let src = "[update]\nauto_check = true\n\n[keymap]\n# コメント\npreset = \"bogus\"\n";
+        let (config, issues) = parse(src).expect("未知のプリセットは警告（エラーにしない）");
+        assert_eq!(config.keymap.preset, "bogus");
+        let w: Vec<_> = issues
+            .iter()
+            .filter(|i| i.message.contains("keymap.preset"))
+            .collect();
+        assert_eq!(w.len(), 1, "{issues:?}");
+        assert_eq!(w[0].severity, Severity::Warning);
+        assert_eq!(w[0].line, 6);
+    }
+
+    #[test]
+    fn test_space_width_parse_and_default() {
+        assert_eq!(Config::default().input.space_width, SpaceWidth::Half);
+        for (text, expected) in [
+            ("half", SpaceWidth::Half),
+            ("full", SpaceWidth::Full),
+            ("follow_mode", SpaceWidth::FollowMode),
+        ] {
+            let src = format!("[input]\nspace_width = \"{text}\"\n");
+            let (config, issues) = parse(&src).expect("space_width");
+            assert_eq!(config.input.space_width, expected);
+            assert_eq!(expected.as_str(), text);
+            assert!(issues.is_empty(), "{issues:?}");
+        }
+        // 不正な値はエラー（行番号つき）
+        let errs = parse("[input]\nspace_width = \"wide\"\n").unwrap_err();
+        assert_eq!(errs[0].severity, Severity::Error);
+        assert_eq!(errs[0].line, 2);
     }
 
     #[test]

@@ -7,11 +7,12 @@ use windows::Win32::Graphics::Gdi::HFONT;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Accessibility::{CAccPropServices, IAccPropServices, PROPID_ACC_NAME};
+use windows::Win32::UI::Controls::SetWindowTheme;
 use windows::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, CreateWindowExW, GetWindowTextLengthW, GetWindowTextW, HMENU, OBJID_CLIENT,
     SendMessageW, SetWindowTextW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETFONT, WS_CHILD, WS_VISIBLE,
 };
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, w};
 
 /// NUL 終端の UTF-16
 pub(super) fn wide(s: &str) -> Vec<u16> {
@@ -23,6 +24,19 @@ pub(super) fn instance() -> HINSTANCE {
     unsafe { GetModuleHandleW(None) }
         .map(|m| HINSTANCE(m.0))
         .unwrap_or_default()
+}
+
+/// 入力欄・選択欄・スクロールバーをダークモードの見た目にする（`dark` が偽なら既定に戻す）。
+/// `DarkMode_CFD`（入力欄・コンボボックス）/ `DarkMode_Explorer`（スクロールバー・一覧）は
+/// ドキュメントに載っていないが、ダークモード対応のアプリが広く使っているテーマ名。
+/// 効かなくても色は `WM_CTLCOLOR*` で指定するので、読めなくなることはない
+pub(super) fn set_dark_theme(hwnd: HWND, dark: bool, explorer: bool) {
+    let name = match (dark, explorer) {
+        (false, _) => PCWSTR::null(),
+        (true, true) => w!("DarkMode_Explorer"),
+        (true, false) => w!("DarkMode_CFD"),
+    };
+    let _ = unsafe { SetWindowTheme(hwnd, name, PCWSTR::null()) };
 }
 
 /// 子ウィンドウを作る（`style` に `WS_CHILD | WS_VISIBLE` を足す）。位置は後で決める

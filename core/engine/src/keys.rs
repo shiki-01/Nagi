@@ -27,7 +27,7 @@ pub enum KeyParseError {
 /// キー: 1文字（そのまま keysym=コードポイント、text=その文字）
 ///       または名前 `Space`, `Enter`, `Escape`, `BackSpace`, `Delete`, `Tab`,
 ///       `Left`, `Right`, `Up`, `Down`, `Home`, `End`, `PageUp`, `PageDown`,
-///       `F1`～`F12`, `Eisu`, `Kana`, `Zenkaku`, `Muhenkan`, `Henkan`
+///       `F1`～`F12`, `Eisu`, `Kana`, `Hiragana`, `Katakana`, `Zenkaku`, `Muhenkan`, `Henkan`
 ///
 /// **Ctrl/Alt/Meta を伴うキーは text を空**（修飾キーの処理用）。
 /// 単独の大文字 ASCII 英字（`A`）は Shift 押下として `shift=true, text="A", keysym='A'`。
@@ -166,6 +166,8 @@ fn parse_named_key(name: &str) -> Result<(u32, &'static str), KeyParseError> {
         "F12" => Ok((keysym::F12, "")),
         "Eisu" => Ok((keysym::EISU_TOGGLE, "")),
         "Kana" | "Hiragana_Katakana" => Ok((keysym::HIRAGANA_KATAKANA, "")),
+        "Hiragana" => Ok((keysym::HIRAGANA, "")),
+        "Katakana" => Ok((keysym::KATAKANA, "")),
         "Zenkaku" => Ok((keysym::ZENKAKU_HANKAKU, "")),
         "Muhenkan" => Ok((keysym::MUHENKAN, "")),
         "Henkan" => Ok((keysym::HENKAN, "")),

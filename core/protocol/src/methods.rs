@@ -44,6 +44,10 @@ pub mod method {
     pub const ACCEPT_RETRO_REVIEW: &str = "accept_retro_review";
     /// `get_key_table` メソッド（タッチ入力: 12 キーの文字表と濁点・小書きの循環）
     pub const GET_KEY_TABLE: &str = "get_key_table";
+    /// `get_keymap` メソッド（現在有効なキー割当の一覧。文脈別・出所つき）
+    pub const GET_KEYMAP: &str = "get_keymap";
+    /// `validate_keymap` メソッド（`[keymap.*]` の TOML 断片の検証。拒否ではなく警告を返す）
+    pub const VALIDATE_KEYMAP: &str = "validate_keymap";
     /// `unload_model` メソッド（変換モデルだけをメモリから解放し、辞書のみで動く状態にする）
     pub const UNLOAD_MODEL: &str = "unload_model";
     /// `reload_model` メソッド（解放した変換モデルを再び読み込む）
@@ -122,6 +126,11 @@ pub struct ClientCapabilities {
     /// ことにフロントが対応している。iOS の候補バー）。省略・`false` は従来どおりの少数の候補
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub partial_suggestions: Option<bool>,
+    /// `Some(true)` なら、応答の `mode` に `katakana` / `hankaku_katakana` / `zenkaku_alnum` /
+    /// `hankaku_alnum` が現れてもよい（フロントがそれらの入力モードを解釈できる）。省略・`false` の
+    /// クライアントには、かな系は `hiragana`、英数系は `alphanumeric` に読み替えて返す
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub extended_input_modes: Option<bool>,
 }
 
 /// サーバーの機能
@@ -147,6 +156,10 @@ pub struct ServerCapabilities {
     /// `input.fuzzy.retro_review` による
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub retro_review: Option<bool>,
+    /// キー割当の取得・検証（`get_keymap` / `validate_keymap`）に対応しているか。古いサーバーは
+    /// 省略する（省略は非対応と同じ）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub keymap: Option<bool>,
 }
 
 /// `initialize` メソッドの応答
@@ -969,4 +982,162 @@ pub struct ImportUserDictResult {
     pub skipped: u32,
     /// スキップの理由ごとの内訳
     pub skipped_reasons: Vec<ImportSkipReason>,
+}
+
+// ---- キー割当（`get_keymap` / `validate_keymap`） ----
+
+/// キー割当の文脈
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeymapContext {
+    /// 全文脈・全入力モードで有効（モード切替キーなど）
+    Common,
+    /// 未入力（Direct）
+    Direct,
+    /// ローマ字入力中（Composing）。`[keymap.composing]` で上書きできる
+    Composing,
+    /// 変換中（Converting。候補選択・範囲選択を含む）。`[keymap.converting]` で上書きできる
+    Converting,
+}
+
+/// キー割当の出所
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeymapSource {
+    /// 内蔵の既定の割当
+    Default,
+    /// 選択中のプリセットの割当
+    Preset,
+    /// 利用者の `[keymap.*]` の上書き
+    User,
+}
+
+/// 有効なキー割当 1 件
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeymapBinding {
+    /// 文脈
+    pub context: KeymapContext,
+    /// キー仕様文字列（`Ctrl+Shift+Right` 形式。`[keymap.*]` にそのまま書ける）
+    pub key: String,
+    /// Action 名（`[keymap.*]` の値と同じ書式。`SetMode:Alphanumeric` のように上書きできないものも含む）
+    pub action: String,
+    /// 出所
+    pub source: KeymapSource,
+    /// `common` のうち、どの入力モードで有効か（`kana` = かな系のみ、`passthrough` = 英数系のみ）。
+    /// 省略はすべてのモード
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub when_mode: Option<String>,
+}
+
+/// 同梱のキーマッププリセット
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeymapPresetInfo {
+    /// `keymap.preset` に書く名前
+    pub name: String,
+    /// 表示名（日本語）
+    pub label: String,
+    /// 説明（日本語）
+    pub description: String,
+}
+
+/// 割り当てられる Action
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeymapActionInfo {
+    /// Action 名（`[keymap.*]` の値）
+    pub name: String,
+    /// 表示名（日本語）
+    pub label: String,
+    /// 割り当てられる文脈（`composing` / `converting`）
+    pub contexts: Vec<KeymapContext>,
+}
+
+/// `get_keymap` メソッドの要求パラメータ
+#[typeshare]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetKeymapParams {
+    /// 一覧を作るプリセット。省略すると現在の設定（`keymap.preset`）。指定すると、そのプリセットに
+    /// 切り替えたときの一覧（現在の利用者の上書きは常にプリセットに優先して残る）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub preset: Option<String>,
+}
+
+/// `get_keymap` メソッドの応答
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetKeymapResult {
+    /// 一覧の対象のプリセット名（正規の名前。未知の名前を指定した場合は `standard`）
+    pub preset: String,
+    /// 同梱のプリセット
+    pub presets: Vec<KeymapPresetInfo>,
+    /// 割り当てられる Action の一覧
+    pub actions: Vec<KeymapActionInfo>,
+    /// 有効な割当（文脈別。同じ文脈・同じキーは出所の優先が高い 1 件だけ）。印字可能な文字キー
+    /// （文字入力）と、数字による候補選択以外の文字入力は含まない
+    pub bindings: Vec<KeymapBinding>,
+}
+
+/// キー割当の検証結果の種別
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeymapIssueKind {
+    /// TOML の構文・形式の誤り（その行は無視される）
+    Syntax,
+    /// 解釈できないキー（その行は無視される）
+    InvalidKey,
+    /// 解釈できない Action（その行は無視される）
+    InvalidAction,
+    /// 未知のプリセット名（標準が使われる）
+    UnknownPreset,
+    /// 同じ文脈で同じキーを 2 回以上割り当てている（後のものが有効）
+    DuplicateBinding,
+    /// 重要なキー（Enter / Esc / Space / 矢印 / Backspace）の割当を変えている
+    OverridesEssentialKey,
+    /// 文字入力のキー（修飾なしの印字文字・候補選択の数字）を奪う
+    ShadowsTextInput,
+    /// OS が先に処理するキー（Alt+F4・Win/Cmd 系など）なので届かないことがある
+    OsReserved,
+}
+
+/// キー割当の検証で見つかった問題 1 件。`errors` は無視される行、`warnings` は有効だが注意が要るもの
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeymapIssue {
+    /// 種別
+    pub kind: KeymapIssueKind,
+    /// 断片内の行番号（1 始まり。特定できなければ 0）
+    pub line: u32,
+    /// 文脈（キー・Action に関する問題のとき）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context: Option<KeymapContext>,
+    /// キー仕様文字列（書かれたまま）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub key: Option<String>,
+    /// 日本語の説明
+    pub message: String,
+}
+
+/// `validate_keymap` メソッドの要求パラメータ
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateKeymapParams {
+    /// `[keymap.composing]` / `[keymap.converting]`（と任意で `[keymap]` の `preset`）だけを含む
+    /// TOML の断片
+    pub toml: String,
+}
+
+/// `validate_keymap` メソッドの応答
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateKeymapResult {
+    /// 無視される行（構文・キー・Action の誤り）
+    pub errors: Vec<KeymapIssue>,
+    /// 有効だが注意が要るもの（二重割当・重要キーの上書き・文字入力との衝突・OS 予約キー）。
+    /// 拒否ではなく確認のための情報
+    pub warnings: Vec<KeymapIssue>,
 }

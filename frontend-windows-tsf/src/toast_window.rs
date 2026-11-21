@@ -1,6 +1,7 @@
 //! 通知パネル（トースト）。フォーカスを奪わない最前面の小さなポップアップを、作業領域の右下に
 //! 数秒だけ出す。文言は `nagi_windows::status`、配置・表示時間は `nagi_windows::toast` が決める。
-//! モード切替ポップアップ（キャレット付近に 1 秒）も同じウィンドウで出す（`show_near`）。
+//! モード切替ポップアップ（既定はキャレット付近に 1 秒）も同じウィンドウで出す（`show_near` / `show_corner`）。
+//! 表示時間・位置・余白・角丸・文字の大きさ・配色は `CandidateStyle`（設定。H-119）に従う。
 
 #![allow(unsafe_code)]
 
@@ -8,9 +9,10 @@ use std::cell::{Cell, RefCell};
 
 use std::time::Duration;
 
+use nagi_windows::candidate_style::CandidateStyle;
 use nagi_windows::candidates::{Rect, Size, scale_px};
 use nagi_windows::toast::{
-    TOAST_DURATION, TOAST_MARGIN, TOAST_MAX_WIDTH, place_mode_popup, place_toast,
+    TOAST_MARGIN, TOAST_MAX_WIDTH, ToastPosition, place_in_corner, place_mode_popup,
 };
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -36,17 +38,11 @@ use nagi_windows::candidates::FontRole;
 static CLASS: WindowClass = WindowClass::new("NagiToastWindow");
 const TIMER_ID: usize = 1;
 
-/// 角丸の直径（96 DPI 基準）
-const CORNER: i32 = 12;
-/// 文字の周りの余白（96 DPI 基準）
-const PAD_X: i32 = 14;
-const PAD_Y: i32 = 10;
-
 /// 表示位置の決め方
 #[derive(Clone, Copy)]
 enum Place {
-    /// プライマリの作業領域の右下（通知）
-    BottomRight,
+    /// プライマリの作業領域の隅（通知・隅に出すモード表示）
+    Corner(ToastPosition),
     /// 基準の矩形の近く（モード切替ポップアップ）
     Near(Rect),
 }
@@ -57,6 +53,8 @@ struct Paint {
     pad_x: i32,
     pad_y: i32,
     size: Size,
+    /// この表示の実効値（ハイコントラストの調整済み。配色は描くたびにここから決める）
+    style: CandidateStyle,
 }
 
 type PaintCell = RefCell<Option<Paint>>;
@@ -67,6 +65,8 @@ pub struct ToastWindow {
     paint: Cell<isize>,
     /// アプリ別の位置の補正（96 DPI 基準の dp。キャレット付近に出すポップアップだけに効く）
     offset: Cell<nagi_windows::candidates::Point>,
+    /// 設定から解決した見た目（次の表示から効く）
+    style: Cell<CandidateStyle>,
 }
 
 impl Default for ToastWindow {
@@ -82,7 +82,13 @@ impl ToastWindow {
             hwnd: Cell::new(HWND::default()),
             paint: Cell::new(0),
             offset: Cell::new(nagi_windows::candidates::Point::default()),
+            style: Cell::new(CandidateStyle::default()),
         }
+    }
+
+    /// 見た目の設定（実効値）を渡す。次の表示から効く
+    pub fn set_style(&self, style: CandidateStyle) {
+        self.style.set(style);
     }
 
     /// アプリ別の位置の補正（dp）を設定する。次のポップアップから効く（右下の通知には効かない）
@@ -127,19 +133,33 @@ impl ToastWindow {
         Some(hwnd)
     }
 
-    /// `message` を作業領域の右下に表示する。表示中なら置き換えて、表示時間をやり直す
+    /// `message` を作業領域の隅（設定 `windows.toast_position`）に表示する。表示中なら置き換えて、表示時間をやり直す
     pub fn show(&self, message: &str) {
+        let style = self.style.get();
         self.present(
             &format!("Nagi: {message}"),
-            Place::BottomRight,
-            TOAST_DURATION,
+            Place::Corner(style.toast_position),
+            style.toast_duration,
         );
     }
 
-    /// `text` を `anchor`（キャレットなどのスクリーン座標の矩形）の近くに `duration` だけ表示する
+    /// `text` を `anchor`（キャレットなどのスクリーン座標の矩形）の近くに、設定のモード表示の時間だけ表示する
     /// （モード切替ポップアップ）。表示中なら置き換えて、表示時間をやり直す
-    pub fn show_near(&self, text: &str, anchor: Rect, duration: Duration) {
-        self.present(text, Place::Near(anchor), duration);
+    pub fn show_near(&self, text: &str, anchor: Rect) {
+        self.present(
+            text,
+            Place::Near(anchor),
+            self.style.get().mode_popup_duration,
+        );
+    }
+
+    /// `text` を作業領域の隅に、設定のモード表示の時間だけ表示する（モード表示の位置が隅のとき）
+    pub fn show_corner(&self, text: &str, position: ToastPosition) {
+        self.present(
+            text,
+            Place::Corner(position),
+            self.style.get().mode_popup_duration,
+        );
     }
 
     fn present(&self, text: &str, place: Place, duration: Duration) {
@@ -152,7 +172,7 @@ impl ToastWindow {
         };
         // 置く場所へ先に動かし、そこのモニターの DPI で寸法を決める（トーストはプライマリの右下）
         let (probe_x, probe_y) = match place {
-            Place::BottomRight => (work.right - 1, work.bottom - 1),
+            Place::Corner(_) => (work.right - 1, work.bottom - 1),
             Place::Near(anchor) => (anchor.left, anchor.bottom),
         };
         let _ = unsafe {
@@ -170,9 +190,16 @@ impl ToastWindow {
         let Some(cell) = (unsafe { user_data_ref::<PaintCell>(self.paint.get()) }) else {
             return;
         };
-        let fonts = Fonts::new(dpi);
+        let mut style = self.style.get();
+        if win::theme_input().high_contrast.is_some() {
+            style = style.for_high_contrast();
+        }
+        let fonts = Fonts::new(dpi, style.font_percent);
         let text: Vec<u16> = text.encode_utf16().collect();
-        let (pad_x, pad_y) = (scale_px(PAD_X, dpi), scale_px(PAD_Y, dpi));
+        let (pad_x, pad_y) = (
+            scale_px(style.toast_pad_x, dpi),
+            scale_px(style.toast_pad_y, dpi),
+        );
         let max_text_width = scale_px(TOAST_MAX_WIDTH, dpi) - pad_x * 2;
 
         // 折り返したときの文字領域の大きさを計る
@@ -200,7 +227,9 @@ impl ToastWindow {
             height: (measure.bottom - measure.top) + pad_y * 2,
         };
         let origin = match place {
-            Place::BottomRight => place_toast(work, size, scale_px(TOAST_MARGIN, dpi)),
+            Place::Corner(position) => {
+                place_in_corner(work, size, scale_px(TOAST_MARGIN, dpi), position)
+            }
             Place::Near(anchor) => place_mode_popup(
                 nagi_windows::placement::shift_rect(anchor, self.offset.get(), dpi),
                 size,
@@ -213,12 +242,18 @@ impl ToastWindow {
             pad_x,
             pad_y,
             size,
+            style,
         });
         unsafe {
-            let corner = scale_px(CORNER, dpi);
-            let region = CreateRoundRectRgn(0, 0, size.width + 1, size.height + 1, corner, corner);
-            // 領域の所有権はウィンドウに移る
-            SetWindowRgn(hwnd, Some(region), true);
+            let corner = scale_px(style.toast_corner, dpi);
+            if corner > 0 {
+                let region =
+                    CreateRoundRectRgn(0, 0, size.width + 1, size.height + 1, corner, corner);
+                // 領域の所有権はウィンドウに移る
+                SetWindowRgn(hwnd, Some(region), true);
+            } else {
+                SetWindowRgn(hwnd, None, true);
+            }
             let _ = SetWindowPos(
                 hwnd,
                 Some(HWND_TOPMOST),
@@ -278,7 +313,7 @@ fn draw(hwnd: HWND) {
             bottom: paint.size.height,
         };
         unsafe {
-            let pal = win::palette();
+            let pal = paint.style.palette(win::theme_input());
             let brush = CreateSolidBrush(COLORREF(pal.toast_bg.to_colorref()));
             FillRect(hdc, &whole, brush);
             let _ = DeleteObject(HGDIOBJ(brush.0));

@@ -28,14 +28,19 @@ pub struct CompartmentValues {
 /// 英数は「閉・ローマ字」（アプリからは IME オフに見える。MS-IME の半角英数と同様）
 pub fn compartment_values(mode: InputMode) -> CompartmentValues {
     match mode {
-        InputMode::Hiragana => CompartmentValues {
-            open: true,
-            conversion: CONVERSION_NATIVE | CONVERSION_FULLSHAPE | CONVERSION_ROMAN,
-        },
-        InputMode::Alphanumeric => CompartmentValues {
-            open: false,
-            conversion: CONVERSION_ROMAN,
-        },
+        // カタカナ・半角カナはひらがな、全角英数・半角英数は英数として OS に伝える（拡張モードの同期は後続）
+        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => {
+            CompartmentValues {
+                open: true,
+                conversion: CONVERSION_NATIVE | CONVERSION_FULLSHAPE | CONVERSION_ROMAN,
+            }
+        }
+        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => {
+            CompartmentValues {
+                open: false,
+                conversion: CONVERSION_ROMAN,
+            }
+        }
     }
 }
 
