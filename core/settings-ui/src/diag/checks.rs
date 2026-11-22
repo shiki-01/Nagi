@@ -1154,21 +1154,47 @@ pub fn judge_tsf_log_with(
         ));
     }
     let mut unlaunchable_advice = "";
-    if !a.unlaunchable_pids.is_empty() {
-        let n = a.unlaunchable_pids.len();
-        let pids: Vec<String> = a
-            .unlaunchable_pids
-            .iter()
-            .map(|p| match a.host_exes.get(p) {
-                Some(exe) => format!("{p}（{exe}）"),
-                None => p.to_string(),
-            })
-            .collect();
-        let hosts = a.hosts.max(n);
-        let msg = format!(
-            "{n} プロセスで起動不可（制限されたホストの可能性）。該当 pid: {}",
-            pids.join(", ")
+    // 実行ファイル名が想定内の制限されたホストの pid は、問題として扱わない
+    let (expected_pids, other_pids): (Vec<u32>, Vec<u32>) =
+        a.unlaunchable_pids.iter().partition(|p| {
+            a.host_exes
+                .get(p)
+                .is_some_and(|e| is_expected_restricted_host(e))
+        });
+    let label = |p: &u32| match a.host_exes.get(p) {
+        Some(exe) => format!("{p}（{exe}）"),
+        None => p.to_string(),
+    };
+    let mut expected_note: Option<String> = None;
+    if !expected_pids.is_empty() {
+        let list: Vec<String> = expected_pids.iter().map(label).collect();
+        let note = format!(
+            "想定内: 設定アプリ等の制限されたホストでは変換エンジンを起動できません。ユーザーが入力するアプリではないため問題ありません（{}）",
+            list.join(", ")
         );
+        lines.push(note.clone());
+        expected_note = Some(note);
+    }
+    if !other_pids.is_empty() {
+        let n = other_pids.len();
+        let pids: Vec<String> = other_pids.iter().map(label).collect();
+        let hosts = a.hosts.max(n);
+        let known_apps: Vec<&str> = other_pids
+            .iter()
+            .filter_map(|p| a.host_exes.get(p).map(String::as_str))
+            .collect();
+        let msg = if known_apps.is_empty() {
+            format!(
+                "{n} プロセスで起動不可（制限されたホストの可能性）。該当 pid: {}",
+                pids.join(", ")
+            )
+        } else {
+            format!(
+                "{n} プロセスで起動不可。該当 pid: {}。{} では変換が使えません。報告してください",
+                pids.join(", "),
+                known_apps.join(", ")
+            )
+        };
         // ホスト数が分からない（ログに起動不可の pid しか出ていない）ときは、1〜2 個なら要確認。
         // ホストが分かるときは、起動不可が半数以下なら要確認、半数超なら NG
         let minority = if hosts > n { n * 2 <= hosts } else { n <= 2 };
@@ -1263,7 +1289,32 @@ pub fn judge_tsf_log_with(
         )
         .with_evidence(lines);
     }
-    ItemResult::ok(id, "起動失敗・登録失敗の記録はありません").with_evidence(lines)
+    match expected_note {
+        Some(note) => ItemResult::ok(id, note),
+        None => ItemResult::ok(id, "起動失敗・登録失敗の記録はありません"),
+    }
+    .with_evidence(lines)
+}
+
+/// 変換エンジンを起動できなくても想定内の、制限されたホスト（実行ファイル名。大文字小文字を区別しない）。
+/// ユーザーが日本語を入力するアプリではない。`msedgewebview2.exe` などは入力欄を持ちうるので含めない
+const EXPECTED_RESTRICTED_HOSTS: [&str; 9] = [
+    "systemsettings.exe",
+    "applicationframehost.exe",
+    "searchhost.exe",
+    "startmenuexperiencehost.exe",
+    "shellexperiencehost.exe",
+    "textinputhost.exe",
+    "lockapp.exe",
+    "logonui.exe",
+    "widgets.exe",
+];
+
+fn is_expected_restricted_host(exe: &str) -> bool {
+    let name = exe.rsplit(['\\', '/']).next().unwrap_or(exe).trim();
+    EXPECTED_RESTRICTED_HOSTS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
 }
 
 fn now_unix() -> i64 {
@@ -1883,6 +1934,51 @@ mod tests {
     }
 
     const REAL_SPAWN: &str = "2026-11-21T11:20:00Z pid=7720 [engine] launch failed: spawn failed (send failed: spawn: システム バイナリのエラーが検出されました。 (os error 15623))";
+
+    fn settings_report(with_host: bool, extra: &str) -> String {
+        let mut t = String::new();
+        for (ts, pid) in [
+            ("12:07:18", 26876),
+            ("12:11:38", 23200),
+            ("12:13:39", 28864),
+        ] {
+            t += &format!(
+                "2026-11-22T{ts}Z pid={pid} [engine] launch failed: spawn failed (send failed: spawn: x (os error 15623))\n"
+            );
+            if with_host {
+                t += &format!("2026-11-22T{ts}Z pid={pid} [host] exe=SystemSettings.exe\n");
+            }
+        }
+        t + extra
+    }
+
+    #[test]
+    fn tsf_log_unlaunchable_known_restricted_hosts_are_ok() {
+        let now = tsflog::parse_utc("2026-11-22T13:00:00Z").unwrap();
+        let r = judge_tsf_log(&tsflog::analyze(&settings_report(true, "")), now);
+        assert_eq!(r.status, Status::Ok, "{r:?}");
+        assert!(r.detail.contains("想定内") && r.detail.contains("26876（SystemSettings.exe）"));
+    }
+
+    #[test]
+    fn tsf_log_unlaunchable_user_app_still_needs_attention() {
+        let now = tsflog::parse_utc("2026-11-22T13:00:00Z").unwrap();
+        let extra = "2026-11-22T12:20:00Z pid=500 [engine] launch failed: spawn failed (x (os error 15623))\n\
+2026-11-22T12:20:00Z pid=500 [host] exe=chrome.exe\n";
+        let r = judge_tsf_log(&tsflog::analyze(&settings_report(true, extra)), now);
+        assert_eq!(r.status, Status::Warn, "{r:?}");
+        assert!(r.detail.contains("chrome.exe") && r.detail.contains("報告してください"));
+        assert!(!r.detail.contains("26876"));
+        assert!(r.evidence.iter().any(|l| l.contains("想定内")));
+    }
+
+    #[test]
+    fn tsf_log_unlaunchable_without_host_lines_is_not_expected() {
+        let now = tsflog::parse_utc("2026-11-22T13:00:00Z").unwrap();
+        let r = judge_tsf_log(&tsflog::analyze(&settings_report(false, "")), now);
+        assert_ne!(r.status, Status::Ok, "{r:?}");
+        assert!(!r.detail.contains("想定内"));
+    }
 
     #[test]
     fn tsf_log_unlaunchable_host_minority_is_warn_all_is_ng() {

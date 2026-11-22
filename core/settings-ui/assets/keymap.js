@@ -19,6 +19,21 @@
   };
   // IME が処理中で key が "Process" になるときは code で見分ける
   var JP_CODES = { Convert: "Henkan", NonConvert: "Muhenkan", KanaMode: "Kana" };
+  // IME が処理中で key が "Process" などになるとき、物理キー（code）から読み取る
+  var CODE_NAMED = {
+    Space: "Space", Enter: "Enter", NumpadEnter: "Enter", Backspace: "BackSpace", Delete: "Delete",
+    ArrowLeft: "Left", ArrowRight: "Right", ArrowUp: "Up", ArrowDown: "Down",
+    Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown"
+  };
+  function nameFromCode(code) {
+    code = code || "";
+    if (JP_CODES[code]) return JP_CODES[code];
+    if (CODE_NAMED[code]) return CODE_NAMED[code];
+    var m = /^Key([A-Z])$/.exec(code) || /^Digit([0-9])$/.exec(code);
+    if (m) return m[1].toLowerCase();
+    if (/^F([1-9]|1[0-2])$/.test(code)) return code;
+    return null;
+  }
 
   function modifiersOf(e) {
     // AltGr は Ctrl+Alt として届くが、文字を打つためのものなので修飾としては数えない
@@ -46,11 +61,7 @@
     var name = null;
     if (JP_KEYS[key]) name = JP_KEYS[key];
     else if (key === "Process" || key === "Unidentified" || key === "Dead" || key === "Compose") {
-      name = JP_CODES[e.code] || null;
-      if (!name) {
-        var cm = /^Key([A-Z])$/.exec(e.code || "") || /^Digit([0-9])$/.exec(e.code || "");
-        if (cm) name = cm[1].toLowerCase();
-      }
+      name = nameFromCode(e.code);
     } else if (NAMED_KEYS[key]) name = NAMED_KEYS[key];
     else if (/^F([1-9]|1[0-2])$/.test(key)) name = key;
     else if (/^F[0-9]+$/.test(key)) return { kind: "unsupported", message: "F13 以降のキーは割り当てできません。" };
@@ -109,7 +120,8 @@
   var UI = null;
   var S = {
     data: null, error: "", ctx: "composing", query: "", userOnly: false,
-    transferText: "", transferBase: null, transferValid: null, merge: false
+    transferText: "", transferBase: null, transferValid: null, merge: false,
+    editor: null, flash: null
   };
   var refs = {};
   var loadSeq = 0;
@@ -295,10 +307,11 @@
       });
     }).then(null, function (e) { UI.toast(e.message, true); });
   }
-
   // ---- 割り当ての一覧 ----
   function paintBindings() {
     var ctx = contextById(S.ctx);
+    // 別の場面に切り替わったら、開いている編集パネルは閉じる
+    if (S.editor && S.editor.context !== ctx.id) closeEditor(true);
     var wrap = UI.el("div", { "class": "kc-bindings" });
     wrap.appendChild(tabsBar());
     if (!S.data) {
@@ -308,6 +321,7 @@
     }
     wrap.appendChild(toolbar(ctx));
     if (ctx.note) wrap.appendChild(UI.el("div", { "class": "kc-note" }, [UI.icon("lock"), UI.el("p", { text: ctx.note })]));
+    if (ctx.editable) wrap.appendChild(UI.el("p", { "class": "kc-guide", text: "キーの表示を押すと、そのキーを変更・解除できます。「キーを追加」で、その操作に別のキーを足せます。" }));
     var panel = UI.el("div", { id: "kc-panel", role: "tabpanel", "aria-labelledby": "kc-tab-" + ctx.id });
     panel.appendChild(table(ctx));
     wrap.appendChild(panel);
@@ -352,7 +366,7 @@
     var only = UI.el("input", { type: "checkbox", role: "switch", "class": "switch", id: "kc-only-user" });
     only.checked = S.userOnly;
     only.addEventListener("change", function () { S.userOnly = only.checked; paintBindings(); });
-    var assign = UI.button("キーを割り当てる", "primary", "plus", function () { openAssign({ context: ctx.editable ? ctx.id : "composing" }); });
+    var assign = UI.button("キーを割り当てる", "primary kc-assign-top", "plus", function () { openAssign({ context: ctx.editable ? ctx.id : "composing" }); });
     if (!ctx.editable) { assign.disabled = true; assign.title = "この場面のキーは変更できません"; }
     refs.tablePaint = function () {
       var panel = document.getElementById("kc-panel");
@@ -404,12 +418,25 @@
       return matches(r, q);
     });
     var card = UI.card([]);
+    card.classList.add("kc-table");
     if (rows.length === 0) {
       card.appendChild(UI.el("div", { "class": "kc-empty", text: S.userOnly ? "この場面にユーザーの割り当てはありません。" : q ? "一致する操作やキーがありません。" : "割り当てはありません。" }));
-      return card;
+    } else {
+      rows.forEach(function (r) { card.appendChild(rowNode(ctx, r)); });
     }
-    rows.forEach(function (r) { card.appendChild(rowNode(ctx, r)); });
+    placeEditor(card, ctx);
     return card;
+  }
+  // 開いている編集パネルを、対象の行のすぐ下（行が無ければ表の先頭）に置く
+  function placeEditor(card, ctx) {
+    var ed = S.editor;
+    if (!ed || ed.context !== ctx.id) return;
+    var anchor = null;
+    if (ed.rowAction) {
+      Array.prototype.forEach.call(card.children, function (n) { if (n.getAttribute("data-action") === ed.rowAction) anchor = n; });
+    }
+    if (anchor) card.insertBefore(ed.node, anchor.nextSibling);
+    else card.insertBefore(ed.node, card.firstChild);
   }
   function rowNode(ctx, row) {
     var main = UI.el("div", { "class": "kc-main" }, [
@@ -421,7 +448,7 @@
     if (row.keys.length === 0) chips.appendChild(UI.el("span", { "class": "kc-none", text: "未割り当て" }));
     var ops = UI.el("div", { "class": "kc-ops" });
     if (ctx.editable) {
-      var add = UI.button("キーを追加", "quiet sm", "plus", function () { openAssign({ context: ctx.id, action: row.action }); });
+      var add = UI.button("キーを追加", "sm kc-add", "plus", function () { openAssign({ context: ctx.id, action: row.action }); });
       add.setAttribute("aria-label", actionLabel(row.action) + "にキーを追加");
       ops.appendChild(add);
       var mine = row.keys.filter(function (b) { return b.source === "user"; });
@@ -431,34 +458,57 @@
         ops.appendChild(reset);
       }
     }
-    return UI.el("div", { "class": "kc-row", "data-action": row.action }, [main, chips, ops]);
+    var cls = "kc-row";
+    if (S.editor && S.editor.context === ctx.id && S.editor.rowAction === row.action) cls += " editing";
+    if (S.flash && S.flash.context === ctx.id && S.flash.action === row.action) cls += " flash";
+    return UI.el("div", { "class": cls, "data-action": row.action }, [main, chips, ops]);
   }
   function chip(ctx, row, b) {
     var src = SOURCES[b.source] || SOURCES["default"];
     var caps = UI.el("span", { "class": "kc-caps", title: b.key });
     displayParts(b.key).forEach(function (p) { caps.appendChild(UI.el("kbd", { "class": "kc-cap", text: p })); });
-    var node = UI.el("span", { "class": "kc-chip " + src.cls, "data-key": b.key }, [caps, UI.el("span", { "class": "kc-src", text: src.label })]);
-    if (b.when_mode && MODE_NOTES[b.when_mode]) node.appendChild(UI.el("span", { "class": "kc-src mode", text: MODE_NOTES[b.when_mode] }));
+    var kids = [caps, UI.el("span", { "class": "kc-src", text: src.label })];
+    if (b.when_mode && MODE_NOTES[b.when_mode]) kids.push(UI.el("span", { "class": "kc-src mode", text: MODE_NOTES[b.when_mode] }));
     var name = displayParts(b.key).join("+");
-    if (ctx.editable) {
-      if (b.source === "user") {
-        var edit = chipButton("pencil", "変更", name + " の割り当てを変更", function () { openAssign({ context: ctx.id, action: b.action, key: b.key, oldKey: b.key }); });
-        var del = chipButton("x", "解除", name + " の割り当てを解除（既定・プリセットの割当があればそれに戻ります）", function () { removeBinding(ctx.id, b); });
-        node.appendChild(edit);
-        node.appendChild(del);
-      } else {
-        var change = chipButton("pencil", "このキーの操作を変える", name + " に割り当てる操作を変える", function () { openAssign({ context: ctx.id, action: b.action, key: b.key, lockKey: true }); });
-        var off = chipButton("block", "無効にする", name + " を無効にする（何もしない・キーは消費）", function () { disableBinding(ctx.id, b); });
-        node.appendChild(change);
-        node.appendChild(off);
-      }
-    }
+    var cls = "kc-chip " + src.cls;
+    if (S.flash && S.flash.context === ctx.id && S.flash.action === row.action && S.flash.key && normKey(S.flash.key) === normKey(b.key)) cls += " flash";
+    if (!ctx.editable) return UI.el("span", { "class": cls, "data-key": b.key }, kids);
+    // 編集できる場面のキーは、押せるボタン（押すとこの行の下に編集パネルが開く）
+    kids.push(UI.icon("pencil"));
+    var editing = !!S.editor && S.editor.chipKey === b.key && S.editor.rowAction === b.action && S.editor.context === ctx.id;
+    var node = UI.el("button", {
+      type: "button", "class": cls + (editing ? " editing" : ""), "data-key": b.key,
+      "aria-expanded": editing ? "true" : "false",
+      "aria-label": "『" + actionLabel(b.action) + "』のキー " + name + "（" + src.label + "）。押すと" + (b.source === "user" ? "変更・解除" : "操作の変更・無効化") + "ができます"
+    }, kids);
+    node.addEventListener("click", function () {
+      if (b.source === "user") openAssign({ context: ctx.id, action: b.action, key: b.key, oldKey: b.key });
+      else openAssign({ context: ctx.id, action: b.action, key: b.key, lockKey: true });
+    });
     return node;
   }
-  function chipButton(iconName, title, label, onClick) {
-    var b = UI.el("button", { type: "button", "class": "kc-chip-btn", title: title, "aria-label": label }, [UI.icon(iconName)]);
-    b.addEventListener("click", onClick);
-    return b;
+  function normKey(k) { return String(k).toLowerCase().replace(/control\+/g, "ctrl+"); }
+
+  // ---- 保存・解除のあとの見える反応（行のハイライトと、その行までのスクロール） ----
+  var flashTimer = 0;
+  function setFlash(context, action, key) {
+    S.flash = { context: context, action: action, key: key || "" };
+    window.clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(function () {
+      S.flash = null;
+      if (!refs.root) return;
+      Array.prototype.forEach.call(refs.root.querySelectorAll(".flash"), function (n) { n.classList.remove("flash"); });
+    }, 3600);
+  }
+  function showFlash(focusChip) {
+    if (!refs.root) return;
+    var row = refs.root.querySelector(".kc-row.flash");
+    if (!row) return;
+    try { row.scrollIntoView({ block: "nearest" }); } catch (e) { /* 古い WebView では何もしない */ }
+    if (focusChip) {
+      var c = row.querySelector(".kc-chip.flash");
+      if (c && c.focus) { try { c.focus({ preventScroll: true }); } catch (e2) { c.focus(); } }
+    }
   }
 
   // ---- 1 件の保存・解除 ----
@@ -468,20 +518,30 @@
     return post("set", body);
   }
   function removeBinding(context, b) {
-    setBinding(context, b.key, null).then(function (r) {
+    return setBinding(context, b.key, null).then(function (r) {
+      setFlash(context, b.action, null);
       adopt(r);
-      UI.toast("解除しました", false);
+      showFlash(false);
+      var msg = "解除しました（" + displayParts(b.key).join("+") + "）";
+      UI.toast(msg, false);
+      UI.announce(msg);
     }, function (e) { UI.toast(e.message, true); });
   }
   function disableBinding(context, b) {
-    confirmBox({
+    return confirmBox({
       title: "このキーを無効にしますか？",
       lines: [displayParts(b.key).join(" + ") + " を「何もしない」に割り当てます。このキーは押されても消費され、" + actionLabel(b.action) + "は実行されません。「ユーザー」の割り当てとして残るので、あとから解除して元に戻せます。"],
       ok: "無効にする"
     }).then(function (ok) {
-      if (!ok) return null;
-      return setBinding(context, b.key, "NoOp").then(function (r) { adopt(r); UI.toast("無効にしました", false); });
-    }).then(null, function (e) { UI.toast(e.message, true); });
+      if (!ok) return false;
+      return setBinding(context, b.key, "NoOp").then(function (r) {
+        setFlash(context, "NoOp", b.key);
+        adopt(r);
+        showFlash(false);
+        UI.toast("無効にしました", false);
+        return true;
+      });
+    }).then(null, function (e) { UI.toast(e.message, true); return false; });
   }
   function resetRow(row, mine) {
     confirmBox({
@@ -493,194 +553,340 @@
       // 1 件ずつ解除する（最後の応答が最新の一覧）
       var chain = Promise.resolve(null);
       mine.forEach(function (b) { chain = chain.then(function () { return setBinding(b.context, b.key, null); }); });
-      return chain.then(function (r) { if (r) { adopt(r); UI.toast("既定に戻しました", false); } });
+      return chain.then(function (r) {
+        if (r) {
+          setFlash(mine[0].context, row.action, null);
+          adopt(r);
+          showFlash(false);
+          UI.toast("既定に戻しました", false);
+        }
+      });
     }).then(null, function (e) { UI.toast(e.message, true); reload(); });
   }
 
-  // ---- 割り当てダイアログ ----
-  // opts: {context, action?, key?, oldKey?, lockKey?}。oldKey があれば「変更」（新しいキーを保存し、古いユーザー割当を解除）
+  // ---- 割り当ての編集パネル（行のすぐ下に開く。ダイアログではない） ----
+  function findRow(action) {
+    var found = null;
+    if (!refs.root) return null;
+    Array.prototype.forEach.call(refs.root.querySelectorAll(".kc-row"), function (r) { if (r.getAttribute("data-action") === action) found = r; });
+    return found;
+  }
+  function markEditing() {
+    if (!refs.root) return;
+    Array.prototype.forEach.call(refs.root.querySelectorAll(".kc-row"), function (r) {
+      r.classList.toggle("editing", !!S.editor && S.editor.rowAction === r.getAttribute("data-action"));
+    });
+  }
+  function closeEditor(noFocus) {
+    var ed = S.editor;
+    if (!ed) return;
+    S.editor = null;
+    window.clearTimeout(ed.state.timer);
+    ed.state.seq++;
+    if (ed.node.parentNode) ed.node.parentNode.removeChild(ed.node);
+    // 開くのに使ったボタン／キーの表示へ、フォーカスを戻す
+    var target = null;
+    if (ed.rowAction) {
+      var row = findRow(ed.rowAction);
+      if (row) {
+        row.classList.remove("editing");
+        if (ed.chipKey) {
+          Array.prototype.forEach.call(row.querySelectorAll(".kc-chip"), function (c) {
+            c.setAttribute("aria-expanded", "false");
+            c.classList.remove("editing");
+            if (c.getAttribute("data-key") === ed.chipKey) target = c;
+          });
+        }
+        if (!target) target = row.querySelector(".kc-add");
+      }
+    }
+    if (!target && refs.root) target = refs.root.querySelector(".kc-assign-top");
+    markEditing();
+    if (!noFocus && target && target.focus) { try { target.focus({ preventScroll: true }); } catch (e) { target.focus(); } }
+  }
+
+  // opts: {context, action?, key?, oldKey?, lockKey?}
+  //   action 無し: 場面と操作を選んでキーを割り当てる（上のボタン）／ action あり: その操作にキーを追加（行のボタン）
+  //   oldKey あり: 「変更」（新しいキーを保存し、古いユーザー割当を解除）／ lockKey: 既定・プリセットのキーの操作を変える
   function openAssign(opts) {
+    closeEditor(true);
     var state = { context: opts.context, action: opts.action || "", key: opts.key || "", result: null, seq: 0, timer: 0, busy: false };
-    return openDialog(function (body, id, close) {
-      body.appendChild(UI.el("h2", { id: id + "-t", text: opts.oldKey ? "割り当てを変更" : opts.lockKey ? "操作を変更" : "キーを割り当てる" }));
+    var id = "kc-ed-" + (++dialogSeq);
+    var node = UI.el("section", { "class": "kc-editor", "aria-labelledby": id + "-t" });
+    var ed = { node: node, state: state, context: opts.context, rowAction: opts.action || "", chipKey: opts.oldKey || (opts.lockKey ? opts.key : "") || "" };
+    S.editor = ed;
+    var fixedAction = !!opts.action && !opts.lockKey;
 
-      // 場面（入力中 / 変換中）
-      var ctxSel = UI.el("select", { "class": "field", id: id + "-ctx" });
-      CONTEXTS.filter(function (c) { return c.editable; }).forEach(function (c) { ctxSel.appendChild(UI.el("option", { value: c.id, text: c.title })); });
-      ctxSel.value = state.context;
-      // 操作
-      var actSel = UI.el("select", { "class": "field kc-wide", id: id + "-act" });
-      function fillActions() {
-        actSel.textContent = "";
-        actSel.appendChild(UI.el("option", { value: "", text: "（操作を選んでください）" }));
-        S.data.actions.forEach(function (a) {
-          if (a.contexts.indexOf(state.context) < 0) return;
-          actSel.appendChild(UI.el("option", { value: a.name, text: a.label + "（" + a.name + "）" }));
-        });
-        // 一覧に無い Action（NoOp にした既定の割当など）が現在の値のときも選べるようにする
-        if (state.action && !Array.prototype.some.call(actSel.options, function (o) { return o.value === state.action; })) {
-          actSel.appendChild(UI.el("option", { value: state.action, text: actionLabel(state.action) + "（" + state.action + "）" }));
-        }
-        actSel.value = state.action;
-      }
-      fillActions();
-      if (opts.oldKey || opts.lockKey) ctxSel.disabled = true;
+    var title = UI.el("h3", { id: id + "-t" });
+    function updateTitle() {
+      var label = state.action ? actionLabel(state.action) : "";
+      var keyName = opts.key ? displayParts(opts.key).join("+") : "";
+      if (opts.lockKey) title.textContent = keyName + " キーの操作を変える";
+      else if (opts.oldKey) title.textContent = "『" + label + "』のキーを変更する（いまは " + keyName + "）";
+      else title.textContent = label ? "『" + label + "』のキーを割り当てる" : "キーを割り当てる";
+    }
+    updateTitle();
+    var closeBtn = UI.el("button", { type: "button", "class": "kc-chip-btn kc-close", title: "閉じる", "aria-label": "編集パネルを閉じる" }, [UI.icon("x")]);
+    closeBtn.addEventListener("click", function () { closeEditor(false); });
 
-      // キー入力（押して取り込む）と手入力
-      var captureText = UI.el("span", { "class": "kc-capture-text" });
-      var capture = UI.el("div", { "class": "kc-capture", tabindex: "0", role: "group", "aria-label": "割り当てるキー。ここにフォーカスしてキーを押すと取り込みます", id: id + "-cap" }, [captureText]);
-      var manual = UI.el("input", { type: "text", "class": "field", id: id + "-man", autocomplete: "off", spellcheck: "false", placeholder: "例: Ctrl+Shift+J / F8 / Henkan" });
-      var hint = UI.el("p", { "class": "row-desc kc-hint" });
-      var capturing = false;
-      function showCapture(held) {
-        captureText.textContent = "";
-        capture.classList.toggle("active", capturing);
-        if (capturing && held && held.length) {
-          held.forEach(function (h) { captureText.appendChild(UI.el("kbd", { "class": "kc-cap", text: displayParts(h).join("") })); });
-          captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: "続けてキーを押す…" }));
-          return;
-        }
-        if (state.key) {
-          displayParts(state.key).forEach(function (p) { captureText.appendChild(UI.el("kbd", { "class": "kc-cap", text: p })); });
-          if (capturing) captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: "別のキーを押すと置き換わります" }));
-        } else {
-          captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: capturing ? "キーを押してください（Esc で取り込みをやめる）" : "ここをクリックして、割り当てるキーを押す" }));
-        }
+    // 場面・操作（操作が決まっていないときだけ選ばせる。操作を変えるときも選ぶ）
+    var ctxSel = UI.el("select", { "class": "field", id: id + "-ctx" });
+    CONTEXTS.filter(function (c) { return c.editable; }).forEach(function (c) { ctxSel.appendChild(UI.el("option", { value: c.id, text: c.title })); });
+    ctxSel.value = state.context;
+    var actSel = UI.el("select", { "class": "field kc-wide", id: id + "-act" });
+    function fillActions() {
+      actSel.textContent = "";
+      actSel.appendChild(UI.el("option", { value: "", text: "（操作を選んでください）" }));
+      S.data.actions.forEach(function (a) {
+        if (a.contexts.indexOf(state.context) < 0) return;
+        actSel.appendChild(UI.el("option", { value: a.name, text: a.label + "（" + a.name + "）" }));
+      });
+      // 一覧に無い Action（NoOp にした既定の割当など）が現在の値のときも選べるようにする
+      if (state.action && !Array.prototype.some.call(actSel.options, function (o) { return o.value === state.action; })) {
+        actSel.appendChild(UI.el("option", { value: state.action, text: actionLabel(state.action) + "（" + state.action + "）" }));
       }
-      if (opts.lockKey) {
-        capture.setAttribute("aria-disabled", "true");
-        capture.classList.add("locked");
-        capture.removeAttribute("tabindex");
-        manual.disabled = true;
+      actSel.value = state.action;
+    }
+    fillActions();
+
+    // キー入力（押して取り込む）と手入力
+    var captureText = UI.el("span", { "class": "kc-capture-text" });
+    var capture;
+    if (opts.lockKey) capture = UI.el("div", { "class": "kc-capture locked" }, [captureText]);
+    else capture = UI.el("button", { type: "button", "class": "kc-capture", id: id + "-cap", "aria-describedby": id + "-hint" }, [captureText]);
+    var manual = UI.el("input", { type: "text", "class": "field", id: id + "-man", autocomplete: "off", spellcheck: "false", placeholder: "例: Ctrl+Shift+J / F8 / Henkan" });
+    var hint = UI.el("p", { "class": "row-desc kc-hint", role: "alert" });
+    var captured = UI.el("span", { "class": "sr-only", role: "status", "aria-live": "polite" });
+    var capturing = false;
+    function showCapture(held) {
+      captureText.textContent = "";
+      capture.classList.toggle("active", capturing);
+      capture.classList.toggle("filled", !!state.key && !opts.lockKey);
+      if (capturing && held && held.length) {
+        held.forEach(function (h) { captureText.appendChild(UI.el("kbd", { "class": "kc-cap", text: displayParts(h).join("") })); });
+        captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: "続けてキーを押してください" }));
+        return;
+      }
+      if (state.key) {
+        displayParts(state.key).forEach(function (p) { captureText.appendChild(UI.el("kbd", { "class": "kc-cap", text: p })); });
+        if (!opts.lockKey) captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: capturing ? "取り込みました。別のキーを押すと置き換わります" : "取り込みました（押して、取り込み直す）" }));
       } else {
-        capture.addEventListener("focus", function () { capturing = true; showCapture(); });
-        capture.addEventListener("blur", function () { capturing = false; showCapture(); });
-        capture.addEventListener("keydown", function (e) {
-          var r = specFromEvent(e);
-          if (r.kind === "pass") return; // Tab はフォーカス移動に使う
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.repeat) return;
-          if (r.kind === "cancel") { capture.blur(); hint.textContent = ""; return; }
-          if (r.kind === "pending") { showCapture(r.held); hint.textContent = ""; return; }
-          if (r.kind === "unsupported") { hint.textContent = r.message; showCapture(); return; }
-          hint.textContent = "";
-          state.key = r.spec;
-          manual.value = r.spec;
-          showCapture();
-          changed();
-        });
-        capture.addEventListener("keyup", function (e) { if (capturing) { e.preventDefault(); showCapture(); } });
-        capture.addEventListener("click", function () { capture.focus(); });
-        manual.addEventListener("input", function () { state.key = manual.value.trim(); hint.textContent = ""; showCapture(); changed(); });
+        captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: capturing ? "割り当てるキーを押してください（Esc で取り消し）" : "ここを押してから、割り当てるキーを押す" }));
       }
-      manual.value = state.key;
-      showCapture();
+    }
+    if (!opts.lockKey) {
+      capture.addEventListener("focus", function () { capturing = true; showCapture(); });
+      capture.addEventListener("blur", function () { capturing = false; showCapture(); });
+      capture.addEventListener("keydown", function (e) {
+        var r = specFromEvent(e);
+        if (r.kind === "pass") return; // Tab はフォーカス移動に使う
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        if (r.kind === "cancel") { closeEditor(false); return; }
+        if (r.kind === "pending") { showCapture(r.held); hint.textContent = ""; return; }
+        if (r.kind === "unsupported") { hint.textContent = r.message; showCapture(); return; }
+        hint.textContent = "";
+        state.key = r.spec;
+        manual.value = r.spec;
+        captured.textContent = "";
+        captured.textContent = displayParts(r.spec).join("+") + " を取り込みました";
+        showCapture();
+        changed();
+      });
+      capture.addEventListener("keyup", function (e) { if (capturing && e.key !== "Tab") { e.preventDefault(); showCapture(); } });
+      // ボタンを押したら（フォーカスが既にあっても）取り込み待ちにする
+      capture.addEventListener("click", function () { capture.focus(); capturing = true; showCapture(); });
+      manual.addEventListener("input", function () { state.key = manual.value.trim(); hint.textContent = ""; showCapture(); changed(); });
+    } else {
+      manual.disabled = true;
+    }
+    manual.value = state.key;
+    showCapture();
 
-      var issues = UI.el("div", { "class": "kc-issues", "aria-live": "polite" });
-      var same = UI.el("p", { "class": "row-desc kc-existing", hidden: true });
-      var save = UI.button("割り当てる", "primary", null, function () { submit(); });
-      var cancel = UI.button("キャンセル", "", null, function () { close("cancel"); });
+    var issues = UI.el("div", { "class": "kc-issues", "aria-live": "polite" });
+    var same = UI.el("p", { "class": "row-desc kc-existing", hidden: true });
+    var next = UI.el("p", { "class": "row-desc kc-next" });
+    var save = UI.button(opts.lockKey ? "操作を変更する" : "割り当てる", "primary kc-save", null, function () { submit(); });
+    var cancel = UI.button("キャンセル", "kc-cancel", null, function () { closeEditor(false); });
 
-      ctxSel.addEventListener("change", function () { state.context = ctxSel.value; state.action = ""; fillActions(); changed(); });
-      actSel.addEventListener("change", function () { state.action = actSel.value; changed(); });
+    ctxSel.addEventListener("change", function () { state.context = ctxSel.value; state.action = ""; fillActions(); updateTitle(); changed(); });
+    actSel.addEventListener("change", function () { state.action = actSel.value; updateTitle(); changed(); });
 
-      function field(label, forId, control, extra) {
-        return UI.el("div", { "class": "kc-field" }, [UI.el("label", { "for": forId, text: label }), control, extra || null]);
-      }
-      body.appendChild(UI.el("div", { "class": "kc-form" }, [
-        field("使う場面", id + "-ctx", ctxSel),
-        field("操作", id + "-act", actSel),
-        field("キー", id + "-cap", capture, hint),
-        field("キーを手で入力", id + "-man", manual, UI.el("p", { "class": "row-desc", text: "Win キー・Alt+F4・Ctrl+Alt+Delete など、OS が先に処理するキーは押しても取り込めません。そのようなキーはここに書けますが、アプリに届かないため動作しないことがあります。変換・無変換は Henkan・Muhenkan と書きます。" })),
-        same,
-        issues
+    function field(label, forId, control, extra) {
+      return UI.el("div", { "class": "kc-field" }, [UI.el("label", { "for": forId, text: label }), control, extra || null]);
+    }
+    var form = UI.el("div", { "class": "kc-form" });
+    if (!opts.action) {
+      form.appendChild(field("使う場面", id + "-ctx", ctxSel));
+      form.appendChild(field("操作", id + "-act", actSel));
+    } else if (opts.lockKey) {
+      form.appendChild(UI.el("p", { "class": "row-desc", text: "これは「" + SOURCES[(S.data.bindings.filter(function (b) { return b.context === state.context && b.key === opts.key; })[0] || { source: "default" }).source].label + "」の割り当てなので、キーそのものは消せません。操作を別のものに変えるか、無効にできます。別のキーを使いたいときは「別のキーを追加」を押してください。" }));
+      form.appendChild(field("このキーで実行する操作", id + "-act", actSel));
+    }
+    if (opts.lockKey) {
+      form.appendChild(field("キー", id + "-cap", capture));
+    } else {
+      form.appendChild(UI.el("ol", { "class": "kc-steps" }, [
+        UI.el("li", { text: "下の枠を押して、割り当てたいキーを押す" }),
+        UI.el("li", { text: "「割り当てる」を押して保存する" })
       ]));
-      body.appendChild(UI.el("div", { "class": "buttons end" }, [cancel, save]));
+      form.appendChild(field("キー", id + "-cap", capture, UI.el("div", { id: id + "-hint" }, [hint, captured])));
+      form.appendChild(UI.el("details", { "class": "kc-manual" }, [
+        UI.el("summary", { text: "キーを文字で入力する" }),
+        UI.el("div", { "class": "kc-field" }, [
+          UI.el("label", { "for": id + "-man", text: "キーの書き方" }),
+          manual,
+          UI.el("p", { "class": "row-desc", text: "Win キー・Alt+F4・Ctrl+Alt+Delete など、OS が先に処理するキーは押しても取り込めません。そのようなキーはここに書けますが、アプリに届かないため動作しないことがあります。変換・無変換は Henkan・Muhenkan と書きます。" })
+        ])
+      ]));
+    }
+    form.appendChild(same);
+    form.appendChild(issues);
+    form.appendChild(next);
 
-      // 検証（TOML 断片を作ってコアに検証させる。入力が止まってから）
-      function fragment() {
-        return "[keymap." + state.context + "]\n" + JSON.stringify(state.key) + " = " + JSON.stringify(state.action) + "\n";
-      }
-      function changed() {
-        state.result = null;
-        window.clearTimeout(state.timer);
-        showExisting();
-        paintIssues();
-        updateSave();
-        if (!state.key || !state.action) return;
-        var seq = ++state.seq;
-        state.timer = window.setTimeout(function () {
-          post("validate", { toml: fragment() }).then(function (r) {
-            if (seq !== state.seq) return;
-            state.result = r;
-            paintIssues();
-            updateSave();
-          }, function (e) {
-            if (seq !== state.seq) return;
-            state.result = { errors: [{ message: e.message, line: 0 }], warnings: [] };
-            paintIssues();
-            updateSave();
-          });
-        }, 180);
-      }
-      function showExisting() {
-        // 同じ場面の同じキーに、いま別の割当があるか（置き換わることを伝える。拒否ではない）
-        var found = null;
-        if (state.key) {
-          var want = state.key.toLowerCase().replace(/control\+/g, "ctrl+");
-          bindings().forEach(function (b) {
-            if (b.context === state.context && b.key.toLowerCase() === want && b.action !== state.action) found = b;
-          });
-        }
-        if (found && !(opts.oldKey && found.key === opts.oldKey && found.action === opts.action)) {
-          same.hidden = false;
-          same.textContent = "このキーは今「" + actionLabel(found.action) + "」（" + SOURCES[found.source].label + "）に割り当てられています。割り当てると、この操作に置き換わります。";
-        } else {
-          same.hidden = true;
-          same.textContent = "";
-        }
-      }
-      function paintIssues() {
-        issues.textContent = "";
-        var r = state.result;
-        if (!r) return;
-        r.errors.forEach(function (i) { issues.appendChild(issueNode(i, "ng")); });
-        r.warnings.forEach(function (i) { issues.appendChild(issueNode(i, "warn")); });
-      }
-      function issueNode(i, kind) {
-        return UI.el("div", { "class": "kc-issue " + kind }, [UI.icon(kind === "ng" ? "x" : "alert"), UI.el("p", { text: i.message })]);
-      }
-      function updateSave() {
-        var ready = !!state.key && !!state.action && !!state.result && state.result.errors.length === 0 && !state.busy;
-        save.disabled = !ready;
-        var warn = state.result && state.result.warnings.length > 0;
-        save.querySelector("span").textContent = warn ? "それでも割り当てる" : "割り当てる";
-      }
-      function submit() {
-        if (save.disabled) return;
+    // 足もと: 左に解除／無効化など、右にキャンセルと確定
+    var foot = UI.el("div", { "class": "kc-editor-foot" });
+    if (opts.oldKey) {
+      var del = UI.button("このキーを解除", "danger kc-left", "trash", function () {
         state.busy = true;
-        updateSave();
-        var chain = Promise.resolve(null);
-        // 変更: 古いユーザー割当を先に解除してから新しいキーを保存する（同じキーなら、保存で書き直される）
-        if (opts.oldKey && opts.oldKey !== state.key) chain = setBinding(opts.context, opts.oldKey, null);
-        chain.then(function () { return setBinding(state.context, state.key, state.action); }).then(function (r) {
-          adopt(r);
-          var n = r.warnings.length;
-          UI.toast(n > 0 ? "割り当てました（注意 " + n + " 件）" : "割り当てました", false);
-          close("ok");
+        removeBinding(opts.context, { key: opts.oldKey, action: opts.action }).then(function () { closeEditor(true); });
+      });
+      del.title = "既定・プリセットの割当があれば、このキーはそれに戻ります";
+      foot.appendChild(del);
+    } else if (opts.lockKey) {
+      var off = UI.button("無効にする", "danger kc-left", "block", function () {
+        disableBinding(opts.context, { key: opts.key, action: opts.action }).then(function (done) { if (done) closeEditor(true); });
+      });
+      foot.appendChild(off);
+      var addOther = UI.button("別のキーを追加", "kc-left", "plus", function () { openAssign({ context: opts.context, action: opts.action }); });
+      foot.appendChild(addOther);
+    }
+    foot.appendChild(UI.el("span", { "class": "spacer" }));
+    foot.appendChild(cancel);
+    foot.appendChild(save);
+
+    node.appendChild(UI.el("div", { "class": "kc-editor-head" }, [title, closeBtn]));
+    node.appendChild(form);
+    node.appendChild(foot);
+    // Esc は、編集パネルを閉じる（設定画面そのものを閉じない）
+    node.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape" || e.isComposing || e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeEditor(false);
+    });
+
+    // 検証（TOML 断片を作ってコアに検証させる。入力が止まってから）
+    function fragment() {
+      return "[keymap." + state.context + "]\n" + JSON.stringify(state.key) + " = " + JSON.stringify(state.action) + "\n";
+    }
+    function changed() {
+      state.result = null;
+      window.clearTimeout(state.timer);
+      showExisting();
+      paintIssues();
+      updateSave();
+      if (!state.key || !state.action) return;
+      var seq = ++state.seq;
+      state.timer = window.setTimeout(function () {
+        post("validate", { toml: fragment() }).then(function (r) {
+          if (seq !== state.seq) return;
+          state.result = r;
+          paintIssues();
+          updateSave();
         }, function (e) {
-          state.busy = false;
+          if (seq !== state.seq) return;
           state.result = { errors: [{ message: e.message, line: 0 }], warnings: [] };
           paintIssues();
           updateSave();
-          reload();
+        });
+      }, 180);
+    }
+    function showExisting() {
+      // 同じ場面の同じキーに、いま別の割当があるか（置き換わることを伝える。拒否ではない）
+      var found = null;
+      if (state.key) {
+        var want = normKey(state.key);
+        bindings().forEach(function (b) {
+          if (b.context === state.context && normKey(b.key) === want && b.action !== state.action) found = b;
         });
       }
+      if (found && !(opts.oldKey && found.key === opts.oldKey && found.action === opts.action)) {
+        same.hidden = false;
+        same.textContent = "このキーは今「" + actionLabel(found.action) + "」（" + SOURCES[found.source].label + "）に割り当てられています。割り当てると、この操作に置き換わります。";
+      } else {
+        same.hidden = true;
+        same.textContent = "";
+      }
+    }
+    function paintIssues() {
+      issues.textContent = "";
+      var r = state.result;
+      if (!r) return;
+      r.errors.forEach(function (i) { issues.appendChild(issueNode(i, "ng")); });
+      r.warnings.forEach(function (i) { issues.appendChild(issueNode(i, "warn")); });
+    }
+    function issueNode(i, kind) {
+      return UI.el("div", { "class": "kc-issue " + kind }, [UI.icon(kind === "ng" ? "x" : "alert"), UI.el("p", { text: i.message })]);
+    }
+    function updateSave() {
+      var ready = !!state.key && !!state.action && !!state.result && state.result.errors.length === 0 && !state.busy;
+      save.disabled = !ready;
+      var warn = state.result && state.result.warnings.length > 0;
+      save.querySelector("span").textContent = warn ? "それでも割り当てる" : opts.lockKey ? "操作を変更する" : "割り当てる";
+      // 押せない理由を、足もとに書く
+      if (ready) next.textContent = "";
+      else if (!state.action) next.textContent = "操作を選ぶと、「" + save.querySelector("span").textContent + "」が押せるようになります。";
+      else if (!state.key) next.textContent = "キーを押す（取り込む）と、「" + save.querySelector("span").textContent + "」が押せるようになります。";
+      else if (!state.result) next.textContent = "確認しています…";
+      else next.textContent = "";
+    }
+    function submit() {
+      if (save.disabled) return;
+      state.busy = true;
       updateSave();
-      if (state.key && state.action) changed();
-      if (!opts.lockKey && !state.key) window.setTimeout(function () { capture.focus(); }, 0);
-    });
+      var chain = Promise.resolve(null);
+      // 変更: 古いユーザー割当を先に解除してから新しいキーを保存する（同じキーなら、保存で書き直される）
+      if (opts.oldKey && normKey(opts.oldKey) !== normKey(state.key)) chain = setBinding(opts.context, opts.oldKey, null);
+      chain.then(function () { return setBinding(state.context, state.key, state.action); }).then(function (r) {
+        var n = r.warnings.length;
+        var shown = displayParts(state.key).join("+");
+        var msg = "保存しました: " + shown + " → " + actionLabel(state.action) + (n > 0 ? "（注意 " + n + " 件）" : "");
+        closeEditor(true);
+        // 保存した行が見えるよう、場面を合わせ、絞り込みは外す
+        S.ctx = state.context;
+        S.query = "";
+        S.userOnly = false;
+        setFlash(state.context, state.action, state.key);
+        adopt(r);
+        UI.toast(msg, false);
+        UI.announce(msg);
+        showFlash(true);
+      }, function (e) {
+        state.busy = false;
+        state.result = { errors: [{ message: e.message, line: 0 }], warnings: [] };
+        paintIssues();
+        updateSave();
+        reload();
+      });
+    }
+    updateSave();
+    if (state.key && state.action) changed();
+
+    // 行の下に置いて、見える位置へ。キーを押す枠（なければ操作の選択）にフォーカスする
+    if (refs.tablePaint) refs.tablePaint();
+    markEditing();
+    var chipNode = null;
+    if (ed.chipKey && refs.root) {
+      Array.prototype.forEach.call(refs.root.querySelectorAll(".kc-chip"), function (c) { if (c.getAttribute("data-key") === ed.chipKey && c.closest(".kc-row") && c.closest(".kc-row").getAttribute("data-action") === ed.rowAction) chipNode = c; });
+    }
+    if (chipNode) { chipNode.classList.add("editing"); chipNode.setAttribute("aria-expanded", "true"); }
+    try { node.scrollIntoView({ block: "nearest" }); } catch (e) { /* 古い WebView では何もしない */ }
+    var first = opts.lockKey ? actSel : (!opts.action ? ctxSel : capture);
+    if (!opts.action && !opts.lockKey) first = capture;
+    try { first.focus({ preventScroll: true }); } catch (e3) { first.focus(); }
+    return ed;
   }
 
   // ---- インポート / エクスポート ----

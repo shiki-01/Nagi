@@ -146,10 +146,40 @@
   }
 
   // ---- ページの一覧 ----
+  // サイドバーのグループ。上ほどよく使う。更新・動作確認は「システム」の最下部
+  var NAV_GROUPS = [
+    { id: "input", title: "入力と変換" },
+    { id: "dict", title: "辞書と学習" },
+    { id: "display", title: "表示" },
+    { id: "other", title: "その他の設定" },
+    { id: "system", title: "システム" }
+  ];
+  // コアの記述子のグループ名（正の定義。ここでは変えない）→ サイドバーの置き場・並び・表示名。
+  // 記述子に新しいグループが増えたら「その他の設定」に入る（title を省くと記述子の名前のまま）
+  var CATEGORY_NAV = {
+    "入力": { group: "input", order: 10 },
+    "変換": { group: "input", order: 20 },
+    "予測変換": { group: "input", order: 30 },
+    "表記の候補": { group: "input", order: 40 },
+    "ユーザー辞書": { group: "dict", order: 20, title: "辞書とスニペットの設定" },
+    "学習": { group: "dict", order: 40, title: "学習の設定" },
+    "候補ウィンドウ": { group: "display", order: 10 },
+    "通知・モード表示": { group: "display", order: 20 },
+    "Windows の表示": { group: "display", order: 30, title: "Windows での表示" },
+    "動作モード": { group: "system", order: 10 },
+    "アプリごとの設定": { group: "system", order: 20 },
+    "アップデート": { group: "system", order: 70, title: "自動更新の設定" }
+  };
+  // 追加ページ（window.NagiPages）で group / order を指定しなかったものの既定
+  var EXTRA_NAV = {
+    keymap: { group: "input", order: 50 },
+    userdict: { group: "dict", order: 10 },
+    learning: { group: "dict", order: 30 }
+  };
   var FIXED = [
-    { id: "update", title: "更新", icon: "refresh" },
-    { id: "data", title: "データ・ファイル", icon: "folder" },
-    { id: "diag", title: "動作確認", icon: "pulse" }
+    { id: "data", title: "データ・ファイル", icon: "folder", group: "system", order: 50 },
+    { id: "update", title: "更新", icon: "refresh", group: "system", order: 80 },
+    { id: "diag", title: "動作確認", icon: "pulse", group: "system", order: 90 }
   ];
 
   function visibleItems(group) {
@@ -158,12 +188,30 @@
   function visibleGroups() {
     return screen ? screen.groups.filter(function (g) { return visibleItems(g).length > 0; }) : [];
   }
+  function categoryNav(name) {
+    return CATEGORY_NAV[name] || { group: "other", order: 100, title: name };
+  }
   function pageList() {
     var list = [];
-    if (screen) visibleGroups().forEach(function (g) { list.push({ id: "cat:" + g.name, title: g.name, icon: categoryIcon(g.name), section: "settings" }); });
-    else list.push({ id: "status", title: "設定", icon: "sliders", section: "settings" });
-    if (screen) extraPages().forEach(function (x) { list.push({ id: x.id, title: x.title, icon: x.icon, section: "settings" }); });
-    FIXED.forEach(function (f) { list.push({ id: f.id, title: f.title, icon: f.icon, section: "maint" }); });
+    var n = 0;
+    function add(entry) { entry.seq = n++; list.push(entry); }
+    if (screen) {
+      visibleGroups().forEach(function (g) {
+        var nav = categoryNav(g.name);
+        add({ id: "cat:" + g.name, title: nav.title || g.name, icon: categoryIcon(g.name), group: nav.group, order: nav.order });
+      });
+      extraPages().forEach(function (x) {
+        var d = EXTRA_NAV[x.id] || {};
+        add({ id: x.id, title: x.title, icon: x.icon, group: x.group || d.group || "other", order: typeof x.order === "number" ? x.order : d.order !== undefined ? d.order : 100 });
+      });
+    } else {
+      add({ id: "status", title: "設定", icon: "sliders", group: "input", order: 0 });
+    }
+    FIXED.forEach(function (f) { add({ id: f.id, title: f.title, icon: f.icon, group: f.group, order: f.order }); });
+    var rank = {};
+    NAV_GROUPS.forEach(function (g, i) { rank[g.id] = i; });
+    list.forEach(function (p) { if (rank[p.group] === undefined) p.group = "other"; });
+    list.sort(function (a, b) { return rank[a.group] - rank[b.group] || a.order - b.order || a.seq - b.seq; });
     return list;
   }
   function findPage(id) {
@@ -176,11 +224,11 @@
   function renderNav() {
     navEl.textContent = "";
     var list = pageList();
-    [["settings", "設定"], ["maint", "メンテナンス"]].forEach(function (sec, si) {
-      var entries = list.filter(function (p) { return p.section === sec[0]; });
+    NAV_GROUPS.forEach(function (grp, si) {
+      var entries = list.filter(function (p) { return p.group === grp.id; });
       if (entries.length === 0) return;
       var labelId = "nav-label-" + si;
-      navEl.appendChild(el("p", { "class": "nav-label", id: labelId, text: sec[1] }));
+      navEl.appendChild(el("p", { "class": "nav-label", id: labelId, text: grp.title }));
       var ul = el("ul", { "class": "nav-list", "aria-labelledby": labelId });
       entries.forEach(function (p) {
         var btn = el("button", { type: "button", "class": "nav-item", "data-page": p.id }, [icon(p.icon), el("span", { "class": "nav-text", text: p.title })]);
@@ -285,7 +333,8 @@
     return f;
   }
 
-  // ---- 追加ページ（別ファイルの JS が window.NagiPages に {id, title, icon, render(ui)} を登録する） ----
+  // ---- 追加ページ（別ファイルの JS が window.NagiPages に {id, title, icon, render(ui), group?, order?} を登録する。
+  //      group は NAV_GROUPS の id（省略時は EXTRA_NAV の既定）） ----
   var pageApi = {
     el: el, icon: icon, icons: ICONS, api: api, button: button, card: card, section: section, hero: hero, badge: badge,
     frag: frag, toast: toast, announce: announce, loadPref: loadPref, savePref: savePref, setScreen: setScreen, itemByKey: function (k) { return itemByKey[k]; }
@@ -312,10 +361,11 @@
   function pageCategory(name) {
     var group = null;
     screen.groups.forEach(function (g) { if (g.name === name) group = g; });
-    if (!group) return hero(name, "");
+    var shown = categoryNav(name).title || name;
+    if (!group) return hero(shown, "");
     var simple = group.items.filter(function (i) { return i.level === "simple"; });
     var deep = detail ? group.items.filter(function (i) { return i.level !== "simple"; }) : [];
-    var out = [hero(name, "変更はすぐに保存されます。")];
+    var out = [hero(shown, "変更はすぐに保存されます。")];
     if (simple.length) out.push(deep.length ? section("基本", "", itemsCard(simple, false)) : itemsCard(simple, false));
     if (deep.length) out.push(section("詳細設定", "", itemsCard(deep, true)));
     return frag(out);
