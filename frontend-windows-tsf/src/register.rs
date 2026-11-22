@@ -10,21 +10,36 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
 };
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CLASSES_ROOT, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-    RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
+    HKEY, HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE,
+    REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
     GUID_TFCAT_TIP_KEYBOARD, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-    GUID_TFCAT_TIPCAP_UIELEMENTENABLED, ITfCategoryMgr, ITfInputProcessorProfileMgr,
+    ITfCategoryMgr, ITfInputProcessorProfileMgr,
 };
-use windows::core::{PCWSTR, Result};
+use windows::Win32::UI::WindowsAndMessaging::LoadStringW;
+use windows::core::{GUID, PCWSTR, PWSTR, Result};
 
 use crate::dll;
 use crate::guids::{
+    CATEGORY_INPUTMODECOMPARTMENT, CATEGORY_SECUREMODE, CATEGORY_UIELEMENTENABLED,
     CLSID_NAGI_TEXT_SERVICE, GUID_NAGI_PROFILE, LANGID_JAPANESE, PROFILE_DESCRIPTION, braced,
 };
+
+/// 登録するカテゴリ（Microsoft IME・Mozc が宣言するもののうち Nagi が実際に満たすもの）。
+/// `COMLESS` は DLL のロード方式が変わるため入れない（H-108）。`SECUREMODE` は宣言しない（H-129）
+fn registered_categories() -> [GUID; 6] {
+    [
+        GUID_TFCAT_TIP_KEYBOARD,
+        GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+        GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+        CATEGORY_UIELEMENTENABLED,
+        CATEGORY_INPUTMODECOMPARTMENT,
+        GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    ]
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -36,13 +51,17 @@ fn clsid_key() -> String {
 
 /// 文字列値（`name` が空なら既定値）を書く
 fn set_string(key: HKEY, name: Option<&str>, value: &str) -> Result<()> {
+    set_value(key, name, REG_SZ, value)
+}
+
+fn set_value(key: HKEY, name: Option<&str>, kind: REG_VALUE_TYPE, value: &str) -> Result<()> {
     let name_w = name.map(wide);
     let value_w = wide(value);
     let bytes: Vec<u8> = value_w.iter().flat_map(|u| u.to_le_bytes()).collect();
     let name_ptr = name_w
         .as_ref()
         .map_or(PCWSTR::null(), |n| PCWSTR(n.as_ptr()));
-    let status = unsafe { RegSetValueExW(key, name_ptr, None, REG_SZ, Some(&bytes)) };
+    let status = unsafe { RegSetValueExW(key, name_ptr, None, kind, Some(&bytes)) };
     status.ok()
 }
 
@@ -121,13 +140,16 @@ fn register_tsf(dll_path: &str) -> Result<()> {
 
     let categories: ITfCategoryMgr =
         unsafe { CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER) }?;
-    for category in [
-        GUID_TFCAT_TIP_KEYBOARD,
-        GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
-        GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-        GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-        GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-    ] {
+    // 宣言していないカテゴリが残っていれば取り除く（SECUREMODE は UIELEMENTENABLED と 1 桁違いで取り違えやすい）。
+    // 登録されていなければ失敗するだけなので無視する
+    let _ = unsafe {
+        categories.UnregisterCategory(
+            &CLSID_NAGI_TEXT_SERVICE,
+            &CATEGORY_SECUREMODE,
+            &CLSID_NAGI_TEXT_SERVICE,
+        )
+    };
+    for category in registered_categories() {
         unsafe {
             categories.RegisterCategory(
                 &CLSID_NAGI_TEXT_SERVICE,
@@ -136,7 +158,47 @@ fn register_tsf(dll_path: &str) -> Result<()> {
             )
         }?;
     }
+    write_display_description(dll_path);
     Ok(())
+}
+
+/// この DLL に文字列リソース（ID 101）が埋め込まれているか。埋め込めなかったビルド
+/// （リソースコンパイラが無い手元のビルド）では偽
+fn has_name_resource() -> bool {
+    let mut buf = [0u16; 8];
+    let n = unsafe {
+        LoadStringW(
+            Some(dll::module_handle().into()),
+            nagi_windows::registration::STRING_ID_NAME,
+            PWSTR(buf.as_mut_ptr()),
+            buf.len() as i32,
+        )
+    };
+    n > 0
+}
+
+/// 言語プロファイルに `Display Description`（REG_EXPAND_SZ、`@<dll>,-101`）を書く。設定アプリが
+/// Microsoft IME と同じ MUI 形式で表示名を引く（H-129）。DLL にリソースが無ければ書かない
+/// （壊れた参照を残さない）。失敗しても登録は続ける（無くても `Description` で表示される）
+fn write_display_description(dll_path: &str) {
+    if !has_name_resource() {
+        return;
+    }
+    let key_path = nagi_windows::registration::language_profile_key(
+        &braced(&CLSID_NAGI_TEXT_SERVICE),
+        LANGID_JAPANESE,
+        &braced(&GUID_NAGI_PROFILE),
+    );
+    let Ok(key) = create_key(HKEY_LOCAL_MACHINE, &key_path) else {
+        return;
+    };
+    let _ = set_value(
+        key,
+        Some("Display Description"),
+        REG_EXPAND_SZ,
+        &nagi_windows::registration::display_description_value(dll_path),
+    );
+    let _ = unsafe { RegCloseKey(key) };
 }
 
 /// 登録する
@@ -178,13 +240,7 @@ pub fn unregister() -> Result<()> {
     if let Ok(categories) = unsafe {
         CoCreateInstance::<_, ITfCategoryMgr>(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER)
     } {
-        for category in [
-            GUID_TFCAT_TIP_KEYBOARD,
-            GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
-            GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-            GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
-            GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
-        ] {
+        for category in registered_categories() {
             keep(unsafe {
                 categories.UnregisterCategory(
                     &CLSID_NAGI_TEXT_SERVICE,
@@ -193,6 +249,14 @@ pub fn unregister() -> Result<()> {
                 )
             });
         }
+        // 誤登録の掃除用の SECUREMODE。登録していなければ失敗するので、エラーは無視する
+        let _ = unsafe {
+            categories.UnregisterCategory(
+                &CLSID_NAGI_TEXT_SERVICE,
+                &CATEGORY_SECUREMODE,
+                &CLSID_NAGI_TEXT_SERVICE,
+            )
+        };
     }
     if let Some(path) = icon_path() {
         // 無ければ何もしない（生成できなかった場合）

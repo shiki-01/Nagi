@@ -22,6 +22,12 @@ pub struct LogAnalysis {
     pub stopped: usize,
     /// 最新の事象の時刻（ログの先頭トークン。`YYYY-MM-DDTHH:MM:SSZ`）
     pub stopped_last: Option<String>,
+    /// `[engine] exit code=... reason=crash|error` の回数（更新の影響期間と起動不可の pid を除く）
+    pub exit_crashes: usize,
+    /// 上記の最新の時刻
+    pub exit_last: Option<String>,
+    /// 上記の直近の数件（時刻・pid・reason・code・uptime_ms・last_method。stderr は含めない）
+    pub exit_recent: Vec<String>,
     /// `ActivateEx panicked`
     pub panicked: bool,
     /// `[menu] configure requested`（言語のオプションからの起動）
@@ -32,7 +38,7 @@ pub struct LogAnalysis {
     pub uiless: bool,
     /// `dropped non-JSON line`
     pub dropped_non_json: bool,
-    /// インストール・更新の時刻（+120 秒）以前だったため数えなかったエンジン停止の事象の数
+    /// インストール・更新の時刻の前後 120 秒だったため数えなかったエンジン停止の事象の数
     pub ignored_by_install: usize,
     /// ログに現れたホストプロセス（pid）の数
     pub hosts: usize,
@@ -85,20 +91,109 @@ pub fn plausible_install_time(t: i64, now_unix: i64) -> bool {
 
 /// ログ全文を解析する
 pub fn analyze(text: &str) -> LogAnalysis {
-    analyze_with(text, None)
+    analyze_with(text, &[])
 }
 
-/// インストール・更新の影響期間（インストール時刻の後この秒数まで）
+/// インストール・更新の影響期間（インストール時刻の前後この秒数）
 pub const INSTALL_GRACE_SECS: i64 = 120;
 
-/// `ignore_until`（UNIX 秒）以前のエンジン起動失敗・停止・降格の行を数えずに解析する
-pub fn analyze_with(text: &str, ignore_until: Option<i64>) -> LogAnalysis {
+/// 複数 pid の停止を 1 事象にまとめる間隔（秒）
+const SIMULTANEOUS_SECS: i64 = 10;
+/// 同一 pid の再試行の列を 1 事象にまとめる間隔（秒）
+const RETRY_SERIES_SECS: i64 = 60;
+
+fn line_attempt(line: &str) -> Option<u32> {
+    line.split_whitespace()
+        .find_map(|t| t.strip_prefix("attempt="))
+        .and_then(|n| n.parse().ok())
+}
+
+fn line_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.split_whitespace().find_map(|t| t.strip_prefix(key))
+}
+
+/// 停止の行を事象にまとめる。次のどちらかなら同じ事象:
+/// - 直前の停止から 10 秒以内（更新で全ホストのエンジンが一斉に止まる）
+/// - 同一 pid で、60 秒以内に attempt の番号が増えている（再起動の試行の列）
+#[derive(Default)]
+struct StopClusters {
+    events: Vec<StopEvent>,
+}
+
+struct StopEvent {
+    last: Option<i64>,
+    last_ts: String,
+    /// pid → (最後の時刻, attempt)
+    pids: std::collections::BTreeMap<u32, (Option<i64>, Option<u32>)>,
+}
+
+impl StopClusters {
+    /// 新しい事象になったら `true`
+    fn add(&mut self, ts: &str, pid: Option<u32>, attempt: Option<u32>) -> bool {
+        let t = parse_utc(ts);
+        let joined = self.events.iter_mut().rev().find(|e| {
+            let near = match (t, e.last) {
+                (Some(t), Some(l)) => (0..=SIMULTANEOUS_SECS).contains(&(t - l)),
+                (None, None) => e.last_ts == ts,
+                _ => false,
+            };
+            let series = pid.is_some_and(|p| match (e.pids.get(&p), t, attempt) {
+                (Some((Some(pt), Some(pa))), Some(t), Some(a)) => {
+                    (0..=RETRY_SERIES_SECS).contains(&(t - pt)) && a > *pa
+                }
+                _ => false,
+            });
+            near || series
+        });
+        let is_new = joined.is_none();
+        let e = match joined {
+            Some(e) => e,
+            None => {
+                self.events.push(StopEvent {
+                    last: t,
+                    last_ts: ts.to_owned(),
+                    pids: Default::default(),
+                });
+                self.events.last_mut().expect("just pushed")
+            }
+        };
+        if t > e.last {
+            e.last = t;
+        }
+        e.last_ts = ts.to_owned();
+        if let Some(p) = pid {
+            e.pids.insert(p, (t, attempt));
+        }
+        is_new
+    }
+}
+
+/// `install_times`（UNIX 秒。インストール・更新の時刻の候補）の前後 ±120 秒に起きたエンジンの
+/// 起動失敗・停止・降格・異常終了の行を数えずに解析する
+pub fn analyze_with(text: &str, install_times: &[i64]) -> LogAnalysis {
+    let in_window = |line: &str| -> bool {
+        line.split_whitespace()
+            .next()
+            .and_then(parse_utc)
+            .is_some_and(|t| {
+                install_times
+                    .iter()
+                    .any(|&i| (t - i).abs() <= INSTALL_GRACE_SECS)
+            })
+    };
     let mut a = LogAnalysis::default();
     let mut problems: Vec<String> = Vec::new();
-    let mut last_stop_ts: Option<&str> = None;
-    let mut last_ignored_ts: Option<&str> = None;
+    let mut counted = StopClusters::default();
+    let mut ignored = StopClusters::default();
     let mut pids = std::collections::BTreeSet::new();
     let mut unlaunchable = std::collections::BTreeSet::new();
+    // 起動不可の pid は別集計にするので、その pid の停止・降格は一般の事象に数えない
+    let unlaunchable_all: std::collections::BTreeSet<u32> = text
+        .lines()
+        .filter(|l| unlaunchable_code(l).is_some())
+        .filter_map(line_pid)
+        .collect();
+    let mut exit_recent: Vec<String> = Vec::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         a.lines += 1;
         let mut problem = false;
@@ -120,23 +215,38 @@ pub fn analyze_with(text: &str, ignore_until: Option<i64>) -> LogAnalysis {
             }
             continue;
         }
+        let is_exit_line = line.contains("[engine] exit code=");
         let is_engine_line = line.contains("launch failed")
             || line.contains("entering minimal profile")
-            || line.contains("stopped (crash or start failure)");
-        if is_engine_line
-            && let Some(limit) = ignore_until
-            && line
-                .split_whitespace()
-                .next()
-                .and_then(parse_utc)
-                .is_some_and(|t| t <= limit)
-        {
+            || line.contains("stopped (crash or start failure)")
+            || is_exit_line;
+        if is_engine_line && pid.is_some_and(|p| unlaunchable_all.contains(&p)) {
+            continue;
+        }
+        if is_engine_line && in_window(line) {
             if line.contains("stopped (crash or start failure)") {
                 let ts = line.split_whitespace().next().unwrap_or("");
-                if last_ignored_ts != Some(ts) {
+                if ignored.add(ts, pid, line_attempt(line)) {
                     a.ignored_by_install += 1;
                 }
-                last_ignored_ts = Some(ts);
+            }
+            continue;
+        }
+        if is_exit_line {
+            // reason=update / shutdown / parent-exited などは正常な終了。crash / error だけ数える
+            if matches!(line_token(line, "reason="), Some("crash" | "error")) {
+                let ts = line.split_whitespace().next().unwrap_or("");
+                a.exit_crashes += 1;
+                a.exit_last = Some(ts.to_owned());
+                let field = |k: &str| line_token(line, k).unwrap_or("-");
+                exit_recent.push(format!(
+                    "{ts} pid={} reason={} code={} uptime_ms={} last_method={}",
+                    pid.map_or_else(|| "-".to_owned(), |p| p.to_string()),
+                    field("reason="),
+                    field("code="),
+                    field("uptime_ms="),
+                    field("last_method=")
+                ));
             }
             continue;
         }
@@ -161,12 +271,11 @@ pub fn analyze_with(text: &str, ignore_until: Option<i64>) -> LogAnalysis {
         }
         if line.contains("stopped (crash or start failure)") {
             let ts = line.split_whitespace().next().unwrap_or("");
-            // 同一秒の複数 pid は 1 事象（更新・差し替えで全ホストのエンジンが一斉に止まる）。表示も 1 行にする
-            if last_stop_ts != Some(ts) {
+            // 同時刻の複数 pid・同一 pid の再試行の列は 1 事象。表示も 1 行にする
+            if counted.add(ts, pid, line_attempt(line)) {
                 a.stopped += 1;
                 problem = true;
             }
-            last_stop_ts = Some(ts);
             a.stopped_last = Some(ts.to_owned());
         }
         if line.contains("ActivateEx panicked") {
@@ -196,7 +305,30 @@ pub fn analyze_with(text: &str, ignore_until: Option<i64>) -> LogAnalysis {
     a.hosts = pids.len();
     a.unlaunchable_pids = unlaunchable.into_iter().collect();
     a.evidence = problems.into_iter().skip(skip).collect();
+    let skip = exit_recent.len().saturating_sub(MAX_EXIT_RECENT);
+    a.exit_recent = exit_recent.into_iter().skip(skip).collect();
     a
+}
+
+const MAX_EXIT_RECENT: usize = 3;
+
+/// `nagi_windows_tsf.dll.<yyyyMMddHHmmssfff>.old` のファイル名の時刻（ローカル時刻を、UTC として読んだ UNIX 秒）
+pub fn old_file_local_secs(name: &str) -> Option<i64> {
+    let rest = name.strip_prefix("nagi_windows_tsf.dll.")?;
+    let stamp = rest.strip_suffix(".old")?;
+    if stamp.len() != 17 || !stamp.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let ts = format!(
+        "{}-{}-{}T{}:{}:{}Z",
+        &stamp[0..4],
+        &stamp[4..6],
+        &stamp[6..8],
+        &stamp[8..10],
+        &stamp[10..12],
+        &stamp[12..14]
+    );
+    parse_utc(&ts)
 }
 
 const ENGINE_LOG_MARKERS: [&str; 9] = [
@@ -324,7 +456,7 @@ mod tests {
             Some("sandbox.exe")
         );
         // インストール時刻の除外対象にならない
-        let a = analyze_with(&text, Some(i64::MAX));
+        let a = analyze_with(&text, &[parse_utc("2026-11-21T11:20:00Z").unwrap()]);
         assert_eq!(a.unlaunchable_pids, vec![7720]);
         assert_eq!(
             unlaunchable_code("pid=1 launch failed: spawn failed (os error 5)"),
@@ -366,16 +498,84 @@ mod tests {
 2026-11-21T11:13:48Z pid=11484 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
 ";
         let all = analyze(text);
-        assert_eq!((all.stopped, all.minimal_entries), (3, 1));
+        assert_eq!((all.stopped, all.minimal_entries), (2, 1));
         let inst = parse_utc("2026-11-21T10:34:30Z").unwrap();
-        let a = analyze_with(text, Some(inst + INSTALL_GRACE_SECS));
+        let a = analyze_with(text, &[inst]);
         assert_eq!(
             (a.stopped, a.minimal_entries, a.ignored_by_install),
-            (1, 0, 2)
+            (1, 0, 1),
+            "前後 120 秒の事象は 10 秒以内の連なりで 1 事象"
         );
         assert_eq!(a.evidence.len(), 1);
-        let a = analyze_with(text, Some(parse_utc("2026-11-21T11:13:48Z").unwrap()));
-        assert_eq!((a.stopped, a.ignored_by_install), (0, 3));
+        let a = analyze_with(text, &[parse_utc("2026-11-21T11:13:48Z").unwrap()]);
+        assert_eq!((a.stopped, a.ignored_by_install), (1, 1));
+        // 影響期間は「前」にも広がる（更新の少し前に止まり始める）
+        let a = analyze_with(text, &[parse_utc("2026-11-21T10:36:00Z").unwrap()]);
+        assert_eq!(a.ignored_by_install, 1);
+    }
+
+    #[test]
+    fn same_pid_retry_series_is_one_event() {
+        let text = "\
+2026-11-22T05:00:00Z pid=5 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+2026-11-22T05:00:20Z pid=5 [engine] stopped (crash or start failure) attempt=2 retry_in_ms=400
+2026-11-22T05:00:50Z pid=5 [engine] stopped (crash or start failure) attempt=3 retry_in_ms=800
+2026-11-22T05:01:30Z pid=5 [engine] stopped (crash or start failure) attempt=4 retry_in_ms=1600
+2026-11-22T05:10:00Z pid=5 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+";
+        let a = analyze(text);
+        assert_eq!(a.stopped, 2, "{a:?}");
+    }
+
+    #[test]
+    fn unlaunchable_pid_lines_are_not_general_stops() {
+        let text = format!(
+            "{REAL_SPAWN}\n\
+2026-11-21T11:20:00Z pid=7720 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200\n\
+2026-11-21T11:20:30Z pid=7720 [engine] entering minimal profile after restarts=5\n"
+        );
+        let a = analyze(&text);
+        assert_eq!((a.stopped, a.minimal_entries, a.launch_failures), (0, 0, 0));
+        assert_eq!(a.unlaunchable_pids, vec![7720]);
+    }
+
+    #[test]
+    fn exit_lines_count_crash_and_error_only() {
+        let text = "\
+2026-11-22T06:00:00Z pid=1 [engine] exit code=0x0 reason=update uptime_ms=1000 phase=run last_method=process_key last_recv=1
+2026-11-22T06:00:01Z pid=1 [engine] exit code=0x0 reason=shutdown uptime_ms=1000 phase=run last_method=- last_recv=1
+2026-11-22T07:00:00Z pid=2 [engine] exit code=0xc0000005 reason=crash uptime_ms=5000 phase=run last_method=process_key last_recv=3 stderr=[secret]
+2026-11-22T07:10:00Z pid=3 [engine] exit code=0x1 reason=error uptime_ms=10 phase=start last_method=- last_recv=0
+";
+        let a = analyze(text);
+        assert_eq!(a.exit_crashes, 2);
+        assert_eq!(a.exit_last.as_deref(), Some("2026-11-22T07:10:00Z"));
+        assert!(a.exit_recent[0].contains("code=0xc0000005"));
+        assert!(a.exit_recent[0].contains("last_method=process_key"));
+        assert!(a.exit_recent.iter().all(|l| !l.contains("secret")));
+        // 更新の影響期間の crash は数えない
+        let a = analyze_with(
+            text,
+            &[
+                parse_utc("2026-11-22T07:00:30Z").unwrap(),
+                parse_utc("2026-11-22T07:10:30Z").unwrap(),
+            ],
+        );
+        assert_eq!(a.exit_crashes, 0);
+    }
+
+    #[test]
+    fn old_file_name_time() {
+        assert_eq!(
+            old_file_local_secs("nagi_windows_tsf.dll.20261122060500123.old"),
+            parse_utc("2026-11-22T06:05:00Z")
+        );
+        assert_eq!(old_file_local_secs("nagi_windows_tsf.dll.old"), None);
+        assert_eq!(old_file_local_secs("imserver.exe.old"), None);
+        assert_eq!(
+            old_file_local_secs("nagi_windows_tsf.dll.2026112206050012x.old"),
+            None
+        );
     }
 
     #[test]

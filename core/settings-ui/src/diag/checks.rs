@@ -1079,6 +1079,15 @@ pub fn judge_tsf_log(a: &tsflog::LogAnalysis, now_unix: i64) -> ItemResult {
 /// 更新直後に出ることがある旨の案内を出す期間（インストールからの秒数）
 const FRESH_INSTALL_SECS: i64 = 600;
 
+/// インストール・更新の時刻と、その出所（作成時刻 / 更新時刻 / `.old` の名前）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallInfo {
+    /// UNIX 秒
+    pub unix: i64,
+    /// 出所の説明
+    pub source: String,
+}
+
 /// `install_unix` はインストール・更新の時刻、`engine_log` は imserver ログの該当行（`None` は未取得）
 pub fn judge_tsf_log_at(
     a: &tsflog::LogAnalysis,
@@ -1086,7 +1095,22 @@ pub fn judge_tsf_log_at(
     install_unix: Option<i64>,
     engine_log: Option<&[String]>,
 ) -> ItemResult {
+    let install = install_unix.map(|unix| InstallInfo {
+        unix,
+        source: "ファイルの時刻".to_owned(),
+    });
+    judge_tsf_log_with(a, now_unix, install.as_ref(), engine_log)
+}
+
+/// [`judge_tsf_log_at`] の、時刻の出所つき版
+pub fn judge_tsf_log_with(
+    a: &tsflog::LogAnalysis,
+    now_unix: i64,
+    install: Option<&InstallInfo>,
+    engine_log: Option<&[String]>,
+) -> ItemResult {
     let id = ItemId::TsfLog;
+    let install_unix = install.map(|i| i.unix);
     let mut lines = vec![format!("読んだ行数: {}", a.lines)];
     lines.push(format!(
         "言語のオプションからの起動の記録: {}",
@@ -1104,8 +1128,9 @@ pub fn judge_tsf_log_at(
     let install_unix = install_unix.filter(|&t| tsflog::plausible_install_time(t, now_unix));
     match install_unix {
         Some(t) => lines.push(format!(
-            "インストール・更新から {} 秒経過。その影響期間（+{} 秒）に起きたエンジン停止の事象: {} 回（数えていません）",
+            "インストール・更新から {} 秒経過（時刻の根拠: {}）。その影響期間（前後 ±{} 秒）に起きたエンジン停止の事象: {} 回（数えていません）",
             (now_unix - t).max(0),
+            install.map_or("-", |i| i.source.as_str()),
             tsflog::INSTALL_GRACE_SECS,
             a.ignored_by_install
         )),
@@ -1144,7 +1169,10 @@ pub fn judge_tsf_log_at(
             "{n} プロセスで起動不可（制限されたホストの可能性）。該当 pid: {}",
             pids.join(", ")
         );
-        if n * 4 <= hosts && hosts > n {
+        // ホスト数が分からない（ログに起動不可の pid しか出ていない）ときは、1〜2 個なら要確認。
+        // ホストが分かるときは、起動不可が半数以下なら要確認、半数超なら NG
+        let minority = if hosts > n { n * 2 <= hosts } else { n <= 2 };
+        if minority {
             warn.push(format!(
                 "{msg}。一部のアプリ（サンドボックス等）では辞書のみで動作しています。通常の使用に支障が無ければ問題ありません"
             ));
@@ -1162,14 +1190,14 @@ pub fn judge_tsf_log_at(
     if a.langbar_failed || a.add_item_failed {
         warn.push("言語バー（タスクバーの「あ / A」）の登録に失敗した記録があります".to_owned());
     }
-    // 同一秒の複数 pid は 1 事象。要確認は「別の秒の事象が 3 回以上、かつ最新が直近 24 時間以内」のみ
-    let stopped_recent = a
-        .stopped_last
-        .as_deref()
-        .and_then(tsflog::parse_utc)
-        .is_none_or(|t| now_unix - t <= 24 * 3600);
-    if a.stopped >= 3 && stopped_recent {
-        warn.push(format!(
+    // 同時刻の複数 pid・同一 pid の再試行の列は 1 事象。起動不可の pid・更新の影響期間は数えない。
+    // 3 回以上かつ最新が直近 24 時間以内なら NG
+    let recent = |ts: Option<&str>| {
+        ts.and_then(tsflog::parse_utc)
+            .is_none_or(|t| now_unix - t <= 24 * 3600)
+    };
+    if a.stopped >= 3 && recent(a.stopped_last.as_deref()) {
+        ng.push(format!(
             "エンジンが止まった事象が {} 回あります（最新 {}）",
             a.stopped,
             a.stopped_last.as_deref().unwrap_or("-")
@@ -1180,6 +1208,25 @@ pub fn judge_tsf_log_at(
             a.stopped,
             a.stopped_last.as_deref().unwrap_or("-")
         ));
+    }
+    if a.exit_crashes > 0 {
+        lines.push(format!(
+            "エンジンの終了記録（reason=crash / error）: {} 回。直近:",
+            a.exit_crashes
+        ));
+        lines.extend(a.exit_recent.iter().cloned());
+        if recent(a.exit_last.as_deref()) {
+            let msg = format!(
+                "エンジンが異常終了した記録（reason=crash / error）が {} 回あります（最新 {}）",
+                a.exit_crashes,
+                a.exit_last.as_deref().unwrap_or("-")
+            );
+            if a.exit_crashes >= 3 {
+                ng.push(msg);
+            } else {
+                warn.push(msg);
+            }
+        }
     }
     if a.dropped_non_json {
         warn.push("エンジンの出力に JSON 以外の行が混ざった記録があります".to_owned());
@@ -1204,7 +1251,7 @@ pub fn judge_tsf_log_at(
         return ItemResult::ng(
             id,
             ng.into_iter().chain(warn).collect::<Vec<_>>().join(" / "),
-            format!("imserver の起動項目（engine.start）と VC++ ランタイム・辞書の項目を確認してください。%LOCALAPPDATA%\\Nagi\\logs の imserver-*.log に理由があります。{fresh_note}{unlaunchable_advice}"),
+            format!("imserver の起動項目（engine.start）と VC++ ランタイム・辞書の項目を確認してください。%LOCALAPPDATA%\\Nagi\\logs の imserver-*.log に理由があります。IME が再起動したときの行（reason と code）を報告してください。{fresh_note}{unlaunchable_advice}"),
         )
         .with_evidence(lines);
     }
@@ -1212,7 +1259,7 @@ pub fn judge_tsf_log_at(
         return ItemResult::warn(
             id,
             warn.join(" / "),
-            format!("再現するときは、Nagi を選び直して数文字入力し、もう一度診断してください。続く場合は tsf.log の該当行を報告してください。{fresh_note}{unlaunchable_advice}"),
+            format!("再現するときは、Nagi を選び直して数文字入力し、もう一度診断してください。続く場合は tsf.log の該当行を報告してください。IME が再起動したときの行（reason と code）を報告してください。{fresh_note}{unlaunchable_advice}"),
         )
         .with_evidence(lines);
     }
@@ -1232,13 +1279,56 @@ fn mtime_unix(path: &std::path::Path) -> Option<i64> {
     Some(d.as_secs() as i64)
 }
 
-/// インストール・更新の時刻（VERSION・TSF DLL の更新時刻の新しい方。取れなければ `None`）
-fn install_unix(ctx: &Ctx) -> Option<i64> {
-    ["VERSION", "nagi_windows_tsf.dll"]
+/// 時刻の候補（出所つき）から、妥当な最大値を選ぶ
+pub fn pick_install_time(cands: &[(String, i64)], now_unix: i64) -> Option<InstallInfo> {
+    cands
         .iter()
-        .filter_map(|n| mtime_unix(&ctx.install_dir.join(n)))
-        .filter(|&t| tsflog::plausible_install_time(t, now_unix()))
-        .max()
+        .filter(|(_, t)| tsflog::plausible_install_time(*t, now_unix))
+        .max_by_key(|(_, t)| *t)
+        .map(|(source, unix)| InstallInfo {
+            unix: *unix,
+            source: source.clone(),
+        })
+}
+
+fn created_unix(path: &std::path::Path) -> Option<i64> {
+    let m = std::fs::metadata(path).ok()?.created().ok()?;
+    let d = m.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(d.as_secs() as i64)
+}
+
+/// インストール・更新の時刻の候補。zip 展開では更新時刻が 1980 年のままになるので、実際の時刻が付く
+/// 作成時刻（CreationTime）も使う。`.old` のファイル名（ローカル時刻）は、OS のタイムゾーンが取れたときだけ使う
+fn install_candidates(ctx: &Ctx) -> Vec<(String, i64)> {
+    let mut v = Vec::new();
+    for n in [
+        "VERSION",
+        "nagi_windows_tsf.dll",
+        "imserver.exe",
+        "nagi-settings.exe",
+    ] {
+        let p = ctx.install_dir.join(n);
+        if let Some(t) = created_unix(&p) {
+            v.push((format!("{n} の作成時刻"), t));
+        }
+        if let Some(t) = mtime_unix(&p) {
+            v.push((format!("{n} の更新時刻"), t));
+        }
+    }
+    let offset = ctx.facts().and_then(|f| f.utc_offset_minutes);
+    if let (Some(off), Ok(entries)) = (offset, std::fs::read_dir(&ctx.install_dir)) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if let Some(local) = tsflog::old_file_local_secs(&name) {
+                v.push((
+                    format!(".old のファイル名の時刻（{name}）"),
+                    local - i64::from(off) * 60,
+                ));
+            }
+        }
+    }
+    v.retain(|(_, t)| tsflog::plausible_install_time(*t, now_unix()));
+    v
 }
 
 /// imserver-*.log（最新 2 ファイル）の末尾から、エラーらしい行を最大 10 行（パスはユーザー名を置換）
@@ -1279,10 +1369,13 @@ pub fn check_tsf_log(ctx: &Ctx) -> ItemResult {
     }
     match read_tsf_log(ctx) {
         Some(text) => {
-            let install = install_unix(ctx);
-            let a = tsflog::analyze_with(&text, install.map(|t| t + tsflog::INSTALL_GRACE_SECS));
+            let cands = install_candidates(ctx);
+            let install = pick_install_time(&cands, now_unix());
+            // 影響期間は、最新の時刻だけでなく過去の更新（.old の名前）の時刻にも広げる
+            let times: Vec<i64> = cands.iter().map(|(_, t)| *t).collect();
+            let a = tsflog::analyze_with(&text, &times);
             let engine_log = read_engine_log_evidence(ctx);
-            judge_tsf_log_at(&a, now_unix(), install, engine_log.as_deref())
+            judge_tsf_log_with(&a, now_unix(), install.as_ref(), engine_log.as_deref())
         }
         None => ItemResult::warn(
             id,
@@ -1640,7 +1733,7 @@ mod tests {
             + &stop("2026-11-21T11:00:00Z", 1);
         assert_eq!(
             judge_tsf_log(&tsflog::analyze(&text), now).status,
-            Status::Warn
+            Status::Ng
         );
         // 3 回でも最新が 24 時間より前 → OK
         assert_eq!(
@@ -1660,18 +1753,22 @@ mod tests {
 2026-11-21T11:13:48Z pid=11484 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
 ";
         let now = tsflog::parse_utc("2026-11-21T11:17:00Z").unwrap();
-        // 従来: NG
+        // 影響期間なし: 10 秒以内の連なりは 1 事象 + 11:13 の 1 事象 + 降格 → NG
         let r = judge_tsf_log(&tsflog::analyze(text), now);
         assert_eq!(r.status, Status::Ng);
-        // インストール時刻が 11:13:40 → 全事象が影響期間内 → OK、件数は根拠に出る
-        let inst = tsflog::parse_utc("2026-11-21T11:13:40Z").unwrap();
-        let a = tsflog::analyze_with(text, Some(inst + tsflog::INSTALL_GRACE_SECS));
+        // インストール時刻が 10:34:30 と 11:13:40 → 全事象が影響期間内 → OK、件数は根拠に出る
+        let times = [
+            tsflog::parse_utc("2026-11-21T10:34:30Z").unwrap(),
+            tsflog::parse_utc("2026-11-21T11:13:40Z").unwrap(),
+        ];
+        let inst = times[1];
+        let a = tsflog::analyze_with(text, &times);
         let r = judge_tsf_log_at(&a, now, Some(inst), Some(&[]));
         assert_eq!(r.status, Status::Ok, "{r:?}");
-        assert!(r.evidence.iter().any(|l| l.contains("事象: 5 回")), "{r:?}");
-        // インストールが 10:30 なら 10:34 以降の事象は数える（NG・更新直後ではない）
-        let inst = tsflog::parse_utc("2026-11-21T10:30:00Z").unwrap();
-        let a = tsflog::analyze_with(text, Some(inst + tsflog::INSTALL_GRACE_SECS));
+        assert!(r.evidence.iter().any(|l| l.contains("事象: 2 回")), "{r:?}");
+        // インストールが 10:00 なら 10:34 以降の事象は数える（NG・更新直後ではない）
+        let inst = tsflog::parse_utc("2026-11-21T10:00:00Z").unwrap();
+        let a = tsflog::analyze_with(text, &[inst]);
         let log = vec!["thread panicked".to_owned()];
         let r = judge_tsf_log_at(&a, now, Some(inst), Some(&log));
         assert_eq!(r.status, Status::Ng);
@@ -1689,6 +1786,102 @@ mod tests {
         assert!(r.evidence.iter().any(|l| l.contains("該当なし")));
     }
 
+    /// 0.1.22 の実レポート（制限されたホスト 1 個 + 更新による停止）。NG にならず要確認
+    const REPORT_0122: &str = "\
+2026-11-22T05:30:00Z pid=1000 [tsf] Activate done langbar=true compartments=true message_window=true
+2026-11-22T05:30:01Z pid=2000 [tsf] Activate done langbar=true compartments=true message_window=true
+2026-11-22T05:42:34Z pid=34580 [engine] launch failed: spawn failed (send failed: spawn: システム バイナリのエラーが検出されました。 (os error 15623))
+2026-11-22T05:42:34Z pid=34580 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+2026-11-22T05:42:34Z pid=34580 [engine] launch failed: spawn failed (send failed: spawn: x (os error 15623))
+2026-11-22T05:42:34Z pid=34580 [engine] stopped (crash or start failure) attempt=2 retry_in_ms=400
+2026-11-22T05:42:35Z pid=34580 [engine] stopped (crash or start failure) attempt=3 retry_in_ms=800
+2026-11-22T05:42:36Z pid=34580 [engine] stopped (crash or start failure) attempt=4 retry_in_ms=1600
+2026-11-22T05:42:37Z pid=34580 [engine] stopped (crash or start failure) attempt=5 retry_in_ms=3200
+2026-11-22T05:42:37Z pid=34580 [engine] entering minimal profile after restarts=5
+2026-11-22T05:42:41Z pid=34580 [engine] stopped (crash or start failure) attempt=6 retry_in_ms=6400
+2026-11-22T05:42:50Z pid=1000 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+2026-11-22T05:42:50Z pid=2000 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+2026-11-22T06:05:21Z pid=20312 [engine] stopped (crash or start failure) attempt=1 retry_in_ms=200
+2026-11-22T06:05:21Z pid=1000 [engine] exit code=0x0 reason=update uptime_ms=1380000 phase=run last_method=process_key last_recv=5
+";
+
+    #[test]
+    fn tsf_log_real_report_0122_is_warn_not_ng() {
+        let now = tsflog::parse_utc("2026-11-22T06:10:00Z").unwrap();
+        // 更新の時刻は CreationTime（更新時刻は 1980 年）から得る
+        let cands = vec![
+            ("VERSION の更新時刻".to_owned(), 315_532_800),
+            (
+                "nagi_windows_tsf.dll の作成時刻".to_owned(),
+                tsflog::parse_utc("2026-11-22T06:05:00Z").unwrap(),
+            ),
+            (
+                "VERSION の作成時刻".to_owned(),
+                tsflog::parse_utc("2026-11-22T05:42:30Z").unwrap(),
+            ),
+        ];
+        let install = pick_install_time(&cands, now).unwrap();
+        assert!(install.source.contains("作成時刻"));
+        assert_eq!(
+            install.unix,
+            tsflog::parse_utc("2026-11-22T06:05:00Z").unwrap()
+        );
+        let times: Vec<i64> = cands.iter().map(|(_, t)| *t).collect();
+        let a = tsflog::analyze_with(REPORT_0122, &times);
+        let r = judge_tsf_log_with(&a, now, Some(&install), Some(&[]));
+        assert_eq!(r.status, Status::Warn, "{r:?}");
+        assert!(r.detail.contains("1 プロセスで起動不可") && r.detail.contains("34580"));
+        assert!(!r.detail.contains("エンジンが止まった事象"), "{r:?}");
+        assert!(
+            r.evidence.iter().any(|l| l.contains("作成時刻")),
+            "{:?}",
+            r.evidence
+        );
+        assert!(r.advice.as_deref().unwrap().contains("reason と code"));
+        // 更新の時刻が分からなくても NG にはならない（起動不可は別集計、再試行の列は 1 事象）
+        let r = judge_tsf_log_with(&tsflog::analyze(REPORT_0122), now, None, None);
+        assert_ne!(r.status, Status::Ng, "{r:?}");
+        assert!(r.evidence.iter().any(|l| l.contains("時刻: 不明")));
+    }
+
+    #[test]
+    fn tsf_log_exit_crash_rules() {
+        let now = tsflog::parse_utc("2026-11-22T12:00:00Z").unwrap();
+        let exit = |n: u32, reason: &str| {
+            format!(
+                "2026-11-22T11:{n:02}:00Z pid=1 [engine] exit code=0xc0000005 reason={reason} uptime_ms=5 phase=run last_method=process_key last_recv=1\n"
+            )
+        };
+        let t = exit(1, "update") + &exit(2, "shutdown");
+        assert_eq!(judge_tsf_log(&tsflog::analyze(&t), now).status, Status::Ok);
+        let t = exit(1, "crash");
+        let r = judge_tsf_log(&tsflog::analyze(&t), now);
+        assert_eq!(r.status, Status::Warn, "{r:?}");
+        assert!(r.evidence.iter().any(|l| l.contains("code=0xc0000005")));
+        let t = exit(1, "crash") + &exit(2, "error") + &exit(3, "crash");
+        assert_eq!(judge_tsf_log(&tsflog::analyze(&t), now).status, Status::Ng);
+        // 更新の影響期間の crash は数えない
+        let a = tsflog::analyze_with(&t, &[now - 3540]);
+        assert_eq!(judge_tsf_log_at(&a, now, None, None).status, Status::Ok);
+    }
+
+    #[test]
+    fn tsf_log_unlaunchable_unknown_hosts_rules() {
+        let now = tsflog::parse_utc("2026-11-22T12:00:00Z").unwrap();
+        let spawn = |pid: u32| {
+            format!(
+                "2026-11-22T11:00:00Z pid={pid} [engine] launch failed: spawn failed (x (os error 5))\n"
+            )
+        };
+        let r = judge_tsf_log(&tsflog::analyze(&(spawn(1) + &spawn(2))), now);
+        assert_eq!(r.status, Status::Warn, "{r:?}");
+        let r = judge_tsf_log(&tsflog::analyze(&(spawn(1) + &spawn(2) + &spawn(3))), now);
+        assert_eq!(r.status, Status::Ng, "{r:?}");
+        // ホストが分かり、半数超 → NG
+        let t = spawn(1) + &spawn(2) + "t pid=3 [tsf] Activate done langbar=true\n";
+        assert_eq!(judge_tsf_log(&tsflog::analyze(&t), now).status, Status::Ng);
+    }
+
     const REAL_SPAWN: &str = "2026-11-21T11:20:00Z pid=7720 [engine] launch failed: spawn failed (send failed: spawn: システム バイナリのエラーが検出されました。 (os error 15623))";
 
     #[test]
@@ -1703,9 +1896,9 @@ mod tests {
         assert!(r.detail.contains("1 プロセスで起動不可") && r.detail.contains("7720"));
         assert!(r.detail.contains("辞書のみで動作"));
         assert!(r.advice.as_deref().unwrap().contains("メモ帳"));
-        // 全ホストで起動不可 → NG
+        // ホスト数が不明で 1 個 → 要確認
         let r = judge_tsf_log(&tsflog::analyze(REAL_SPAWN), now);
-        assert_eq!(r.status, Status::Ng, "{r:?}");
+        assert_eq!(r.status, Status::Warn, "{r:?}");
         // exe の記録があれば対応付ける
         let t = format!("{REAL_SPAWN}\n2026-11-21T11:20:01Z pid=7720 [host] exe=app.exe\n");
         let r = judge_tsf_log(&tsflog::analyze(&t), now);

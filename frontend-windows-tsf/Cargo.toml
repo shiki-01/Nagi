@@ -46,6 +46,11 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[build-dependencies]
+# DLL に STRINGTABLE（入力方式の表示名。`Display Description` が `@dll,-101` で指す。H-129）を埋め込む。
+# MSVC では `rc.exe`（Windows SDK）、GNU では `windres`。Windows 以外のターゲットでは何もしない
+embed-resource = "3"
+
 # このクレートだけは unsafe を使う（COM / TSF）。`nagi-windows` と `core` は forbid のまま。
 # `deny` にして、必要なモジュールだけ `#![allow(unsafe_code)]` で明示的に許す。
 [lints.rust]

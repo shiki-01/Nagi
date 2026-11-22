@@ -126,6 +126,8 @@ pub struct WinFacts {
     pub vc_reg: Vec<VcReg>,
     /// 画面の DPI（`AppliedDPI`。96 = 100%）
     pub dpi: Option<u32>,
+    /// OS のタイムゾーンの UTC からの差（分。現在時刻の値。`.old` のファイル名のローカル時刻を UTC にするのに使う）
+    pub utc_offset_minutes: Option<i32>,
     /// アプリのテーマがライトか
     pub apps_light: Option<bool>,
     /// システムのテーマがライトか
@@ -366,6 +368,7 @@ foreach ($a in 'x64', 'arm64', 'x86') {
   if ($k -ne $null) { $vr += [ordered]@{ arch = $a; installed = [int]$k.GetValue('Installed'); version = [string]$k.GetValue('Version') }; $k.Close() }
 }
 $r.vc_reg = @($vr)
+try { $r.utc_offset_minutes = [int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::Now).TotalMinutes } catch {}
 $v = RegVal $HKCU 'Control Panel\Desktop\WindowMetrics' 'AppliedDPI'
 if ($v -ne $null) { $r.dpi = [int]$v }
 $v = RegVal $HKCU 'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'AppsUseLightTheme'

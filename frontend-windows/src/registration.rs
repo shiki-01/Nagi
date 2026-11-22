@@ -17,6 +17,25 @@ pub fn inproc_server_values(dll_path: &str) -> Vec<(Option<&'static str>, String
     ]
 }
 
+/// DLL の文字列リソース ID: 入力方式の表示名（`build.rs` の STRINGTABLE と一致させる）
+pub const STRING_ID_NAME: u32 = 101;
+
+/// DLL の文字列リソース ID: 入力方式の説明（同上）
+pub const STRING_ID_DESCRIPTION: u32 = 102;
+
+/// 言語プロファイルのレジストリキー（`HKLM` 以下）。`RegisterProfile` が書く場所と同じ。
+/// `clsid` / `profile` は `{XXXXXXXX-...}` 形式、`langid` は LANGID（日本語は `0x0411`）
+pub fn language_profile_key(clsid: &str, langid: u16, profile: &str) -> String {
+    format!(r"SOFTWARE\Microsoft\CTF\TIP\{clsid}\LanguageProfile\0x{langid:08x}\{profile}")
+}
+
+/// 言語プロファイルの `Display Description`（REG_EXPAND_SZ）の値。設定アプリが
+/// `@<モジュール>,-<文字列 ID>` を MUI 形式で解決して表示名にする（Microsoft IME は
+/// `@%SystemRoot%\system32\input.dll,-5183`）。`dll_path` は DLL の絶対パス
+pub fn display_description_value(dll_path: &str) -> String {
+    format!("@{dll_path},-{STRING_ID_NAME}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -32,5 +51,21 @@ mod tests {
             )
         );
         assert_eq!(v[1], (Some("ThreadingModel"), "Both".to_owned()));
+    }
+
+    #[test]
+    fn language_profile_key_uses_eight_digit_hex_langid() {
+        assert_eq!(
+            language_profile_key("{AAAA}", 0x0411, "{BBBB}"),
+            r"SOFTWARE\Microsoft\CTF\TIP\{AAAA}\LanguageProfile\0x00000411\{BBBB}"
+        );
+    }
+
+    #[test]
+    fn display_description_points_at_string_resource() {
+        assert_eq!(
+            display_description_value(r"C:\Program Files\Nagi\nagi_windows_tsf.dll"),
+            r"@C:\Program Files\Nagi\nagi_windows_tsf.dll,-101"
+        );
     }
 }

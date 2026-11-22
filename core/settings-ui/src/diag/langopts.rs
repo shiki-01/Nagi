@@ -25,6 +25,44 @@ pub const SID_ALL_RESTRICTED_APP_PACKAGES: &str = "S-1-15-2-2";
 /// BUILTIN\Users
 pub const SID_USERS: &str = "S-1-5-32-545";
 
+/// 照合用に名前を整える（空白・NBSP を除き、小文字にする）
+fn fold(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{a0}')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// 既知の SID が ACL の主体名として出るときの名前（`<ドメイン>\` を除いた部分。OS の表示言語で変わる）。
+/// 日本語の Windows では `APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES` /
+/// `APPLICATION PACKAGE AUTHORITY\制限されたすべてのアプリケーション パッケージ` のように出て、
+/// SID への変換が失敗すると名前のまま `sid` に入る（H-129）
+fn account_names(sid: &str) -> &'static [&'static str] {
+    match sid {
+        SID_ALL_APP_PACKAGES => &[
+            "ALL APPLICATION PACKAGES",
+            "すべてのアプリケーション パッケージ",
+        ],
+        SID_ALL_RESTRICTED_APP_PACKAGES => &[
+            "ALL RESTRICTED APPLICATION PACKAGES",
+            "制限されたすべてのアプリケーション パッケージ",
+        ],
+        SID_USERS => &["Users", "ユーザー"],
+        _ => &[],
+    }
+}
+
+/// ACL の主体（SID の文字列、または SID に変換できなかったときの `ドメイン\名前`）が、その SID か。
+/// SID（大文字小文字を無視）でも、既知の名前（英語・日本語。`ドメイン\` は無視）でも一致とする
+pub fn principal_is(principal: &str, sid: &str) -> bool {
+    let principal = principal.trim();
+    if principal.eq_ignore_ascii_case(sid) {
+        return true;
+    }
+    let name = fold(principal.rsplit('\\').next().unwrap_or(principal));
+    account_names(sid).iter().any(|n| fold(n) == name)
+}
+
 /// 設定アプリの本体プロセス名（拡張子なし）。DLL を読み込むかを見る
 pub const SETTINGS_PROCESSES: &[&str] = &["SystemSettings", "ApplicationFrameHost"];
 
@@ -284,7 +322,7 @@ pub fn mask_grants_read_execute(mask: i64) -> bool {
 
 /// この ACL がその SID に（このオブジェクト自身へ）読み取り・実行を許しているか。Deny があれば `false`
 pub fn grants_read_execute(acl: &AclFacts, sid: &str) -> bool {
-    let mine = |e: &&AclEntry| e.sid.eq_ignore_ascii_case(sid) && !e.inherit_only;
+    let mine = |e: &&AclEntry| principal_is(&e.sid, sid) && !e.inherit_only;
     if acl
         .entries
         .iter()
@@ -303,7 +341,11 @@ fn find_acl<'a>(p: &'a Probe, target: &str) -> Option<&'a AclFacts> {
     p.acls.iter().find(|a| a.target == target)
 }
 
-/// カテゴリ GUID の名前（TSF の `GUID_TFCAT_*`。名前は参考）
+/// 名前を持たない（このテーブルに無い）カテゴリの表示
+pub const UNKNOWN_CATEGORY: &str = "不明（MS 固有の可能性）";
+
+/// カテゴリ GUID の名前（Windows SDK の msctf.h / ctffunc.h の `GUID_TFCAT_*`）。
+/// UIELEMENTENABLED は `…9CF`、SECUREMODE は `…9CE`（H-129。取り違えない）。表に無ければ [`UNKNOWN_CATEGORY`]
 pub fn category_name(guid: &str) -> &'static str {
     match guid.to_ascii_uppercase().as_str() {
         "{34745C63-B2F0-4784-8B67-5E12C8701A31}" => "TIP_KEYBOARD",
@@ -311,11 +353,62 @@ pub fn category_name(guid: &str) -> &'static str {
         "{364215D9-75BC-11D7-A6EF-00065B84435C}" => "TIPCAP_COMLESS",
         "{13A016DF-560B-46CD-947A-4C3AF1E0E35D}" => "TIPCAP_IMMERSIVESUPPORT",
         "{25504FB4-7BAB-4BC1-9C69-CF81890F0EF5}" => "TIPCAP_SYSTRAYSUPPORT",
-        "{49D2F9CE-1F5E-11D7-A6D3-00065B84435C}" => "TIPCAP_UIELEMENTENABLED",
-        "{49D2F9CF-1F5E-11D7-A6D3-00065B84435C}" => "TIPCAP_SECUREMODE",
+        "{49D2F9CE-1F5E-11D7-A6D3-00065B84435C}" => "TIPCAP_SECUREMODE",
+        "{49D2F9CF-1F5E-11D7-A6D3-00065B84435C}" => "TIPCAP_UIELEMENTENABLED",
         "{CCF05DD7-4A87-11D7-A6E2-00065B84435C}" => "TIPCAP_INPUTMODECOMPARTMENT",
-        _ => "?",
+        _ => UNKNOWN_CATEGORY,
     }
+}
+
+/// Nagi が登録すべきカテゴリ（`frontend-windows-tsf/src/register.rs` の `registered_categories` と一致させる）。
+/// `(GUID, UILess・入力モードに影響するか)`
+pub const EXPECTED_CATEGORIES: [(&str, bool); 6] = [
+    ("{34745C63-B2F0-4784-8B67-5E12C8701A31}", false),
+    ("{046B8C80-1647-40F7-9B21-B93B81AABC1B}", false),
+    ("{13A016DF-560B-46CD-947A-4C3AF1E0E35D}", false),
+    ("{25504FB4-7BAB-4BC1-9C69-CF81890F0EF5}", false),
+    ("{49D2F9CF-1F5E-11D7-A6D3-00065B84435C}", true),
+    ("{CCF05DD7-4A87-11D7-A6E2-00065B84435C}", true),
+];
+
+/// Nagi が宣言しないカテゴリ（SECUREMODE）。入っていたら誤登録
+const UNWANTED_CATEGORY: &str = "{49D2F9CE-1F5E-11D7-A6D3-00065B84435C}";
+
+/// 期待カテゴリの確認結果
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CategoryCheck {
+    /// 足りないカテゴリ（`名前 {GUID}`）
+    pub missing: Vec<String>,
+    /// 足りないもののうち、UILess・入力モードに影響しうるもの
+    pub missing_uilike: bool,
+    /// 宣言していないはずなのに入っているカテゴリ
+    pub unwanted: Vec<String>,
+}
+
+impl CategoryCheck {
+    /// 期待どおりか
+    pub fn is_ok(&self) -> bool {
+        self.missing.is_empty() && self.unwanted.is_empty()
+    }
+}
+
+/// Nagi の登録済みカテゴリを、期待する 6 種と照らす
+pub fn check_expected_categories(registered: &[String]) -> CategoryCheck {
+    let has = |g: &str| registered.iter().any(|r| r.eq_ignore_ascii_case(g));
+    let mut c = CategoryCheck::default();
+    for (guid, uilike) in EXPECTED_CATEGORIES {
+        if !has(guid) {
+            c.missing.push(format!("{} {guid}", category_name(guid)));
+            c.missing_uilike |= uilike;
+        }
+    }
+    if has(UNWANTED_CATEGORY) {
+        c.unwanted.push(format!(
+            "{} {UNWANTED_CATEGORY}",
+            category_name(UNWANTED_CATEGORY)
+        ));
+    }
+    c
 }
 
 /// 値の名前の比較結果
@@ -413,7 +506,7 @@ pub struct Assessment {
 }
 
 fn assess_acl(p: &Probe) -> Assessment {
-    let title = "(a) DLL・アイコンに「すべてのアプリケーション パッケージ」の読み取り・実行が無く、設定アプリが読めない";
+    let title = "(a) DLL・アイコンに「すべてのアプリケーション パッケージ」の読み取り・実行が無く、設定アプリが読めない（主体は SID と日本語・英語の名前の両方で照合）";
     let mut lacking = Vec::new();
     let mut checked = 0;
     for target in ["dll", "icon"] {
@@ -435,7 +528,7 @@ fn assess_acl(p: &Probe) -> Assessment {
     } else if lacking.is_empty() {
         (
             Likelihood::Unlikely,
-            "DLL・アイコンとも S-1-15-2-1 に読み取り・実行があります".to_owned(),
+            "DLL・アイコンとも ALL APPLICATION PACKAGES（S-1-15-2-1。SID でも名前〈ALL APPLICATION PACKAGES / すべてのアプリケーション パッケージ〉でも照合）に読み取り・実行があります。ACL は問題ではありません".to_owned(),
         )
     } else {
         (
@@ -560,9 +653,17 @@ fn assess_profile_values(p: &Probe) -> Assessment {
             (
                 Likelihood::Differs,
                 format!(
-                    "Microsoft IME にだけある値: {}。種類の違い: {}",
+                    "Microsoft IME にだけある値: {}。種類の違い: {}{}",
                     list_or_none(&d.only_ms),
-                    list_or_none(&d.kind_differs)
+                    list_or_none(&d.kind_differs),
+                    if d.only_ms
+                        .iter()
+                        .any(|n| n.eq_ignore_ascii_case("ProfileFlags"))
+                    {
+                        "（ProfileFlags は設定画面から隠す指定〈TF_RP_HIDDENINSETTINGUI = 2〉の可能性があるため、Nagi は意図して書かない。H-129）"
+                    } else {
+                        ""
+                    }
                 ),
             )
         }
@@ -595,20 +696,40 @@ fn assess_tip(p: &Probe) -> Assessment {
             .map(|g| format!("{}({g})", category_name(g)))
             .collect();
         let vals = diff_values(&p.nagi.tip_values, &p.ms.tip_values);
-        if named.is_empty() && vals.only_ms.is_empty() {
-            (
-                Likelihood::Unlikely,
-                "Microsoft IME にあって Nagi に無いカテゴリ・値はありません".to_owned(),
-            )
-        } else {
+        let cats = check_expected_categories(&p.nagi.categories);
+        let threading = format!(
+            "ThreadingModel は Nagi={} / MS={}",
+            shown_or_none(&p.nagi.inproc_threading),
+            shown_or_none(&p.ms.inproc_threading),
+        );
+        if !cats.is_ok() {
             (
                 Likelihood::Differs,
                 format!(
-                    "Microsoft IME にだけあるカテゴリ: {}。TIP キーの値: {}。ThreadingModel は Nagi={} / MS={}",
-                    list_or_none(&named),
+                    "期待カテゴリの不足: {}{}。宣言していないはずのカテゴリ: {}。{threading}",
+                    list_or_none(&cats.missing),
+                    if cats.missing_uilike {
+                        "（UILess・入力モードに影響しうる）"
+                    } else {
+                        ""
+                    },
+                    list_or_none(&cats.unwanted),
+                ),
+            )
+        } else if !vals.only_ms.is_empty() {
+            (
+                Likelihood::Differs,
+                format!(
+                    "TIP キーに Microsoft IME にだけある値: {}。{threading}",
                     list_or_none(&vals.only_ms),
-                    shown_or_none(&p.nagi.inproc_threading),
-                    shown_or_none(&p.ms.inproc_threading),
+                ),
+            )
+        } else {
+            (
+                Likelihood::Unlikely,
+                format!(
+                    "期待カテゴリ 6 種は揃っています。Microsoft IME にだけあるカテゴリ（COMLESS 等。Nagi は意図して宣言しない）: {}。{threading}",
+                    list_or_none(&named),
                 ),
             )
         }
@@ -705,10 +826,7 @@ fn entry_lines(e: &EntryFacts) -> Vec<String> {
 }
 
 fn category_name_prefix(guid: &str) -> String {
-    match category_name(guid) {
-        "?" => String::new(),
-        name => format!("{name} "),
-    }
+    format!("{} ", category_name(guid))
 }
 
 fn acl_lines(acls: &[AclFacts]) -> Vec<String> {
@@ -807,6 +925,24 @@ pub fn render(p: &Probe) -> ItemResult {
                 .map(|g| format!("{}{g}", category_name_prefix(g)))
                 .collect::<Vec<_>>()
         ),
+    ));
+    let cats = check_expected_categories(&p.nagi.categories);
+    evidence.push(format!(
+        "期待カテゴリ（Nagi が登録すべき 6 種）: {}",
+        if cats.is_ok() {
+            "OK（6 種とも登録済み。UIELEMENTENABLED = {49D2F9CF-…}、SECUREMODE = {49D2F9CE-…} は宣言していない）".to_owned()
+        } else {
+            format!(
+                "要確認（不足: {}{} / 宣言していないはずのカテゴリ: {}）",
+                list_or_none(&cats.missing),
+                if cats.missing_uilike {
+                    "。UILess・入力モードに影響しうる"
+                } else {
+                    ""
+                },
+                list_or_none(&cats.unwanted),
+            )
+        }
     ));
     evidence.push("== DLL・フォルダの ACL ==".to_owned());
     evidence.extend(acl_lines(&p.acls));
@@ -950,7 +1086,10 @@ mod tests {
                 val("Description", "String", "x"),
                 val("Enable", "DWord", "1"),
             ],
-            categories: vec!["{34745C63-B2F0-4784-8B67-5E12C8701A31}".into()],
+            categories: EXPECTED_CATEGORIES
+                .iter()
+                .map(|(g, _)| (*g).to_owned())
+                .collect(),
             inproc_threading: "Both".into(),
             user_ids: vec![val("ja\\0411:{C}{P}", "DWord", "1")],
             ..EntryFacts::default()
@@ -1053,14 +1192,106 @@ mod tests {
         assert_eq!(d.kind_differs, vec!["enable: DWord / String"]);
         assert_eq!(likelihood(&p, 'd'), Likelihood::Differs);
 
+        // MS にだけある COMLESS・不明カテゴリは、期待カテゴリが揃っていれば差分扱いにしない
         p.ms.categories
             .push("{364215D9-75BC-11D7-A6EF-00065B84435C}".into());
+        p.ms.categories
+            .push("{24AF3031-852D-40A2-BC09-8992898CE722}".into());
+        let r = assess(&p).into_iter().find(|a| a.key == 'e').unwrap();
+        assert_eq!(r.likelihood, Likelihood::Unlikely);
+        assert!(r.reason.contains("TIPCAP_COMLESS"), "{}", r.reason);
+        assert!(r.reason.contains("不明（MS 固有の可能性）"), "{}", r.reason);
+        let (only_ms, only_nagi) = diff_names(&p.ms.categories, &p.nagi.categories);
+        assert_eq!(only_ms.len(), 2);
+        assert!(only_nagi.is_empty());
+    }
+
+    #[test]
+    fn category_names_follow_the_sdk() {
+        assert_eq!(
+            category_name("{49d2f9cf-1f5e-11d7-a6d3-00065b84435c}"),
+            "TIPCAP_UIELEMENTENABLED"
+        );
+        assert_eq!(
+            category_name("{49D2F9CE-1F5E-11D7-A6D3-00065B84435C}"),
+            "TIPCAP_SECUREMODE"
+        );
+        assert_eq!(
+            category_name("{3AF314A2-D79F-4B1B-9992-15086D339B05}"),
+            UNKNOWN_CATEGORY
+        );
+    }
+
+    #[test]
+    fn expected_categories_report_missing_uilike_and_unwanted() {
+        // 実機（0.1.22）のレポートの登録（UIELEMENTENABLED は 49D2F9CF として入っている）
+        let report: Vec<String> = [
+            "{046B8C80-1647-40F7-9B21-B93B81AABC1B}",
+            "{13A016DF-560B-46CD-947A-4C3AF1E0E35D}",
+            "{25504FB4-7BAB-4BC1-9C69-CF81890F0EF5}",
+            "{34745C63-B2F0-4784-8B67-5E12C8701A31}",
+            "{49D2F9CF-1F5E-11D7-A6D3-00065B84435C}",
+        ]
+        .map(String::from)
+        .to_vec();
+        let c = check_expected_categories(&report);
+        assert_eq!(c.missing.len(), 1);
+        assert!(c.missing[0].contains("TIPCAP_INPUTMODECOMPARTMENT"));
+        assert!(c.missing_uilike && !c.is_ok());
+        let mut p = healthy();
+        p.nagi.categories = report;
         let r = assess(&p).into_iter().find(|a| a.key == 'e').unwrap();
         assert_eq!(r.likelihood, Likelihood::Differs);
-        assert!(r.reason.contains("TIPCAP_COMLESS"), "{}", r.reason);
-        let (only_ms, only_nagi) = diff_names(&p.ms.categories, &p.nagi.categories);
-        assert_eq!(only_ms.len(), 1);
-        assert!(only_nagi.is_empty());
+        assert!(r.reason.contains("UILess"), "{}", r.reason);
+
+        let mut all: Vec<String> = EXPECTED_CATEGORIES
+            .iter()
+            .map(|(g, _)| (*g).into())
+            .collect();
+        assert!(check_expected_categories(&all).is_ok());
+        all.push("{49d2f9ce-1f5e-11d7-a6d3-00065b84435c}".into());
+        assert_eq!(check_expected_categories(&all).unwanted.len(), 1);
+    }
+
+    /// 実機（日本語 OS）のレポートの ACL。SID に変換されず主体名のまま出ていた
+    #[test]
+    fn localized_principal_names_match_sids() {
+        let text = "\
+NT AUTHORITY\\SYSTEM Allow FullControl (継承)
+BUILTIN\\Administrators Allow FullControl (継承)
+BUILTIN\\Users Allow ReadAndExecute, Synchronize (継承)
+APPLICATION PACKAGE AUTHORITY\\ALL APPLICATION PACKAGES Allow ReadAndExecute, Synchronize (継承)
+APPLICATION PACKAGE AUTHORITY\\制限されたすべてのアプリケーション パッケージ Allow ReadAndExecute, Synchronize (継承)";
+        let entries: Vec<AclEntry> = text
+            .lines()
+            .map(|l| {
+                let (principal, rest) = l.split_once(" Allow ").unwrap();
+                let mask = if rest.starts_with("FullControl") {
+                    0x1F01FF
+                } else {
+                    RX
+                };
+                ace(principal, mask, "Allow")
+            })
+            .collect();
+        let a = acl("dll", entries);
+        assert!(grants_read_execute(&a, SID_ALL_APP_PACKAGES));
+        assert!(grants_read_execute(&a, SID_ALL_RESTRICTED_APP_PACKAGES));
+        assert!(grants_read_execute(&a, SID_USERS));
+        let mut p = healthy();
+        p.acls = vec![a.clone(), acl("icon", a.entries.clone())];
+        assert_eq!(likelihood(&p, 'a'), Likelihood::Unlikely);
+        assert!(principal_is("S-1-15-2-1", SID_ALL_APP_PACKAGES));
+        assert!(principal_is(
+            "APPLICATION PACKAGE AUTHORITY\\すべてのアプリケーション パッケージ",
+            SID_ALL_APP_PACKAGES
+        ));
+        // 「制限された…」は ALL APPLICATION PACKAGES ではない
+        assert!(!principal_is(
+            "APPLICATION PACKAGE AUTHORITY\\制限されたすべてのアプリケーション パッケージ",
+            SID_ALL_APP_PACKAGES
+        ));
+        assert!(!principal_is("BUILTIN\\Administrators", SID_USERS));
     }
 
     #[test]
