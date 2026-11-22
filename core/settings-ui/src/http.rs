@@ -6,15 +6,22 @@
 
 use crate::assets;
 use crate::backend::{BackendError, SettingsBackend};
+use crate::cli::Args;
+use crate::diag::ItemId;
+use crate::diag::service::{ArgsDiagService, DiagService};
 use crate::lifecycle::Lifecycle;
 use crate::opener::Opener;
-use crate::token::{constant_time_eq, generate_nonce};
+use crate::token::constant_time_eq;
 use crate::view::build_screen;
+use diag::{DiagRunner, SaveError, StartError};
 use nagi_protocol::settings::SettingChange;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
+
+pub mod diag;
 
 /// トークンを運ぶ HTTP ヘッダー（API 呼び出し）
 pub const TOKEN_HEADER: &str = "x-nagi-token";
@@ -51,7 +58,7 @@ pub struct Response {
     pub content_type: &'static str,
     /// 本文
     pub body: Vec<u8>,
-    /// この応答の CSP（HTML のみ nonce つきの値。それ以外は既定の値）
+    /// この応答の CSP（HTML のみページ用の値。それ以外は何も読み込ませない既定の値）
     pub csp: String,
 }
 
@@ -105,12 +112,12 @@ pub fn default_csp() -> String {
     "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'".to_owned()
 }
 
-/// HTML の CSP。インラインの script / style は nonce つきのものだけ。fetch は同一オリジンのみ
-pub fn page_csp(nonce: &str) -> String {
-    format!(
-        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; \
-         connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-    )
+/// HTML の CSP。script / style は同一オリジンの外部ファイルだけ（インラインは不可）。fetch も同一オリジンのみ。
+/// 画像は同一オリジンと `data:`（アイコン）
+pub fn page_csp() -> String {
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+     connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        .to_owned()
 }
 
 /// 設定画面のアプリケーション本体
@@ -124,6 +131,15 @@ pub struct App<B: SettingsBackend> {
     config_path: Option<PathBuf>,
     /// ブラウザで開く URL に付ける断片（`update` / `update-check`。`--section update [--auto-check]`）
     start_fragment: Option<&'static str>,
+    /// 動作確認（診断）の実行
+    diag: DiagRunner,
+}
+
+#[derive(Deserialize)]
+struct DiagStartBody {
+    /// 1 項目だけ実行するときの項目 ID（無い・`null` は全項目）
+    #[serde(default)]
+    item: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -161,7 +177,14 @@ impl<B: SettingsBackend> App<B> {
             lifecycle: Lifecycle::new(now),
             config_path: None,
             start_fragment: None,
+            diag: DiagRunner::new(Arc::new(ArgsDiagService::new(Args::default()))),
         }
+    }
+
+    /// 動作確認（診断）の実行・保存を頼む相手を差し替える。実行環境では起動引数つきの
+    /// [`ArgsDiagService`]（`--no-network`・`--diag-out` などが効く）を渡す
+    pub fn set_diag_service(&mut self, service: Arc<dyn DiagService>) {
+        self.diag = DiagRunner::new(service);
     }
 
     /// 開いたときの動作の断片（`update` = 更新セクションへスクロール、`update-check` = さらに確認を自動実行）
@@ -205,8 +228,11 @@ impl<B: SettingsBackend> App<B> {
         }
         let route = (req.method.as_str(), req.path.as_str());
         let token_ok = match route {
-            // 画面の取得: URL のトークン
+            // 画面・静的ファイルの取得: URL のトークン（`<script src>` などはヘッダーを付けられない）
             ("GET", "/") => self.token_ok(query_param(req.query.as_deref(), "t")),
+            ("GET", p) if assets::find_static(p).is_some() => {
+                self.token_ok(query_param(req.query.as_deref(), "t"))
+            }
             // sendBeacon はヘッダーを付けられないので、/bye だけ URL のトークンも受ける
             (_, "/bye") => {
                 self.token_ok(req.token_header.as_deref())
@@ -221,7 +247,8 @@ impl<B: SettingsBackend> App<B> {
         self.lifecycle.touch(now);
         match route {
             ("GET", "/") => self.page(),
-            (_, "/") => Response::empty(405),
+            ("GET", p) if assets::find_static(p).is_some() => static_asset(p),
+            (_, p) if p == "/" || assets::find_static(p).is_some() => Response::empty(405),
             ("POST", "/bye") => {
                 self.lifecycle.bye(now);
                 Response::empty(204)
@@ -233,14 +260,11 @@ impl<B: SettingsBackend> App<B> {
     }
 
     fn page(&self) -> Response {
-        let Ok(nonce) = generate_nonce() else {
-            return Response::text(500, "internal error");
-        };
         Response {
             status: 200,
             content_type: "text/html; charset=utf-8",
-            body: assets::render_page(&nonce, &self.token).into_bytes(),
-            csp: page_csp(&nonce),
+            body: assets::render_page(&self.token).into_bytes(),
+            csp: page_csp(),
         }
     }
 
@@ -265,6 +289,21 @@ impl<B: SettingsBackend> App<B> {
             "/api/update/apply" => match self.backend.apply_update() {
                 Ok(()) => Response::json(200, &json!({"ok": true})),
                 Err(e) => backend_error(&e),
+            },
+            "/api/diag/status" => Response::json(200, &self.diag.status()),
+            "/api/diag/start" => self.api_diag_start(&req.body),
+            "/api/diag/cancel" => {
+                self.diag.cancel();
+                Response::json(200, &json!({"ok": true}))
+            }
+            "/api/diag/report" => match self.diag.report_text() {
+                Some(text) => Response::json(200, &json!({"text": text})),
+                None => Response::error(409, "コピーできる結果がありません"),
+            },
+            "/api/diag/save" => match self.diag.save() {
+                Ok(path) => Response::json(200, &json!({"path": path})),
+                Err(SaveError::NoReport) => Response::error(409, "保存できる結果がありません"),
+                Err(SaveError::Failed(message)) => Response::error(500, &message),
             },
             "/api/clear_learning" => match self.backend.clear_learning() {
                 Ok(()) => Response::json(200, &json!({"ok": true})),
@@ -292,7 +331,13 @@ impl<B: SettingsBackend> App<B> {
             Ok(mut check) => {
                 // リンクにするのは https の URL だけ（マニフェストは配布元の JSON なので、画面に出す前に絞る）
                 check.notes_url = check.notes_url.take().filter(|u| is_safe_notes_url(u));
-                Response::json(200, &serde_json::to_value(check).unwrap_or(Value::Null))
+                let view = update_view(&check);
+                let mut value = serde_json::to_value(&check).unwrap_or(Value::Null);
+                // 既存の項目はそのまま。ネイティブ版と同じ文言・状態の見出しを `view` として足す
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("view".to_owned(), view);
+                }
+                Response::json(200, &value)
             }
             Err(e) => backend_error(&e),
         }
@@ -332,6 +377,30 @@ impl<B: SettingsBackend> App<B> {
         }
     }
 
+    fn api_diag_start(&mut self, body: &[u8]) -> Response {
+        // 本文は空でもよい（全項目）。項目は ID の固定の一覧から引くだけで、パス・引数は受け取らない
+        let parsed = if body.iter().all(u8::is_ascii_whitespace) {
+            DiagStartBody { item: None }
+        } else {
+            match serde_json::from_slice::<DiagStartBody>(body) {
+                Ok(p) => p,
+                Err(_) => return Response::error(400, "リクエストの形式が正しくありません"),
+            }
+        };
+        let item = match parsed.item.as_deref() {
+            None => None,
+            Some(id) => match ItemId::parse(id) {
+                Some(id) => Some(id),
+                None => return Response::error(400, "確認する項目が正しくありません"),
+            },
+        };
+        match self.diag.start(item) {
+            Ok(()) => Response::json(200, &json!({"ok": true})),
+            Err(StartError::Busy) => Response::error(409, "確認の実行中です"),
+            Err(StartError::Spawn) => Response::error(500, "確認を開始できません"),
+        }
+    }
+
     fn api_open(&mut self, body: &[u8]) -> Response {
         let Ok(parsed) = serde_json::from_slice::<OpenBody>(body) else {
             return Response::error(400, "リクエストの形式が正しくありません");
@@ -345,6 +414,10 @@ impl<B: SettingsBackend> App<B> {
         // 開く対象はクライアントから受け取らない（固定の 2 種類だけ）
         let result = match parsed.target.as_str() {
             "config" => self.opener.open_file_in_editor(&config),
+            "config_dir" => match config.parent().filter(|p| !p.as_os_str().is_empty()) {
+                Some(dir) => self.opener.open_folder(dir),
+                None => Err("設定フォルダの場所が決まっていません".to_owned()),
+            },
             "user_dict" => match user_dict_dir(&config, |p| p.is_dir()) {
                 Some(dir) => self.opener.open_folder(&dir),
                 None => Err("ユーザー辞書のフォルダがまだありません".to_owned()),
@@ -355,6 +428,42 @@ impl<B: SettingsBackend> App<B> {
             Ok(()) => Response::json(200, &json!({"ok": true})),
             Err(message) => Response::error(500, &message),
         }
+    }
+}
+
+/// 更新確認の結果の画面表示（ネイティブ版と同じ文言・状態の見出し。`notes_url` は安全と確認済みのものだけ）
+pub fn update_view(check: &crate::backend::UpdateCheck) -> Value {
+    use crate::native_diag::BadgeKind;
+    use crate::native_model::{describe_update, update_headline};
+    let outcome = describe_update(check);
+    let head = update_headline(false, &outcome.text);
+    let badge = match head.as_ref().map(|h| h.badge) {
+        Some(BadgeKind::Ok) => "ok",
+        Some(BadgeKind::Warn) => "warn",
+        Some(BadgeKind::Ng) => "ng",
+        Some(BadgeKind::Neutral) | None => "neutral",
+        Some(BadgeKind::Info) => "info",
+    };
+    json!({
+        "text": outcome.text,
+        "can_apply": outcome.can_apply,
+        "notes_url": outcome.notes_url,
+        "badge": badge,
+        "label": head.as_ref().map(|h| h.label),
+        "title": head.as_ref().map(|h| h.title),
+    })
+}
+
+/// 静的ファイルの応答（トークンは検査済み）
+fn static_asset(path: &str) -> Response {
+    match assets::find_static(path) {
+        Some(asset) => Response {
+            status: 200,
+            content_type: asset.content_type,
+            body: asset.body.as_bytes().to_vec(),
+            csp: default_csp(),
+        },
+        None => Response::text(404, "not found"),
     }
 }
 

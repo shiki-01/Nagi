@@ -274,3 +274,65 @@ fn missing_imserver_still_serves_the_page_with_an_error() {
     assert!(reply.body.contains("imserver"), "{}", reply.body);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn static_files_and_a_single_diag_item_work_over_real_http() {
+    // imserver が無くても画面・静的ファイル・診断（1 項目）は使える
+    let dir = temp_dir("diag");
+    let run = start(&dir.join("no-such-imserver"), &dir);
+    let host = format!("127.0.0.1:{}", run.port);
+
+    // 静的ファイル: トークンつきは 200（型つき）、トークンなしは 403
+    for (path, content_type) in [
+        ("/app.js", "text/javascript"),
+        ("/app.css", "text/css"),
+        ("/icon.svg", "image/svg+xml"),
+    ] {
+        let ok = http(
+            run.port,
+            "GET",
+            &format!("{path}?t={}", run.token),
+            &[("Host", &host)],
+            "",
+        );
+        assert_eq!(ok.status, 200, "{path}");
+        assert!(ok.headers.contains(content_type), "{path}: {}", ok.headers);
+        assert!(!ok.body.is_empty());
+        assert_eq!(
+            http(run.port, "GET", path, &[("Host", &host)], "").status,
+            403,
+            "{path}"
+        );
+    }
+
+    // 診断: 手動項目を 1 つだけ実行 → 状態を取得
+    let reply = api(&run, "/api/diag/start", r#"{"item":"manual.smartscreen"}"#);
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        let reply = api(&run, "/api/diag/status", "{}");
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        let v: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        if v["running"] == false {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "診断が終わらない");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let item = status["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "manual.smartscreen")
+        .unwrap();
+    assert_eq!(item["label"], "手動確認");
+    assert!(item["advice"].as_str().is_some_and(|a| !a.is_empty()));
+    // 1 項目だけでは全体のレポートが無いので、保存は 409
+    assert_eq!(api(&run, "/api/diag/save", "{}").status, 409);
+    // 不明な項目は 400
+    assert_eq!(
+        api(&run, "/api/diag/start", r#"{"item":"nope"}"#).status,
+        400
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

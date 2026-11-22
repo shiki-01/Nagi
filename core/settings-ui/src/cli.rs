@@ -11,9 +11,13 @@ pub struct Args {
     pub data_dir: Option<PathBuf>,
     /// `--user-dir <dir>`
     pub user_dir: Option<PathBuf>,
-    /// `--web`: ネイティブのウィンドウではなく、従来の Web 画面（ローカル HTTP + ブラウザ）で開く。
+    /// `--web`: ウィンドウではなく、従来の Web 画面（ローカル HTTP + 既定のブラウザ）で開く。
     /// Windows 以外では常に Web 画面
     pub web: bool,
+    /// `--native`: Win32 のネイティブ画面で開く（Windows のみ。WebView2 があっても使わない）
+    pub native: bool,
+    /// `--webview`: WebView2 のウィンドウで開く（Windows のみ。使えなければフォールバックせずエラーにする）
+    pub webview: bool,
     /// `--no-browser`: ブラウザを開かない（検証用。`--web` のときだけ意味を持つ）
     pub no_browser: bool,
     /// `--url-file <path>`: 画面の URL（トークンつき）をこのファイルに書く（検証用。既定では出力しない。`--web` のときだけ）
@@ -37,11 +41,6 @@ pub struct Args {
 }
 
 impl Args {
-    /// ネイティブのウィンドウで開くか（Windows の既定。`--web` で Web 画面に切り替える）
-    pub fn use_native(&self) -> bool {
-        cfg!(windows) && !self.web
-    }
-
     /// 更新ページを開いた状態で始めるか（`--section update` または `--auto-check`）
     pub fn opens_update_page(&self) -> bool {
         self.section.as_deref() == Some("update") || self.auto_check
@@ -90,8 +89,18 @@ pub fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Args, Strin
             "--no-network" => out.diag_no_network = true,
             "--no-browser" => out.no_browser = true,
             "--web" => out.web = true,
+            "--native" => out.native = true,
+            "--webview" => out.webview = true,
             other => return Err(format!("不明な引数: {other}")),
         }
+    }
+    if [out.web, out.native, out.webview]
+        .iter()
+        .filter(|&&flag| flag)
+        .count()
+        > 1
+    {
+        return Err("--web / --native / --webview は 1 つだけ指定できます".to_owned());
     }
     Ok(out)
 }
@@ -204,11 +213,16 @@ mod tests {
     }
 
     #[test]
-    fn native_is_the_default_only_on_windows_and_web_overrides_it() {
-        let native = parse(&[]).unwrap();
-        assert_eq!(native.use_native(), cfg!(windows));
-        assert!(!parse(&["--web"]).unwrap().use_native());
-        assert!(!native.opens_update_page());
+    fn update_page_flags_and_exclusive_mode_flags() {
+        let none = parse(&[]).unwrap();
+        assert!(!none.web && !none.native && !none.webview);
+        assert!(parse(&["--native"]).unwrap().native);
+        assert!(parse(&["--webview"]).unwrap().webview);
+        // 画面の方式は 1 つだけ
+        assert!(parse(&["--web", "--native"]).is_err());
+        assert!(parse(&["--native", "--webview"]).is_err());
+        assert!(parse(&["--web", "--webview"]).is_err());
+        assert!(!none.opens_update_page());
         assert!(parse(&["--section", "update"]).unwrap().opens_update_page());
         assert!(parse(&["--auto-check"]).unwrap().opens_update_page());
     }

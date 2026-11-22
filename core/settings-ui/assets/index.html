@@ -7,54 +7,57 @@
 <meta name="referrer" content="no-referrer">
 <meta name="nagi-token" content="{{TOKEN}}">
 <title>Nagi 設定</title>
-<style nonce="{{NONCE}}">
-{{CSS}}
-</style>
+<link rel="icon" type="image/svg+xml" href="/icon.svg?t={{TOKEN}}">
+<link rel="stylesheet" href="/app.css?t={{TOKEN}}">
+<script src="/app.js?t={{TOKEN}}" defer></script>
 </head>
 <body>
-<header class="top">
-  <h1>Nagi 設定</h1>
-  <div class="level" role="radiogroup" aria-label="表示する項目">
-    <label><input type="radio" name="level" value="simple" checked> シンプル</label>
-    <label><input type="radio" name="level" value="detail"> 詳細</label>
-  </div>
-</header>
-<main>
-  <section class="update" id="update" aria-labelledby="update-title">
-    <h2 id="update-title">更新</h2>
-    <p class="note">現在の版: <span id="update-current">（取得しています）</span></p>
-    <div class="buttons">
-      <button type="button" id="update-check">更新を確認</button>
-      <span id="update-spinner" class="spinner" role="progressbar" aria-label="確認中" hidden></span>
-      <button type="button" id="update-apply" hidden>更新を適用…</button>
+<div class="app">
+  <nav class="side" aria-label="設定のページ">
+    <div class="brand">
+      <img class="brand-mark" src="/icon.svg?t={{TOKEN}}" alt="" width="40" height="40">
+      <div class="brand-text">
+        <span class="brand-name">Nagi</span>
+        <span class="brand-sub">設定 <span id="app-version"></span></span>
+      </div>
     </div>
-    <p class="note" id="update-result" role="status" aria-live="polite"></p>
-  </section>
-  <section class="file" aria-labelledby="file-title">
-    <h2 id="file-title">設定ファイル</h2>
-    <p class="path" id="config-path">（場所を取得しています）</p>
-    <div class="buttons">
-      <button type="button" id="open-config">config.toml を直接開く</button>
-      <button type="button" id="open-user-dict">ユーザー辞書フォルダを開く</button>
-      <button type="button" id="clear-learning" class="danger">学習データを全削除…</button>
+    <div id="nav" class="nav-scroll"></div>
+    <div class="side-foot">
+      <label class="switch-line" for="detail-toggle">
+        <span class="switch-line-text">詳細設定を表示</span>
+        <input type="checkbox" role="switch" class="switch" id="detail-toggle">
+      </label>
     </div>
-    <p class="note" id="action-result" role="status"></p>
-  </section>
-  <div id="banner" class="banner" role="alert" hidden></div>
-  <div id="groups"></div>
-</main>
-<dialog id="confirm" aria-labelledby="confirm-title">
-  <div>
+  </nav>
+  <main id="main" class="main" aria-labelledby="page-title" tabindex="-1">
+    <div class="main-inner">
+      <div id="banner" class="banner" role="alert" hidden></div>
+      <div id="page" class="page"></div>
+    </div>
+  </main>
+</div>
+<div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+<div id="sr-live" class="sr-only" role="status" aria-live="polite"></div>
+<dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+  <div class="dialog-body">
     <h2 id="confirm-title">学習データを全削除しますか？</h2>
-    <p>これまでの変換の学習（よく使う変換・次語予測）がすべて消えます。この操作は取り消せません。ユーザー辞書は消えません。</p>
-    <div class="buttons">
-      <button type="button" id="confirm-cancel" autofocus>キャンセル</button>
-      <button type="button" id="confirm-ok" class="danger">削除する</button>
+    <p id="confirm-body">これまでの変換の学習（よく使う変換・次語予測）がすべて消えます。この操作は取り消せません。ユーザー辞書は消えません。</p>
+    <div class="buttons end">
+      <button type="button" class="btn" id="confirm-cancel" autofocus>キャンセル</button>
+      <button type="button" class="btn danger" id="confirm-ok">削除する</button>
     </div>
   </div>
 </dialog>
-<script nonce="{{NONCE}}">
-{{JS}}
-</script>
+<dialog id="copy-dialog" aria-labelledby="copy-title">
+  <div class="dialog-body wide">
+    <h2 id="copy-title">レポートを選択しました</h2>
+    <p>自動でコピーできませんでした。下の文章を選択済みです。Ctrl+C でコピーしてください。</p>
+    <label class="sr-only" for="copy-text">診断レポート</label>
+    <textarea id="copy-text" class="report-text" readonly rows="14" spellcheck="false"></textarea>
+    <div class="buttons end">
+      <button type="button" class="btn primary" id="copy-close" autofocus>閉じる</button>
+    </div>
+  </div>
+</dialog>
 </body>
 </html>

@@ -98,6 +98,11 @@ impl DiagModel {
         self.run != RunState::Idle
     }
 
+    /// 実行の状態（Web 画面の進捗表示用）
+    pub fn run_state(&self) -> RunState {
+        self.run
+    }
+
     /// 中止を要求済みか
     pub fn is_cancelling(&self) -> bool {
         self.cancelling
