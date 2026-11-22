@@ -175,6 +175,88 @@ fn phase_text(phase: ExitPhase) -> &'static str {
     }
 }
 
+/// エンジンが止まった理由の分類（ログの `reason=`。区別できる範囲で。入力内容は使わない）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// 親（ホスト）の終了を検知して自分で終了した（コード 0 かつ stderr に親の終了の行がある）
+    ParentExited,
+    /// 更新の適用で `imserver.exe` が置き換わった・消えた後に止まった
+    Update,
+    /// 自分で終了した（終了コード 0。`shutdown`・stdin の EOF など）
+    Shutdown,
+    /// 異常終了（NTSTATUS の例外コード 0xC0000005 等、または panic の 101）
+    Crash,
+    /// 0 以外のコードでの終了（強制終了の 1 など。クラッシュとは断定できない）
+    Error,
+    /// 終了コードが取れず判別できない
+    Unknown,
+}
+
+impl StopReason {
+    /// ログの表記
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopReason::ParentExited => "parent-exited",
+            StopReason::Update => "update",
+            StopReason::Shutdown => "shutdown",
+            StopReason::Crash => "crash",
+            StopReason::Error => "error",
+            StopReason::Unknown => "unknown",
+        }
+    }
+}
+
+/// 終了の記録から停止の理由を分類する。優先順位: 実行ファイルの置き換え > 親の終了 > コード。
+/// 注: 親（ホスト）が先に終了した場合は、この記録を書くホスト自体が居ないので通常は観測できない
+/// （親の監視が誤作動してホストが生きているときだけ `ParentExited` になる）
+pub fn classify_exit(exit: Option<&ExitReport>) -> StopReason {
+    let Some(exit) = exit else {
+        return StopReason::Unknown;
+    };
+    if exit.executable_replaced {
+        return StopReason::Update;
+    }
+    match exit.code {
+        None => StopReason::Unknown,
+        Some(0) if exit.stderr_markers.iter().any(|l| l.contains("親プロセス")) => {
+            StopReason::ParentExited
+        }
+        Some(0) => StopReason::Shutdown,
+        Some(code) if code as u32 >= 0xC000_0000 || code == 101 => StopReason::Crash,
+        Some(_) => StopReason::Error,
+    }
+}
+
+/// 停止の行（`Crashed`）の直後に出す、終了の詳細の 1 行（`[engine] exit code=0x... reason=... ...`）。
+/// メソッド名は定数だけ、stderr は panic の位置などの目印の行だけ（入力内容は含まない）
+pub fn describe_exit_line(record: &FailureRecord) -> String {
+    let exit = record.exit.as_ref();
+    let code = exit
+        .and_then(|e| e.code)
+        .map_or_else(|| "unknown".to_owned(), hresult_text);
+    let mut text = format!(
+        "exit code={code} reason={} uptime_ms={} phase={}",
+        classify_exit(exit).as_str(),
+        exit.map_or_else(
+            || "unknown".to_owned(),
+            |e| e.lifetime.as_millis().to_string()
+        ),
+        phase_text(record.phase),
+    );
+    let method = |m: Option<&String>| m.map_or("-", String::as_str).to_owned();
+    text.push_str(&format!(
+        " last_method={} last_recv={}",
+        method(exit.and_then(|e| e.last_sent.as_ref())),
+        method(exit.and_then(|e| e.last_received.as_ref())),
+    ));
+    if let Some(e) = exit
+        && !e.stderr_markers.is_empty()
+    {
+        text.push_str(&format!(" stderr=[{}]", e.stderr_markers.join(" | ")));
+    }
+    text
+}
+
 /// 失敗 1 回分の詳細（`ProcessExited` の本文）
 fn describe_failure(f: &FailureRecord) -> String {
     let mut text = format!(
@@ -552,6 +634,7 @@ mod tests {
             exit: code.map(|code| ExitReport {
                 code: Some(code),
                 lifetime: Duration::from_millis(120),
+                ..ExitReport::default()
             }),
             error: None,
         }
@@ -584,6 +667,54 @@ mod tests {
         let text = describe_event(&EngineEvent::ProcessExited(none)).unwrap().1;
         assert!(
             text.contains("exit_code=unknown") && text.contains("cause=initialize timeout"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn exit_line_and_reason() {
+        let mut crash = record(1, ExitPhase::AfterInitialize, Some(0xC000_0005_u32 as i32));
+        if let Some(e) = crash.exit.as_mut() {
+            e.last_sent = Some("process_key".into());
+            e.stderr_markers = vec!["thread 'x' panicked at a.rs:1:2:".into()];
+        }
+        let text = describe_exit_line(&crash);
+        assert!(
+            text.starts_with(
+                "exit code=0xC0000005 reason=crash uptime_ms=120 phase=after-initialize"
+            ) && text.contains("last_method=process_key last_recv=-")
+                && text.contains("stderr=[thread 'x' panicked at a.rs:1:2:]"),
+            "{text}"
+        );
+        let reason = |f: &dyn Fn(&mut ExitReport)| {
+            let mut e = ExitReport::default();
+            f(&mut e);
+            classify_exit(Some(&e))
+        };
+        assert_eq!(reason(&|e| e.code = Some(0)), StopReason::Shutdown);
+        assert_eq!(reason(&|e| e.code = Some(101)), StopReason::Crash);
+        assert_eq!(reason(&|e| e.code = Some(1)), StopReason::Error);
+        assert_eq!(reason(&|e| e.code = None), StopReason::Unknown);
+        assert_eq!(
+            reason(&|e| {
+                e.code = Some(1);
+                e.executable_replaced = true;
+            }),
+            StopReason::Update
+        );
+        assert_eq!(
+            reason(&|e| {
+                e.code = Some(0);
+                e.stderr_markers =
+                    vec!["imserver: 親プロセス（pid 1）が終了したので終了します".into()];
+            }),
+            StopReason::ParentExited
+        );
+        assert_eq!(classify_exit(None), StopReason::Unknown);
+        let none = record(2, ExitPhase::BeforeInitialize, None);
+        let text = describe_exit_line(&none);
+        assert!(
+            text.contains("code=unknown reason=unknown uptime_ms=unknown"),
             "{text}"
         );
     }

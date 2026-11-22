@@ -12,11 +12,12 @@
 use super::controls::get_text;
 use super::dpi::Fonts;
 use super::gfx::{Canvas, buffered, fill_rect};
-use super::state::State;
+use super::state::{Backdrop, BackdropKey, State};
 use super::theme::{self, Surface};
 use crate::native_diag::BadgeKind;
 use crate::native_layout::{self as layout, Rect, scale};
 use crate::native_model::ids;
+use crate::native_scroll;
 use crate::native_theme::{
     BADGE_GAP, BADGE_RADIUS, BADGE_W, BUTTON_RADIUS, ButtonStyle, CARD_RADIUS, NAV_RADIUS, Palette,
     Rgb, StatusKind, radius_px, toggle_geometry,
@@ -24,9 +25,10 @@ use crate::native_theme::{
 use std::cell::Cell;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, DrawTextW, EndPaint, FillRect, GetTextMetricsW, HBRUSH, HDC, HFONT, HGDIOBJ,
-    InvalidateRect, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TEXTMETRICW, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DT_CALCRECT, DT_CENTER,
+    DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteDC, DeleteObject,
+    DrawTextW, EndPaint, FillRect, GetTextMetricsW, HBRUSH, HDC, HFONT, HGDIOBJ, InvalidateRect,
+    PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode, SetTextColor, TEXTMETRICW, TRANSPARENT,
 };
 use windows::Win32::System::SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS};
 use windows::Win32::UI::Controls::{
@@ -1012,8 +1014,82 @@ fn draw_card_shadow(canvas: &Canvas, card: Rect, radius: i32, dpi: u32, alpha: u
     }
 }
 
-/// パネルの `WM_PAINT`: ページの地・カード（薄い枠 + 角丸）・カード内の項目の区切り線。
-/// 部品（STATIC など）は子ウィンドウが自分で描くので、ここは背景だけ
+/// パネルの背景の描画に要るもの（レイアウトの写し）
+struct BackdropData {
+    cards: Vec<layout::CardSpan>,
+    dividers: Vec<i32>,
+    hero: Option<i32>,
+    markers: Vec<layout::CardSpan>,
+}
+
+/// ページの地・カード（影・薄い枠 + 角丸）・項目の区切り線・見出しの印を `hdc` に描く。
+/// `r` は描く領域の大きさ、`scroll` は内容座標から引くぶん（キャッシュへは 0、直接描くときは現在位置）
+fn draw_backdrop(hdc: HDC, r: Rect, scroll: i32, dpi: u32, data: &BackdropData) {
+    let pal = theme::palette();
+    fill_rect(
+        hdc,
+        Rect { x: 0, y: 0, ..r },
+        theme::surface_rgb(Surface::Page),
+    );
+    let cols = layout::columns(r.w, dpi);
+    let canvas = Canvas::new(hdc);
+    let radius = radius_px(CARD_RADIUS, dpi, pal.decorative);
+    let line = scale(1, dpi).max(1);
+    // ページの見出しの上のアクセントの線・節の見出しの左の印
+    let accent = theme::rgb(pal.accent);
+    if let Some(y) = data.hero {
+        let bar = layout::hero_bar_rect(&cols, y - scroll, dpi);
+        canvas.fill_round(bar, radius_px(bar.h / 2, 96, pal.decorative), accent);
+    }
+    for span in &data.markers {
+        let mark = layout::section_marker_rect(&cols, *span, dpi);
+        let mark = Rect {
+            y: mark.y - scroll,
+            ..mark
+        };
+        if mark.y + mark.h < 0 || mark.y > r.h {
+            continue;
+        }
+        canvas.fill_round(mark, radius_px(mark.w / 2, 96, pal.decorative), accent);
+    }
+    for card in &data.cards {
+        let rect = Rect {
+            x: cols.card_x,
+            y: card.top - scroll,
+            w: cols.card_w,
+            h: card.bottom - card.top,
+        };
+        if rect.y + rect.h < 0 || rect.y > r.h {
+            continue;
+        }
+        if pal.shadow_alpha > 0 {
+            draw_card_shadow(&canvas, rect, radius, dpi, pal.shadow_alpha);
+        }
+        canvas.fill_round(rect, radius, theme::rgb(pal.card_bg));
+        canvas.stroke_round(rect, radius, theme::rgb(pal.card_border), line);
+    }
+    for y in &data.dividers {
+        let y = y - scroll;
+        if y < 0 || y > r.h {
+            continue;
+        }
+        fill_rect(
+            hdc,
+            Rect {
+                x: cols.card_x + line,
+                y,
+                w: cols.card_w - 2 * line,
+                h: line,
+            },
+            theme::rgb(pal.divider),
+        );
+    }
+}
+
+/// パネルの `WM_PAINT`。背景（地・カード・影・区切り線・印）はページ全体を 1 枚のビットマップに描いて
+/// キャッシュし、スクロールは見える範囲の転送（`BitBlt`）だけにする（影の GDI+ 描画を毎フレームやらない。
+/// 子の部品が動いても背景は同じ絵のオフセット違いなので、ずれない）。部品（STATIC など）は子ウィンドウが
+/// 自分で描く。ページが大きすぎてキャッシュできないとき・借用が重なったときは、従来どおり毎回描く
 pub(super) fn paint_panel(st: &State, hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let target = unsafe { BeginPaint(hwnd, &mut ps) };
@@ -1022,79 +1098,122 @@ pub(super) fn paint_panel(st: &State, hwnd: HWND) {
     let r = rect_of(&rc);
     let dpi = st.dpi.get();
     // 描画中に借用が重なったら（再入）カード無しで描く。次の再描画で直る
-    let (cards, dividers, hero, markers, scroll) = match st.ui.try_borrow() {
+    let (data, scroll, content) = match st.ui.try_borrow() {
         Ok(ui) => match &ui.layout {
             Some(l) => (
-                l.cards.clone(),
-                l.dividers.clone(),
-                l.hero_bar_y,
-                l.markers.clone(),
-                ui.scroll,
-            ),
-            None => (Vec::new(), Vec::new(), None, Vec::new(), 0),
-        },
-        Err(_) => (Vec::new(), Vec::new(), None, Vec::new(), 0),
-    };
-    buffered(target, r.w, r.h, |hdc| {
-        let pal = theme::palette();
-        fill_rect(
-            hdc,
-            Rect { x: 0, y: 0, ..r },
-            theme::surface_rgb(Surface::Page),
-        );
-        let cols = layout::columns(r.w, dpi);
-        let canvas = Canvas::new(hdc);
-        let radius = radius_px(CARD_RADIUS, dpi, pal.decorative);
-        let line = scale(1, dpi).max(1);
-        // ページの見出しの上のアクセントの線・節の見出しの左の印
-        let accent = theme::rgb(pal.accent);
-        if let Some(y) = hero {
-            let bar = layout::hero_bar_rect(&cols, y - scroll, dpi);
-            canvas.fill_round(bar, radius_px(bar.h / 2, 96, pal.decorative), accent);
-        }
-        for span in &markers {
-            let mark = layout::section_marker_rect(&cols, *span, dpi);
-            let mark = Rect {
-                y: mark.y - scroll,
-                ..mark
-            };
-            if mark.y + mark.h < 0 || mark.y > r.h {
-                continue;
-            }
-            canvas.fill_round(mark, radius_px(mark.w / 2, 96, pal.decorative), accent);
-        }
-        for card in &cards {
-            let rect = Rect {
-                x: cols.card_x,
-                y: card.top - scroll,
-                w: cols.card_w,
-                h: card.bottom - card.top,
-            };
-            if rect.y + rect.h < 0 || rect.y > r.h {
-                continue;
-            }
-            if pal.shadow_alpha > 0 {
-                draw_card_shadow(&canvas, rect, radius, dpi, pal.shadow_alpha);
-            }
-            canvas.fill_round(rect, radius, theme::rgb(pal.card_bg));
-            canvas.stroke_round(rect, radius, theme::rgb(pal.card_border), line);
-        }
-        for y in &dividers {
-            let y = y - scroll;
-            if y < 0 || y > r.h {
-                continue;
-            }
-            fill_rect(
-                hdc,
-                Rect {
-                    x: cols.card_x + line,
-                    y,
-                    w: cols.card_w - 2 * line,
-                    h: line,
+                BackdropData {
+                    cards: l.cards.clone(),
+                    dividers: l.dividers.clone(),
+                    hero: l.hero_bar_y,
+                    markers: l.markers.clone(),
                 },
-                theme::rgb(pal.divider),
-            );
-        }
-    });
+                ui.scroll,
+                l.content_height,
+            ),
+            None => (empty_backdrop(), 0, 0),
+        },
+        Err(_) => (empty_backdrop(), 0, 0),
+    };
+    let cache_h = native_scroll::backdrop_height(content, r.h);
+    let key = BackdropKey {
+        width: r.w,
+        height: cache_h,
+        dpi,
+    };
+    let cacheable = r.w > 0 && r.h > 0 && native_scroll::backdrop_fits(r.w, cache_h);
+    let blitted = cacheable && blit_cached(st, target, &ps.rcPaint, r, scroll, key, &data);
+    if !blitted {
+        buffered(target, r.w, r.h, |hdc| {
+            draw_backdrop(hdc, r, scroll, dpi, &data);
+        });
+    }
     let _ = unsafe { EndPaint(hwnd, &ps) };
+}
+
+fn empty_backdrop() -> BackdropData {
+    BackdropData {
+        cards: Vec::new(),
+        dividers: Vec::new(),
+        hero: None,
+        markers: Vec::new(),
+    }
+}
+
+/// キャッシュ（無ければ作る）から、無効な範囲だけを画面に転送する。使えなければ `false`
+fn blit_cached(
+    st: &State,
+    target: HDC,
+    paint: &RECT,
+    r: Rect,
+    scroll: i32,
+    key: BackdropKey,
+    data: &BackdropData,
+) -> bool {
+    let Ok(mut ui) = st.ui.try_borrow_mut() else {
+        return false;
+    };
+    if native_scroll::needs_rebuild(ui.backdrop.as_ref().map(|b| &b.key), &key) {
+        ui.backdrop = build_backdrop(target, key, st.dpi.get(), data);
+    }
+    let Some(backdrop) = &ui.backdrop else {
+        return false;
+    };
+    let x = paint.left.max(0);
+    let y = paint.top.max(0);
+    let w = (paint.right.min(r.w) - x).max(0);
+    let h = (paint.bottom.min(r.h) - y).max(0);
+    if w == 0 || h == 0 {
+        return true;
+    }
+    // SAFETY: 作った DC にビットマップを選択して転送し、選択を戻してから壊す
+    unsafe {
+        let mem = CreateCompatibleDC(Some(target));
+        if mem.is_invalid() {
+            return false;
+        }
+        let old = SelectObject(mem, HGDIOBJ(backdrop.bitmap.0));
+        let _ = BitBlt(target, x, y, w, h, Some(mem), x, y + scroll, SRCCOPY);
+        SelectObject(mem, old);
+        let _ = DeleteDC(mem);
+    }
+    true
+}
+
+/// ページ全体（スクロール 0 の絵）を描いたビットマップを作る
+fn build_backdrop(
+    target: HDC,
+    key: BackdropKey,
+    dpi: u32,
+    data: &BackdropData,
+) -> Option<Backdrop> {
+    // SAFETY: 作った DC・ビットマップは、失敗時は壊し、成功時はビットマップだけを持ち主に渡す
+    unsafe {
+        let mem = CreateCompatibleDC(Some(target));
+        let bitmap = CreateCompatibleBitmap(target, key.width, key.height);
+        if mem.is_invalid() || bitmap.is_invalid() {
+            if !mem.is_invalid() {
+                let _ = DeleteDC(mem);
+            }
+            if !bitmap.is_invalid() {
+                let _ = DeleteObject(HGDIOBJ(bitmap.0));
+            }
+            return None;
+        }
+        let old = SelectObject(mem, HGDIOBJ(bitmap.0));
+        draw_backdrop(
+            mem,
+            Rect {
+                x: 0,
+                y: 0,
+                w: key.width,
+                h: key.height,
+            },
+            0,
+            dpi,
+            data,
+        );
+        SelectObject(mem, old);
+        let _ = DeleteDC(mem);
+        Some(Backdrop { bitmap, key })
+    }
 }

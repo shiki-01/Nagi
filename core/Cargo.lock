@@ -953,7 +953,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "nagi-config"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-datafetch"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "flate2",
  "nagi-dict",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-dict"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "encoding_rs",
  "fst",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-engine"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "nagi-english",
  "nagi-protocol",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-english"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "flate2",
  "fst",
@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-ffi"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "nagi-dict",
  "nagi-english",
@@ -1025,14 +1025,14 @@ dependencies = [
 
 [[package]]
 name = "nagi-fuzzy"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "nagi-romaji",
 ]
 
 [[package]]
 name = "nagi-glide"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "memmap2",
  "nagi-dict",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-infer"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "llama-cpp-2",
  "serde",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-jni"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "ed25519-dalek",
  "jni",
@@ -1060,11 +1060,11 @@ dependencies = [
 
 [[package]]
 name = "nagi-learn"
-version = "0.1.21"
+version = "0.1.22"
 
 [[package]]
 name = "nagi-loanword"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "fst",
  "memmap2",
@@ -1077,21 +1077,21 @@ dependencies = [
 
 [[package]]
 name = "nagi-parent-watch"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "windows",
 ]
 
 [[package]]
 name = "nagi-profile"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "sysinfo",
 ]
 
 [[package]]
 name = "nagi-protocol"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -1100,18 +1100,18 @@ dependencies = [
 
 [[package]]
 name = "nagi-rewriter"
-version = "0.1.21"
+version = "0.1.22"
 
 [[package]]
 name = "nagi-romaji"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "nagi-server"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-settings-ui"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "embed-manifest",
  "embed-resource",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-windows"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "nagi-config",
  "nagi-protocol",
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-windows-e2e"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-windows-tsf"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "nagi-protocol",
  "nagi-windows",
@@ -2360,7 +2360,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "clap",
  "ed25519-dalek",

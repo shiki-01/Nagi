@@ -5,6 +5,7 @@
 //! `HICON` の生成は TSF 層（`frontend-windows-tsf/src/langbar.rs`）が行い、ここは判断だけを持つ
 //! （decisions.md H-115）。
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nagi_protocol::{InputMode, SettingItem, SettingValue};
@@ -83,36 +84,162 @@ pub fn glyph(mode: Option<InputMode>) -> ModeGlyph {
     }
 }
 
-/// 設定値のキャッシュ。取得できなかったときも最後に試した時刻を記録し、間引く
+/// 直近に確定した値（エンジンが返した値）を覚えておくファイル名（`%LOCALAPPDATA%\Nagi\` の下。1 行）
+pub const CACHE_FILE_NAME: &str = "indicator-style";
+
+/// 直近の値のキャッシュファイルの場所（`<LOCALAPPDATA>\Nagi\indicator-style`）
+pub fn cache_path(local_app_data: &Path) -> PathBuf {
+    local_app_data.join("Nagi").join(CACHE_FILE_NAME)
+}
+
+/// `config.toml` の場所。`NAGI_CONFIG_DIR` が最優先、無ければ `<APPDATA>\Nagi`（`nagi_config::config_dir` の
+/// Windows 側と同じ規則。TSF の DLL に設定クレートを入れないため、ここで写している）
+pub fn config_file_path(
+    config_dir_override: Option<&str>,
+    app_data: Option<&str>,
+) -> Option<PathBuf> {
+    let dir = match config_dir_override.filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => Path::new(app_data.filter(|d| !d.is_empty())?).join("Nagi"),
+    };
+    Some(dir.join("config.toml"))
+}
+
+/// 設定値の文字列表記（キャッシュファイルへ書く値。[`IndicatorStyle::parse`] の逆）
+pub fn style_text(style: IndicatorStyle) -> &'static str {
+    match style {
+        IndicatorStyle::Color => "color",
+        IndicatorStyle::Mono => "mono",
+    }
+}
+
+/// キャッシュファイルの中身（1 行）から読む。空・知らない値は `None`
+pub fn parse_cache_text(text: &str) -> Option<IndicatorStyle> {
+    IndicatorStyle::parse(text.trim())
+}
+
+/// `config.toml` の本文から `[windows] indicator_icon` だけを軽く読む（全体は解釈しない）。
+/// ファイルが壊れていても、その行が読めれば値を採る。キーが無い・値が不明なら `None`。
+/// 対応する書式: `[windows]` 表の中の `indicator_icon = "mono"`（`'mono'`・行末コメント可）と、
+/// 表の外の `windows.indicator_icon = "mono"`
+pub fn parse_config_text(text: &str) -> Option<IndicatorStyle> {
+    let mut in_windows = false;
+    let mut in_root = true;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            let name = line
+                .trim_start_matches('[')
+                .split(']')
+                .next()
+                .unwrap_or("")
+                .trim();
+            in_root = false;
+            in_windows = !line.starts_with("[[") && name == "windows";
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let hit =
+            (in_windows && key == "indicator_icon") || (in_root && key == "windows.indicator_icon");
+        if hit {
+            return parse_quoted(value.trim()).and_then(IndicatorStyle::parse);
+        }
+    }
+    None
+}
+
+/// `"text"` または `'text'`（後ろのコメントは無視）の中身
+fn parse_quoted(value: &str) -> Option<&str> {
+    let quote = value.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    let rest = &value[1..];
+    rest.split_once(quote).map(|(inner, _)| inner)
+}
+
+/// アイコンの配色の決め方（優先順位）: エンジンが返した値 > `config.toml` > 直近のキャッシュ > 既定（カラー）
+pub fn resolve(
+    engine: Option<IndicatorStyle>,
+    config: Option<IndicatorStyle>,
+    cached: Option<IndicatorStyle>,
+) -> IndicatorStyle {
+    engine.or(config).or(cached).unwrap_or_default()
+}
+
+/// [`StyleCache::record`] の結果
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Recorded {
+    /// 採用される値が変わった（アイコンを描き直す必要がある）
+    pub changed: bool,
+    /// キャッシュファイルへ書くべき値（エンジンの値がキャッシュと違うとき）
+    pub persist: Option<IndicatorStyle>,
+}
+
+/// 設定値のキャッシュ。エンジン・`config.toml`・キャッシュファイルの 3 つの出どころを持ち、
+/// [`resolve`] の優先順位で採用する。エンジンの取得は、失敗したときも最後に試した時刻を記録して間引く
 /// （エンジンが落ちている間に、アイコンの更新のたびに待たないため）
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StyleCache {
-    style: IndicatorStyle,
+    engine: Option<IndicatorStyle>,
+    config: Option<IndicatorStyle>,
+    cached: Option<IndicatorStyle>,
     last_attempt: Option<Instant>,
 }
 
 impl StyleCache {
-    /// 空のキャッシュ（まだ取得していない。値はカラー）
+    /// 空のキャッシュ（まだ何も分からない。値はカラー）
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// いまの値
-    pub fn style(&self) -> IndicatorStyle {
-        self.style
+    /// 起動時の値で作る（`config.toml` とキャッシュファイルから読んだもの。読めなければ `None`）。
+    /// エンジンの取得は未実施なので、最初の [`due`](Self::due) は真
+    pub fn seeded(config: Option<IndicatorStyle>, cached: Option<IndicatorStyle>) -> Self {
+        Self {
+            config,
+            cached,
+            ..Self::default()
+        }
     }
 
-    /// 取得を試みてよいか（一度も試していない、または前回から [`REFRESH_INTERVAL`] 以上たった）
+    /// いまの値
+    pub fn style(&self) -> IndicatorStyle {
+        resolve(self.engine, self.config, self.cached)
+    }
+
+    /// エンジンの取得を試みてよいか（一度も試していない、または前回から [`REFRESH_INTERVAL`] 以上たった）
     pub fn due(&self, now: Instant) -> bool {
         self.last_attempt
             .is_none_or(|last| now.saturating_duration_since(last) >= REFRESH_INTERVAL)
     }
 
-    /// 取得を試みた結果を記録する。`fetched` が `None`（取得に失敗）なら直前の値を保つ
-    pub fn record(&mut self, now: Instant, fetched: Option<IndicatorStyle>) {
+    /// 取得を試みた結果を記録する。`engine` が `None`（取得に失敗）なら直前のエンジンの値を保つ。
+    /// `config` は読み直せたときだけ `Some`（読めなかったときは直前の値を保つ）
+    pub fn record(
+        &mut self,
+        now: Instant,
+        engine: Option<IndicatorStyle>,
+        config: Option<IndicatorStyle>,
+    ) -> Recorded {
+        let before = self.style();
         self.last_attempt = Some(now);
-        if let Some(style) = fetched {
-            self.style = style;
+        if engine.is_some() {
+            self.engine = engine;
+        }
+        if config.is_some() {
+            self.config = config;
+        }
+        let persist = engine.filter(|style| self.cached != Some(*style));
+        if persist.is_some() {
+            self.cached = persist;
+        }
+        Recorded {
+            changed: self.style() != before,
+            persist,
         }
     }
 
@@ -205,18 +332,116 @@ mod tests {
         let t0 = Instant::now();
         let mut cache = StyleCache::new();
         assert!(cache.due(t0), "未取得はすぐ取る");
-        cache.record(t0, Some(IndicatorStyle::Mono));
+        let r = cache.record(t0, Some(IndicatorStyle::Mono), None);
+        assert!(r.changed);
         assert_eq!(cache.style(), IndicatorStyle::Mono);
         assert!(!cache.due(t0 + Duration::from_secs(1)));
         assert!(cache.due(t0 + REFRESH_INTERVAL));
         // 失敗しても値は保ち、試した時刻は進む
         let t1 = t0 + Duration::from_secs(10);
-        cache.record(t1, None);
+        let r = cache.record(t1, None, None);
+        assert!(!r.changed);
         assert_eq!(cache.style(), IndicatorStyle::Mono);
         assert!(!cache.due(t1 + Duration::from_secs(1)));
         cache.invalidate();
         assert!(cache.due(t1));
-        cache.record(t1, Some(IndicatorStyle::Color));
+        cache.record(t1, Some(IndicatorStyle::Color), None);
         assert_eq!(cache.style(), IndicatorStyle::Color);
+    }
+
+    #[test]
+    fn priority_is_engine_then_config_then_cache_then_default() {
+        use IndicatorStyle::{Color, Mono};
+        assert_eq!(resolve(None, None, None), Color);
+        assert_eq!(resolve(None, None, Some(Mono)), Mono);
+        assert_eq!(resolve(None, Some(Color), Some(Mono)), Color);
+        assert_eq!(resolve(Some(Mono), Some(Color), Some(Color)), Mono);
+        assert_eq!(resolve(Some(Color), Some(Mono), Some(Mono)), Color);
+    }
+
+    #[test]
+    fn first_draw_uses_config_before_the_engine_answers() {
+        use IndicatorStyle::{Color, Mono};
+        let t0 = Instant::now();
+        // config.toml が読めた: エンジンが未接続でも最初からモノクロ
+        let mut cache = StyleCache::seeded(Some(Mono), Some(Color));
+        assert_eq!(cache.style(), Mono);
+        assert!(cache.due(t0));
+        let r = cache.record(t0, None, Some(Mono));
+        assert!(!r.changed && r.persist.is_none());
+        // config.toml が読めない: 直近のキャッシュ
+        assert_eq!(StyleCache::seeded(None, Some(Mono)).style(), Mono);
+        // 何も無い: 既定
+        assert_eq!(StyleCache::seeded(None, None).style(), Color);
+        // エンジンの値が食い違えばエンジンが正。変わったことと、キャッシュへ書く値が返る
+        let r = cache.record(t0, Some(Color), Some(Mono));
+        assert!(r.changed);
+        assert_eq!(r.persist, None, "キャッシュ（color）と同じなので書かない");
+        assert_eq!(cache.style(), Color);
+        let r = cache.record(t0, Some(Mono), None);
+        assert!(r.changed);
+        assert_eq!(r.persist, Some(Mono));
+        // 同じ値が続けば何も起きない
+        let r = cache.record(t0, Some(Mono), None);
+        assert_eq!(r, Recorded::default());
+    }
+
+    #[test]
+    fn config_text_reads_only_the_windows_indicator_icon() {
+        use IndicatorStyle::{Color, Mono};
+        let text = "# c\n[profile]\nindicator_icon = \"color\"\n\n[windows]\ncandidate_page_indicator = \"x\"\nindicator_icon = \"mono\"  # モノクロ\n";
+        assert_eq!(parse_config_text(text), Some(Mono));
+        assert_eq!(
+            parse_config_text("[windows]\nindicator_icon = 'color'\n"),
+            Some(Color)
+        );
+        assert_eq!(
+            parse_config_text("windows.indicator_icon = \"mono\"\n"),
+            Some(Mono)
+        );
+        // 別の表・キー無し・不明な値・壊れた行
+        assert_eq!(
+            parse_config_text("[profile]\nindicator_icon = \"mono\"\n"),
+            None
+        );
+        assert_eq!(parse_config_text("[windows]\n"), None);
+        assert_eq!(
+            parse_config_text("[windows]\nindicator_icon = \"x\"\n"),
+            None
+        );
+        assert_eq!(
+            parse_config_text("[windows]\nindicator_icon = mono\n"),
+            None
+        );
+        assert_eq!(parse_config_text("[windows\n@@@\n"), None);
+        assert_eq!(parse_config_text(""), None);
+        // 後ろの表が壊れていても前の行は読める
+        assert_eq!(
+            parse_config_text("[windows]\nindicator_icon = \"mono\"\n[x\n???"),
+            Some(Mono)
+        );
+    }
+
+    #[test]
+    fn paths_and_cache_text() {
+        assert_eq!(
+            config_file_path(Some("C:\\cfg"), Some("C:\\app")),
+            Some(PathBuf::from("C:\\cfg").join("config.toml"))
+        );
+        assert_eq!(
+            config_file_path(None, Some("C:\\app")),
+            Some(Path::new("C:\\app").join("Nagi").join("config.toml"))
+        );
+        assert_eq!(config_file_path(Some(""), None), None);
+        assert_eq!(
+            cache_path(Path::new("L")),
+            Path::new("L").join("Nagi").join("indicator-style")
+        );
+        assert_eq!(parse_cache_text("mono\n"), Some(IndicatorStyle::Mono));
+        assert_eq!(parse_cache_text(" color \r\n"), Some(IndicatorStyle::Color));
+        assert_eq!(parse_cache_text("junk"), None);
+        for s in [IndicatorStyle::Color, IndicatorStyle::Mono] {
+            assert_eq!(parse_cache_text(style_text(s)), Some(s));
+        }
     }
 }

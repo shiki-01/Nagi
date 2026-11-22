@@ -1067,6 +1067,7 @@ mod tests {
             let exit = |code| ExitReport {
                 code: Some(code),
                 lifetime: Duration::from_millis(50),
+                ..ExitReport::default()
             };
             if n == 1 {
                 c.set_responder(standard_responder(0));
@@ -1108,10 +1109,10 @@ mod tests {
             .collect();
         assert_eq!(records.len(), 3);
         assert_eq!(records[0].phase, ExitPhase::AfterInitialize);
-        assert_eq!(records[0].exit.unwrap().code, Some(-1));
+        assert_eq!(records[0].exit.as_ref().unwrap().code, Some(-1));
         assert_eq!(records[0].error, None);
         assert_eq!(records[1].phase, ExitPhase::BeforeInitialize);
-        assert_eq!(records[1].exit.unwrap().code, Some(101));
+        assert_eq!(records[1].exit.as_ref().unwrap().code, Some(101));
         assert_eq!(records[2].attempt, 3);
         assert!(records.iter().all(|r| !r.minimal));
         let summary = events.iter().find_map(|e| match e {

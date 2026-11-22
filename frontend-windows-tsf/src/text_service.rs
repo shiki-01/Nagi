@@ -606,6 +606,10 @@ impl Core {
 
     /// エンジンが（再）起動した。新しいエンジンは前回値もモードも知らない
     fn on_engine_started(&self) {
+        // アイコンの配色は、つながったエンジンの設定を正として読み直す（間引きを待たない）
+        if let Some(bar) = self.lang_bar.borrow().as_ref() {
+            bar.invalidate_style();
+        }
         environment()
             .lock()
             .unwrap_or_else(|e| e.into_inner())

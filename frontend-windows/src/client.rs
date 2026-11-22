@@ -62,13 +62,22 @@ pub type NotificationHandler = Arc<dyn Fn(&str, Option<Value>) + Send + Sync>;
 /// 診断イベントのハンドラ。任意のスレッドから呼ばれうる
 pub type DiagnosticHandler = Arc<dyn Fn(ClientDiagnostic) + Send + Sync>;
 
-/// 子プロセスが自発的に終了したときの記録（終了コードと生存時間）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 子プロセスが自発的に終了したときの記録（終了コードと生存時間・停止理由の手がかり）。
+/// **入力内容は含まない**（メソッド名と、既知のマーカーに一致した stderr の行だけ）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExitReport {
     /// 終了コード（シグナル終了など取得できない場合は `None`。Windows の NTSTATUS は負数になりうる）
     pub code: Option<i32>,
     /// 起動してから通信路が閉じるまでの時間
     pub lifetime: Duration,
+    /// 起動した実行ファイルが、起動後に置き換わった・消えた（更新の適用で止められた手がかり）
+    pub executable_replaced: bool,
+    /// 子の stderr の末尾のうち、panic の位置・既知のエラーの行だけ（`engine_log::marker_lines`）
+    pub stderr_markers: Vec<String>,
+    /// 最後に送った JSON-RPC のメソッド名（[`JsonRpcClient::exit_report`] が補う）
+    pub last_sent: Option<String>,
+    /// 最後に受けた通知のメソッド名（同上）
+    pub last_received: Option<String>,
 }
 
 /// クライアントが上位へ知らせる診断（**行の内容は含めない**。長さ・先頭バイトの種別・件数のみ）
@@ -164,6 +173,10 @@ struct State {
     on_close: Option<CloseHandler>,
     on_diagnostic: Option<DiagnosticHandler>,
     malformed_lines: u64,
+    /// 最後に送った要求・通知のメソッド名（停止時の診断用。内容は持たない）
+    last_sent: Option<String>,
+    /// 最後に受けた通知のメソッド名
+    last_received: Option<String>,
 }
 
 struct Inner {
@@ -194,7 +207,11 @@ impl Inner {
         if let Some(method) = obj.get("method").and_then(Value::as_str) {
             // サーバー通知（id なし）。サーバー→フロントの要求は現状存在しない
             let params = obj.get("params").filter(|p| !p.is_null()).cloned();
-            let handler = self.state().on_notification.clone();
+            let handler = {
+                let mut st = self.state();
+                st.last_received = Some(method.to_owned());
+                st.on_notification.clone()
+            };
             if let Some(h) = handler {
                 h(method, params);
             }
@@ -318,9 +335,14 @@ impl JsonRpcClient {
         self.inner.state().on_diagnostic = Some(handler);
     }
 
-    /// 子プロセスの終了コードと生存時間（自発的に終了した場合のみ）
+    /// 子プロセスの終了コードと生存時間（自発的に終了した場合のみ）。
+    /// 最後に送受信したメソッド名はここで補う
     pub fn exit_report(&self) -> Option<ExitReport> {
-        self.inner.transport.exit_report()
+        let mut report = self.inner.transport.exit_report()?;
+        let st = self.inner.state();
+        report.last_sent.clone_from(&st.last_sent);
+        report.last_received.clone_from(&st.last_received);
+        Some(report)
     }
 
     /// 通信路が閉じ済みか
@@ -357,6 +379,7 @@ impl JsonRpcClient {
             let id = st.next_id;
             st.next_id += 1;
             st.pending.insert(id, tx);
+            st.last_sent = Some(method.to_owned());
             id
         };
 
@@ -387,6 +410,7 @@ impl JsonRpcClient {
     pub fn notify<P: Serialize>(&self, method: &str, params: &P) -> Result<(), ClientError> {
         let body = encode_params(params)?;
         let message = json!({"jsonrpc": "2.0", "method": method, "params": body});
+        self.inner.state().last_sent = Some(method.to_owned());
         self.inner.transport.send(&message.to_string())
     }
 }

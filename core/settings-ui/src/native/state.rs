@@ -8,12 +8,15 @@ use crate::native_diag::BadgeKind;
 use crate::native_diag::DiagModel;
 use crate::native_layout::{Gap, PanelLayout, RowSpec, RowStyle};
 use crate::native_model::{Page, SettingsView};
+use crate::native_scroll::SmoothScroll;
 use crate::native_ui_state::UiState;
 use crate::native_worker::WorkerHandle;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Gdi::{DeleteObject, HBITMAP, HGDIOBJ};
 
 /// コントロールの役割
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +102,30 @@ pub(super) struct PageUi {
     pub layout: Option<PanelLayout>,
     pub scroll: i32,
     pub viewport_h: i32,
+    /// ページ全体の背景（地・カード・影・区切り線・印）を描いたビットマップ。スクロールは転送だけにする。
+    /// レイアウトを作り直すとき・テーマが変わるときに捨てる（`layout_page` / `paint_panel` の鍵の比較）
+    pub backdrop: Option<Backdrop>,
+}
+
+/// 背景キャッシュの鍵（幅・高さ・DPI。これが変われば作り直す）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BackdropKey {
+    pub width: i32,
+    pub height: i32,
+    pub dpi: u32,
+}
+
+/// ページ全体の背景のビットマップ（所有。破棄で解放する）
+pub(super) struct Backdrop {
+    pub bitmap: HBITMAP,
+    pub key: BackdropKey,
+}
+
+impl Drop for Backdrop {
+    fn drop(&mut self) {
+        // SAFETY: `paint_panel` が作ったビットマップ。どの DC にも選択したままにしない
+        let _ = unsafe { DeleteObject(HGDIOBJ(self.bitmap.0)) };
+    }
 }
 
 /// 読み込みの段階
@@ -166,6 +193,10 @@ pub(super) struct State {
     pub ui: RefCell<PageUi>,
     pub status_is_error: Cell<bool>,
     pub rebuild_posted: Cell<bool>,
+    /// ホイールの補間
+    pub smooth: RefCell<SmoothScroll>,
+    /// 補間の前フレームの時刻
+    pub last_tick: Cell<Option<Instant>>,
     /// UI の状態の保存先（`None` なら保存しない）
     pub ui_state_path: Option<PathBuf>,
     /// 最後に読み込んだ・保存した UI の状態（ウィンドウの位置の持ち越しに使う）
@@ -208,6 +239,8 @@ impl State {
             ui: RefCell::new(PageUi::default()),
             status_is_error: Cell::new(false),
             rebuild_posted: Cell::new(false),
+            smooth: RefCell::new(SmoothScroll::new(0)),
+            last_tick: Cell::new(None),
             ui_state_path,
             saved: RefCell::new(saved),
         }

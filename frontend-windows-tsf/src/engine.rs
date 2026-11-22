@@ -177,10 +177,24 @@ impl EngineHost {
 
         let subscribers: Subscribers = Arc::default();
         let target = Arc::clone(&subscribers);
+        // `ProcessExited`（詳細）→ `Crashed`（停止の行）の順に届くので、詳細は控えておき、
+        // 停止の行の直後に `exit ...` の 1 行を出す
+        let pending_exit: Mutex<Option<String>> = Mutex::new(None);
         supervisor.set_on_event(move |event| {
             // 診断ログ（起動の成否・クラッシュ・minimal 切替など。入力内容を含むイベントは記録しない）
             if let Some((tag, message)) = nagi_windows::diag::describe_event(&event) {
                 crate::tsf_log::log(tag, &message);
+            }
+            match &event {
+                EngineEvent::ProcessExited(record) => {
+                    *lock(&pending_exit) = Some(nagi_windows::diag::describe_exit_line(record));
+                }
+                EngineEvent::Crashed { .. } => {
+                    if let Some(line) = lock(&pending_exit).take() {
+                        crate::tsf_log::log("engine", &line);
+                    }
+                }
+                _ => {}
             }
             for waker in deliver(&target, event) {
                 waker();

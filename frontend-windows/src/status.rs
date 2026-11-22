@@ -34,9 +34,9 @@ pub fn toast_for(event: &EngineEvent) -> Option<String> {
             // ほかの info は頻繁に来うるため出さない（ログのみ）
             (n.level != NotifyLevel::Info).then(|| n.message.clone())
         }
-        EngineEvent::Crashed { attempt, .. } => {
-            (*attempt == 1).then(|| "変換エンジンが停止しました。再起動しています".to_owned())
-        }
+        // 停止（更新による差し替えも含む）は自動で再起動・復元されるので知らせない（ログのみ。H-128）。
+        // 続けて落ちて minimal になったときだけ `EnteredMinimalMode` で知らせる
+        EngineEvent::Crashed { .. } => None,
         EngineEvent::EnteredMinimalMode { restarts } => Some(format!(
             "変換エンジンが {restarts} 回続けて停止したため、辞書のみで動作しています"
         )),
@@ -663,7 +663,8 @@ mod tests {
             attempt,
             delay: Duration::ZERO,
         };
-        assert!(toast_for(&crashed(1)).is_some());
+        // 停止はログのみ（トーストを出さない）
+        assert_eq!(toast_for(&crashed(1)), None);
         assert_eq!(toast_for(&crashed(2)), None);
         assert!(
             toast_for(&EngineEvent::EnteredMinimalMode { restarts: 5 })

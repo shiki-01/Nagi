@@ -128,7 +128,7 @@ impl Transport for MockTransport {
     }
 
     fn exit_report(&self) -> Option<ExitReport> {
-        lock(&self.state).exit
+        lock(&self.state).exit.clone()
     }
 }
 

@@ -487,6 +487,8 @@ pub mod ids {
     pub const DYNAMIC_BASE: i32 = 1000;
     /// ステータス行を消すタイマー
     pub const TIMER_STATUS: usize = 1;
+    /// ホイールのスクロールの補間（約 16ms ごと）
+    pub const TIMER_SCROLL: usize = 2;
 
     /// 固定の ID すべて
     pub const FIXED: [i32; 20] = [

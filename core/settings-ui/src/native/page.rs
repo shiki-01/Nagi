@@ -15,6 +15,7 @@ use crate::native_layout::{
     layout_rows, scale, scroll_into_view,
 };
 use crate::native_model::{FieldView, Page, ids};
+use crate::native_scroll::FRAME_MS;
 use crate::native_theme::{
     ButtonStyle, ThemeKind, button_style_for_id, toggle_label_offset, toggle_row_min_height,
 };
@@ -33,9 +34,10 @@ use windows::Win32::UI::Shell::SetWindowSubclass;
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_SETCHECK, BS_AUTOCHECKBOX, BS_MULTILINE, BS_NOTIFY, BS_PUSHBUTTON, BeginDeferWindowPos,
     CB_ADDSTRING, CB_SETCURSEL, CBS_DROPDOWNLIST, DeferWindowPos, DestroyWindow, ES_AUTOHSCROLL,
-    EndDeferWindowPos, GetClientRect, GetParent, SB_VERT, SCROLLINFO, SIF_DISABLENOSCROLL,
-    SIF_PAGE, SIF_POS, SIF_RANGE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOZORDER, ShowWindow,
-    WM_SETREDRAW, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VSCROLL,
+    EndDeferWindowPos, GetClientRect, GetParent, KillTimer, SB_VERT, SCROLLINFO,
+    SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+    SWP_NOREDRAW, SWP_NOZORDER, SetTimer, ShowWindow, WM_SETREDRAW, WS_EX_CLIENTEDGE, WS_TABSTOP,
+    WS_VSCROLL,
 };
 
 /// ロールごとのフォント
@@ -506,6 +508,18 @@ fn redraw_panel(panel: HWND) {
     };
 }
 
+/// パネルとその子を無効化だけする（描くのは次の `WM_PAINT`。スクロール用）
+fn invalidate_panel(panel: HWND) {
+    let _ = unsafe {
+        RedrawWindow(
+            Some(panel),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+        )
+    };
+}
+
 fn restore_focus(st: &State) {
     let wanted = st.model.borrow().wanted_focus.clone();
     let Some(wanted) = wanted else { return };
@@ -621,6 +635,8 @@ pub(super) fn relayout(st: &State) {
             }
         }
         ui.layout = Some(layout_rows(&specs, dpi));
+        // 背景のキャッシュはレイアウトに依存する（テーマ変更・DPI 変更・リサイズ・ページ切替はここを通る）
+        ui.backdrop = None;
         ui.specs = specs;
         ui.viewport_h = height;
         let content = ui.layout.as_ref().map_or(0, |l| l.content_height);
@@ -629,11 +645,12 @@ pub(super) fn relayout(st: &State) {
     if !hdc.is_invalid() {
         unsafe { ReleaseDC(Some(panel), hdc) };
     }
-    place_all(st);
+    place_all(st, true);
 }
 
-/// 計算済みの配置をコントロールに反映する（スクロールのたびに呼ぶ）
-fn place_all(st: &State) {
+/// 計算済みの配置をコントロールに反映する。`full` はレイアウトの作り直し（その場で全部描く）、偽はスクロール
+/// （子は再描画を止めて動かし、まとめて 1 回だけ無効化する。同期描画はしない）
+fn place_all(st: &State, full: bool) {
     let panel = st.panel.get();
     let dpi = st.dpi.get();
     let (width, _) = panel_client(panel);
@@ -724,19 +741,17 @@ fn place_all(st: &State) {
             moves.push((c.hwnd, x, y - scroll, w.max(0), h.max(0)));
         }
     }
+    // スクロール中は、子ごとの「ビットコピー + 個別の再描画」をやめる（子の WM_PAINT がばらばらに走って
+    // ガサガサに見える原因）。動かすだけ動かして、最後にパネルと子をまとめて無効化する
+    let flags = if full {
+        SWP_NOZORDER | SWP_NOACTIVATE
+    } else {
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS
+    };
     unsafe {
         if let Ok(mut hdwp) = BeginDeferWindowPos(moves.len() as i32) {
             for (hwnd, x, y, w, h) in &moves {
-                match DeferWindowPos(
-                    hdwp,
-                    *hwnd,
-                    None,
-                    *x,
-                    *y,
-                    *w,
-                    *h,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                ) {
+                match DeferWindowPos(hdwp, *hwnd, None, *x, *y, *w, *h, flags) {
                     Ok(next) => hdwp = next,
                     Err(_) => break,
                 }
@@ -755,7 +770,11 @@ fn place_all(st: &State) {
         SetScrollInfo(panel, SB_VERT, &info, true);
     }
     // 背景（カード）と子の文字を、同じ回でまとめて描く（別々のタイミングで描くとちらつく）
-    redraw_panel(panel);
+    if full {
+        redraw_panel(panel);
+    } else {
+        invalidate_panel(panel);
+    }
 }
 
 /// スクロール位置を設定する（範囲内に丸める）
@@ -769,7 +788,56 @@ pub(super) fn scroll_to(st: &State, pos: i32) {
         }
         ui.scroll = clamped;
     }
-    place_all(st);
+    place_all(st, false);
+}
+
+/// マウスホイール 1 イベント。ノッチ単位は補間して動かし、精密タッチパッドの小さな量はその場で追従する
+pub(super) fn scroll_wheel(st: &State, delta: i32, step: i32) {
+    let (pos, max, _) = scroll_state(st);
+    let (now_pos, animating) = {
+        let mut sm = st.smooth.borrow_mut();
+        if sm.pos() != pos {
+            // 補間の外（スクロールバー・キー・ページ切替）で位置が変わっていた
+            sm.jump(pos);
+        }
+        let animating = sm.wheel(delta, step, max);
+        (sm.pos(), animating)
+    };
+    if now_pos != pos {
+        scroll_to(st, now_pos);
+    }
+    if animating && st.last_tick.get().is_none() {
+        st.last_tick.set(Some(std::time::Instant::now()));
+        unsafe { SetTimer(Some(st.hwnd.get()), ids::TIMER_SCROLL, FRAME_MS, None) };
+    }
+}
+
+/// 補間を 1 フレーム進める（`WM_TIMER`）
+pub(super) fn scroll_tick(st: &State) {
+    let now = std::time::Instant::now();
+    let dt = st
+        .last_tick
+        .replace(Some(now))
+        .map_or(f64::from(FRAME_MS), |t| {
+            now.duration_since(t).as_secs_f64() * 1000.0
+        });
+    let (pos, max, _) = scroll_state(st);
+    let (next, animating) = {
+        let mut sm = st.smooth.borrow_mut();
+        if sm.pos() != pos {
+            sm.jump(pos);
+        }
+        sm.clamp(max);
+        let next = sm.step(dt);
+        (next, sm.animating())
+    };
+    if next != pos {
+        scroll_to(st, next);
+    }
+    if !animating {
+        st.last_tick.set(None);
+        let _ = unsafe { KillTimer(Some(st.hwnd.get()), ids::TIMER_SCROLL) };
+    }
 }
 
 /// 現在のスクロール位置・最大値・ページ高さ

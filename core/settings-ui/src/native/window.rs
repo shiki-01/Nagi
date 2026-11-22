@@ -12,7 +12,7 @@ use super::dpi::{
 use super::gfx;
 use super::page::{
     edit_text, ensure_visible, find_ctl, rebuild_page, refit_fonts, relayout, role_of,
-    scroll_state, scroll_to,
+    scroll_state, scroll_tick, scroll_to, scroll_wheel,
 };
 use super::pages;
 use super::state::{Ident, Phase, Role, State, UpdateUi};
@@ -502,11 +502,13 @@ fn handle_message(st: &State, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
-            let (pos, _, _) = scroll_state(st);
-            scroll_to(st, pos - delta * wheel_step(st.dpi.get()) / 120);
+            scroll_wheel(st, delta, wheel_step(st.dpi.get()));
             LRESULT(0)
         }
         WM_TIMER => {
+            if wparam.0 == ids::TIMER_SCROLL {
+                scroll_tick(st);
+            }
             if wparam.0 == ids::TIMER_STATUS {
                 let _ = unsafe { KillTimer(Some(hwnd), ids::TIMER_STATUS) };
                 set_text(st.status.get(), "");
@@ -539,6 +541,7 @@ fn handle_message(st: &State, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
         }
         WM_DESTROY => {
             let _ = unsafe { KillTimer(Some(hwnd), ids::TIMER_STATUS) };
+            let _ = unsafe { KillTimer(Some(hwnd), ids::TIMER_SCROLL) };
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }

@@ -31,6 +31,7 @@ pub mod native;
 pub mod native_diag;
 pub mod native_layout;
 pub mod native_model;
+pub mod native_scroll;
 pub mod native_theme;
 pub mod native_ui_state;
 pub mod native_worker;

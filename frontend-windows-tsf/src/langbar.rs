@@ -59,8 +59,8 @@ struct Button {
     core: Weak<Core>,
     sinks: Sinks,
     next_cookie: RefCell<u32>,
-    /// 設定 `windows.indicator_icon` の読み取り結果（間引いて読み直す）
-    style: RefCell<StyleCache>,
+    /// 設定 `windows.indicator_icon` の読み取り結果（間引いて読み直す）。`LangBar` と共有する
+    style: Rc<RefCell<StyleCache>>,
 }
 
 impl Button {
@@ -69,11 +69,26 @@ impl Button {
     fn indicator_style(&self) -> IndicatorStyle {
         let now = Instant::now();
         if self.style.borrow().due(now) {
-            let fetched = self
+            let engine = self
                 .core
                 .upgrade()
                 .and_then(|core| core.fetch_indicator_style());
-            self.style.borrow_mut().record(now, fetched);
+            // エンジンが答えないとき（起動前など）は、config.toml を読み直して補う
+            let config = engine.is_none().then(load_config_style).flatten();
+            let recorded = self.style.borrow_mut().record(now, engine, config);
+            if let Some(style) = recorded.persist {
+                store_cached_style(style);
+            }
+            if recorded.changed {
+                crate::tsf_log::log(
+                    "langbar",
+                    &format!(
+                        "indicator style={} source={}",
+                        indicator::style_text(self.style.borrow().style()),
+                        if engine.is_some() { "engine" } else { "config" }
+                    ),
+                );
+            }
         }
         self.style.borrow().style()
     }
@@ -511,11 +526,52 @@ pub fn run_apply_update(kind: &str, script: &Path) {
     shell_open(kind, w!("powershell.exe"), PCWSTR(arguments.as_ptr()));
 }
 
+/// 読み込む設定ファイル・キャッシュの大きさの上限（これを超えるものは読まない）
+const MAX_STYLE_FILE_BYTES: u64 = 1024 * 1024;
+
+fn read_small(path: &Path) -> Option<String> {
+    let small = std::fs::metadata(path).is_ok_and(|m| m.len() <= MAX_STYLE_FILE_BYTES);
+    small.then(|| std::fs::read_to_string(path).ok()).flatten()
+}
+
+fn env_text(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// `config.toml`（`NAGI_CONFIG_DIR` 優先、無ければ `%APPDATA%\Nagi`）から `[windows] indicator_icon` だけを
+/// 同期で読む。読めない・キーが無い・不明な値は `None`
+fn load_config_style() -> Option<IndicatorStyle> {
+    let path = indicator::config_file_path(
+        env_text("NAGI_CONFIG_DIR").as_deref(),
+        env_text("APPDATA").as_deref(),
+    )?;
+    indicator::parse_config_text(&read_small(&path)?)
+}
+
+fn cache_file() -> Option<std::path::PathBuf> {
+    Some(indicator::cache_path(Path::new(&env_text("LOCALAPPDATA")?)))
+}
+
+/// 直近に確定した値（`%LOCALAPPDATA%\Nagi\indicator-style`）。読めなければ `None`
+fn load_cached_style() -> Option<IndicatorStyle> {
+    indicator::parse_cache_text(&read_small(&cache_file()?)?)
+}
+
+/// 確定した値を書く（失敗は無視。次の機会に書き直す）
+fn store_cached_style(style: IndicatorStyle) {
+    let Some(path) = cache_file() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, format!("{}\n", indicator::style_text(style)));
+}
+
 /// 言語バーに登録したボタン。破棄すると登録を外す
 pub struct LangBar {
     manager: ITfLangBarItemMgr,
     item: ITfLangBarItemButton,
     sinks: Sinks,
+    style: Rc<RefCell<StyleCache>>,
 }
 
 impl LangBar {
@@ -531,11 +587,17 @@ impl LangBar {
             );
         })?;
         let sinks: Sinks = Rc::default();
+        // 最初のアイコンの描画までに配色が決まるよう、config.toml と直近の値を同期で読んでおく。
+        // エンジンの値（`get_settings`）は、つながってから採用される（優先順位は `indicator::resolve`）
+        let style = Rc::new(RefCell::new(StyleCache::seeded(
+            load_config_style(),
+            load_cached_style(),
+        )));
         let item: ITfLangBarItemButton = Button {
             core,
             sinks: Rc::clone(&sinks),
             next_cookie: RefCell::new(0),
-            style: RefCell::new(StyleCache::new()),
+            style: Rc::clone(&style),
         }
         .into();
         unsafe { manager.AddItem(&item) }.inspect_err(|e| {
@@ -552,7 +614,13 @@ impl LangBar {
             manager,
             item,
             sinks,
+            style,
         })
+    }
+
+    /// エンジンの設定を次の機会にすぐ読み直させる（エンジンが（再）起動してつながったとき）
+    pub fn invalidate_style(&self) {
+        self.style.borrow_mut().invalidate();
     }
 
     /// モードが変わったので、アイコン・文字・ツールチップを描き直させる

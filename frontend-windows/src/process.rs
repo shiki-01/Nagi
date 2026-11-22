@@ -1,7 +1,7 @@
 //! 子プロセス（imserver）を stdin/stdout の JSON-RPC 通信路として扱う実装。
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -163,11 +163,12 @@ impl EngineLauncher for ProcessEngineLauncher {
             }
             open_stderr_file(log, minimal)
         });
-        Ok(Box::new(ProcessTransport::with_options(
-            command,
-            stderr,
-            c.after_spawn.clone(),
-        )))
+        let mut transport = ProcessTransport::with_options(command, stderr, c.after_spawn.clone());
+        if let Some(log) = &c.stderr_log {
+            transport =
+                transport.with_stderr_path(log.dir.join(engine_log::file_name(log.host_pid)));
+        }
+        Ok(Box::new(transport))
     }
 }
 
@@ -192,6 +193,49 @@ struct Inner {
     terminating: AtomicBool,
     /// 起動直後に呼ぶフック
     after_spawn: Option<SpawnHook>,
+    /// stderr のファイル（停止時に末尾を読んで診断に使う）
+    stderr_path: Option<PathBuf>,
+    /// 起動する実行ファイルのパス
+    exe_path: Option<PathBuf>,
+    /// 起動時の実行ファイルの識別（置き換わったかの判定用）
+    exe_stamp: Mutex<Option<ExeStamp>>,
+}
+
+/// 実行ファイルの識別（最終更新時刻と大きさ）。更新の適用（`imserver.exe` の入れ替え）の検出に使う
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExeStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+impl ExeStamp {
+    fn of(path: &std::path::Path) -> Option<Self> {
+        let meta = fs::metadata(path).ok()?;
+        Some(Self {
+            modified: meta.modified().ok(),
+            len: meta.len(),
+        })
+    }
+}
+
+/// 起動時と終了時の実行ファイルの識別から、置き換わった（または消えた）かを判断する。
+/// 起動時に取れていなければ判断できないので `false`
+fn replaced_since_start(at_start: Option<ExeStamp>, now: Option<ExeStamp>) -> bool {
+    at_start.is_some_and(|start| now != Some(start))
+}
+
+/// stderr のファイルの末尾を読む（失敗は空）
+fn read_tail(path: &std::path::Path) -> String {
+    let Ok(mut file) = File::open(path) else {
+        return String::new();
+    };
+    let len = file.metadata().map_or(0, |m| m.len());
+    let from = len.saturating_sub(engine_log::TAIL_READ_BYTES);
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(from)).is_err() || file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -213,9 +257,20 @@ impl Inner {
             match status {
                 Ok(Some(status)) => {
                     let lifetime = lock(&self.started_at).map_or(Duration::ZERO, |t| t.elapsed());
+                    let executable_replaced = self.exe_path.as_deref().is_some_and(|path| {
+                        replaced_since_start(*lock(&self.exe_stamp), ExeStamp::of(path))
+                    });
+                    let stderr_markers = self
+                        .stderr_path
+                        .as_deref()
+                        .map(|path| engine_log::marker_lines(&read_tail(path)))
+                        .unwrap_or_default();
                     *lock(&self.exit) = Some(ExitReport {
                         code: status.code(),
                         lifetime,
+                        executable_replaced,
+                        stderr_markers,
+                        ..ExitReport::default()
                     });
                     return;
                 }
@@ -257,14 +312,26 @@ impl ProcessTransport {
         Self::with_options(command, stderr, None)
     }
 
+    /// stderr のファイルの場所を教える（停止時に末尾を読んで診断に使う。作った直後に 1 回だけ呼ぶ）
+    pub fn with_stderr_path(mut self, path: PathBuf) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.stderr_path = Some(path);
+        }
+        self
+    }
+
     /// stderr の保存先と起動直後のフックつきで作る
     pub fn with_options(
         command: Command,
         stderr: Option<File>,
         after_spawn: Option<SpawnHook>,
     ) -> Self {
+        let exe_path = Some(PathBuf::from(command.get_program()));
         Self {
             inner: Arc::new(Inner {
+                exe_path,
+                stderr_path: None,
+                exe_stamp: Mutex::new(None),
                 command: Mutex::new(Some(command)),
                 child: Mutex::new(None),
                 stdin: Mutex::new(None),
@@ -313,6 +380,9 @@ impl Transport for ProcessTransport {
         *lock(&self.inner.stdin) = Some(stdin);
         *lock(&self.inner.child) = Some(child);
         *lock(&self.inner.started_at) = Some(Instant::now());
+        if let Some(path) = &self.inner.exe_path {
+            *lock(&self.inner.exe_stamp) = ExeStamp::of(path);
+        }
 
         let inner = self.inner.clone();
         std::thread::spawn(move || {
@@ -362,7 +432,7 @@ impl Transport for ProcessTransport {
     }
 
     fn exit_report(&self) -> Option<ExitReport> {
-        *lock(&self.inner.exit)
+        lock(&self.inner.exit).clone()
     }
 }
 

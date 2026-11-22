@@ -82,6 +82,43 @@ pub fn should_recreate(current_len: u64) -> bool {
     current_len > MAX_FILE_BYTES
 }
 
+/// 停止の診断に出す stderr の読み取り量（ファイル末尾のバイト数）
+pub const TAIL_READ_BYTES: u64 = 8 * 1024;
+/// 診断に出す行の最大数と、1 行の最大文字数
+const MAX_MARKER_LINES: usize = 3;
+const MAX_MARKER_CHARS: usize = 120;
+/// 診断に出してよい行の目印。panic は位置の行（`thread 'x' panicked at file:line:col:`。メッセージ本体の
+/// 次の行は入力内容を含みうるので出さない）と、メモリ不足・スタック溢れ・親の終了・入出力エラー
+const MARKERS: &[&str] = &[
+    "panicked at",
+    "stack overflow",
+    "out of memory",
+    "memory allocation",
+    "親プロセス",
+    "入出力エラー",
+];
+
+/// stderr のファイル末尾（`tail`）から、診断に出してよい行だけを取り出す。
+/// 最後の起動の区切り（`[launch]` の行）より後ろだけを見て、目印に一致する直近の数行を返す
+pub fn marker_lines(tail: &str) -> Vec<String> {
+    let current = tail.rfind(" [launch] ").map_or(tail, |at| {
+        tail[at..].split_once('\n').map_or("", |(_, rest)| rest)
+    });
+    let mut lines: Vec<String> = current
+        .lines()
+        .filter(|line| MARKERS.iter().any(|m| line.contains(m)))
+        .map(|line| {
+            line.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .take(MAX_MARKER_CHARS)
+                .collect()
+        })
+        .collect();
+    let skip = lines.len().saturating_sub(MAX_MARKER_LINES);
+    lines.drain(..skip);
+    lines
+}
+
 /// 起動のたびにファイルの先頭（追記）へ書く区切りの行。どの起動の出力か分かるようにする
 pub fn launch_header(unix_secs: u64, host_pid: u32, minimal: bool) -> String {
     format_line(
@@ -98,6 +135,31 @@ pub fn launch_header(unix_secs: u64, host_pid: u32, minimal: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marker_lines_keep_only_known_markers_of_the_last_launch() {
+        let tail = "old line\nthread 'main' panicked at old.rs:1:1:\n\
+1970-01-01T00:00:01Z pid=1 [launch] normal\n\
+imserver: プロファイル balanced\n\
+thread 'worker' panicked at core/x.rs:10:5:\n\
+secret user text\n\
+imserver: 入出力エラー: broken pipe\n";
+        let lines = marker_lines(tail);
+        assert_eq!(
+            lines,
+            [
+                "thread 'worker' panicked at core/x.rs:10:5:",
+                "imserver: 入出力エラー: broken pipe"
+            ]
+        );
+        assert!(marker_lines("nothing here\n").is_empty());
+        // 多すぎれば直近の 3 行
+        let many = "panicked at a\npanicked at b\npanicked at c\npanicked at d\n";
+        assert_eq!(
+            marker_lines(many),
+            ["panicked at b", "panicked at c", "panicked at d"]
+        );
+    }
 
     fn e(name: &str, age_secs: u64) -> LogEntry {
         LogEntry {
