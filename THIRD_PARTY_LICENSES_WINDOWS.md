@@ -11,7 +11,7 @@ feature `llama` 有効、設定画面 `nagi-settings` = `nagi-settings-ui`、
 - `windows` / `windows-*` クレートは Microsoft の公式バインディング（`MIT OR Apache-2.0`）
 - Nagi 自身のコード（`nagi-*`）は `MIT OR Apache-2.0`
 
-依存クレート数: 112
+依存クレート数: 114
 
 | crate | version | license (SPDX) | repository |
 | --- | --- | --- | --- |
@@ -107,6 +107,8 @@ feature `llama` 有効、設定画面 `nagi-settings` = `nagi-settings-ui`、
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter |
 | webpki-roots | 0.26.11 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots |
 | webpki-roots | 1.0.9 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots |
+| webview2-com | 0.39.1 | MIT | https://github.com/wravery/webview2-rs |
+| webview2-com-sys | 0.39.1 | MIT | https://github.com/wravery/webview2-rs |
 | winapi | 0.3.9 | MIT/Apache-2.0 | https://github.com/retep998/winapi-rs |
 | windows | 0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
 | windows-collections | 0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs |
