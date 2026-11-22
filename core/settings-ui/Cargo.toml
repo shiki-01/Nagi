@@ -1,6 +1,6 @@
 [package]
 name = "nagi-settings-ui"
-description = "Nagi 設定画面（Windows 向け）: 既定は WebView2 のウィンドウ（ローカル HTTP サーバーの画面を表示）。WebView2 が無ければネイティブの Win32 ウィンドウ（`--native`）、`--web` でブラウザ。項目は imserver の get_settings から自動生成する。"
+description = "Nagi 設定画面（Windows 向け）: 既定は WebView2 のウィンドウ（ローカル HTTP サーバーの画面を表示）。WebView2 が使えなければ既定のブラウザで開く（`--web` でも同じ）。項目は imserver の get_settings から自動生成する。"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,36 +24,31 @@ getrandom = "0.3"
 # （WebView2LoaderStatic.lib をリンクするので WebView2Loader.dll は同梱しない）。GNU は動的ローダーで、
 # 型検査（clippy）だけに使う。プリビルドのライブラリは crate に同梱されていて、ビルド時にダウンロードしない
 webview2-com = "0.39"
-# ネイティブの設定ウィンドウ（Win32）と WebView2 のウィンドウ。バージョンと features の書き方は frontend-windows-tsf と同じ
+# WebView2 のウィンドウ（Win32）。バージョンと features の書き方は frontend-windows-tsf と同じ
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
-    "Win32_Graphics_GdiPlus",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
-    "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
-    "Win32_UI_Controls",
     "Win32_UI_HiDpi",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 [build-dependencies]
 # Windows 向けのビルドでだけ使う（build.rs が対象 OS を見て分岐する）。ビルド依存は cfg(windows) で
 # 絞れない（クロスビルドでは host の cfg が使われる）ので無条件に置く。マニフェスト（Per-Monitor V2 DPI・
-# Common Controls v6）を MSVC / GNU の両方で埋め込む
+# UTF-8 など）を MSVC / GNU の両方で埋め込む
 embed-manifest = "1.5"
 # exe のアイコン（リソース ID 1）を `frontend-windows/assets/nagi.ico` から埋め込む。MSVC では `rc.exe`
 # （Windows SDK）、GNU では `windres` を使う。Windows 以外のターゲットでは何もしない（H-115）
 embed-resource = "3"
 
-# ネイティブ設定ウィンドウ（`src/native/`）と WebView2 のウィンドウ（`src/webview.rs`）だけが unsafe を使う（Win32 / COM）。
+# WebView2 のウィンドウ（`src/webview.rs`）だけが unsafe を使う（Win32 / COM）。
 # 他のモジュールは `deny` のまま。
 # ワークスペース共通の設定は `forbid` で上書きできないので、`frontend-windows-tsf` と同じく個別に書く
 [lints.rust]

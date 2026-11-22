@@ -20,7 +20,7 @@
 //! ページは CSS の `prefers-color-scheme` / `forced-colors` を使える。
 
 use crate::cli::Args;
-use crate::native_theme::{Rgb, ThemeKind};
+use crate::theme::{Rgb, ThemeKind};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -31,26 +31,22 @@ use std::path::{Path, PathBuf};
 pub enum Mode {
     /// ローカル HTTP サーバー + 既定のブラウザ（`--web`・Windows 以外）
     Browser,
-    /// Win32 のネイティブ画面（`--native`）
-    Native,
-    /// WebView2 のウィンドウ。`fallback_native` が真なら、使えないときにネイティブ画面で起動する
+    /// WebView2 のウィンドウ。`fallback_browser` が真なら、使えないときに既定のブラウザで開く
     WebView {
-        /// WebView2 を使えないときネイティブ画面にフォールバックするか
-        fallback_native: bool,
+        /// WebView2 を使えないとき、既定のブラウザ（`--web` と同じ画面）にフォールバックするか
+        fallback_browser: bool,
     },
 }
 
 /// 引数と OS から表示方式を決める。優先順位:
-/// Windows 以外は常にブラウザ → `--web` → `--native` → `--webview`（フォールバックなし）→
-/// 既定（WebView2。使えなければネイティブ）。引数の排他は `parse_args` が保証する
+/// Windows 以外は常にブラウザ → `--web` → `--webview`（フォールバックなし）→
+/// 既定（WebView2。使えなければ既定のブラウザ）。引数の排他は `parse_args` が保証する
 pub fn choose_mode(args: &Args, is_windows: bool) -> Mode {
     if !is_windows || args.web {
         Mode::Browser
-    } else if args.native {
-        Mode::Native
     } else {
         Mode::WebView {
-            fallback_native: !args.webview,
+            fallback_browser: !args.webview,
         }
     }
 }
@@ -253,15 +249,14 @@ mod tests {
 
     #[test]
     fn mode_priority() {
-        let wv = |fallback_native| Mode::WebView { fallback_native };
-        // 既定: WebView2（ネイティブへフォールバックあり）
+        let wv = |fallback_browser| Mode::WebView { fallback_browser };
+        // 既定: WebView2（使えなければブラウザへフォールバック）
         assert_eq!(choose_mode(&args(&[]), true), wv(true));
         assert_eq!(choose_mode(&args(&["--section", "update"]), true), wv(true));
         assert_eq!(choose_mode(&args(&["--webview"]), true), wv(false));
-        assert_eq!(choose_mode(&args(&["--native"]), true), Mode::Native);
         assert_eq!(choose_mode(&args(&["--web"]), true), Mode::Browser);
         // Windows 以外は常にブラウザ
-        for list in [&[][..], &["--native"], &["--webview"], &["--web"]] {
+        for list in [&[][..], &["--webview"], &["--web"]] {
             assert_eq!(choose_mode(&args(list), false), Mode::Browser);
         }
     }

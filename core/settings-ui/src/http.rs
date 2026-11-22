@@ -337,7 +337,7 @@ impl<B: SettingsBackend> App<B> {
                 check.notes_url = check.notes_url.take().filter(|u| is_safe_notes_url(u));
                 let view = update_view(&check);
                 let mut value = serde_json::to_value(&check).unwrap_or(Value::Null);
-                // 既存の項目はそのまま。ネイティブ版と同じ文言・状態の見出しを `view` として足す
+                // 既存の項目はそのまま。文言・状態の見出しを `view` として足す
                 if let Some(object) = value.as_object_mut() {
                     object.insert("view".to_owned(), view);
                 }
@@ -435,10 +435,10 @@ impl<B: SettingsBackend> App<B> {
     }
 }
 
-/// 更新確認の結果の画面表示（ネイティブ版と同じ文言・状態の見出し。`notes_url` は安全と確認済みのものだけ）
+/// 更新確認の結果の画面表示（文言と状態の見出しは `update_text`。`notes_url` は安全と確認済みのものだけ）
 pub fn update_view(check: &crate::backend::UpdateCheck) -> Value {
-    use crate::native_diag::BadgeKind;
-    use crate::native_model::{describe_update, update_headline};
+    use crate::diag_model::BadgeKind;
+    use crate::update_text::{describe_update, update_headline};
     let outcome = describe_update(check);
     let head = update_headline(false, &outcome.text);
     let badge = match head.as_ref().map(|h| h.badge) {

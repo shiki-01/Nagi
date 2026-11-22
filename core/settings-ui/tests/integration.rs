@@ -50,7 +50,7 @@ fn start(imserver: &std::path::Path, dir: &std::path::Path) -> Running {
         .arg(dir)
         .arg("--data-dir")
         .arg(dir.join("data"))
-        // Windows の既定はネイティブのウィンドウなので、HTTP の経路を試すときは --web を付ける
+        // Windows の既定は WebView2 のウィンドウなので、HTTP の経路を試すときは --web を付ける
         .arg("--web")
         .arg("--no-browser")
         .arg("--url-file")

@@ -505,6 +505,19 @@
     showBanner(s.error || "");
   }
 
+  // 保存した行を一瞬ハイライトする（motion.css の .row.saved。連続保存でもやり直せるよう、いったん外して付け直す）
+  function flashSaved(ref) {
+    if (!ref || !ref.row) return;
+    ref.row.classList.remove("saved");
+    void ref.row.offsetWidth;
+    ref.row.classList.add("saved");
+    ref.row.addEventListener("animationend", function done(e) {
+      if (e.target !== ref.row) return;
+      ref.row.classList.remove("saved");
+      ref.row.removeEventListener("animationend", done);
+    });
+  }
+
   function commit(item, value) {
     showBanner("");
     var wasReset = value === null;
@@ -516,7 +529,10 @@
       var ref = rowRefs[item.key];
       if (ref) syncRow(ref, itemByKey[item.key], true);
       syncRows();
-      if (r.applied.length > 0) toast(wasReset ? "既定に戻しました" : "保存しました", false);
+      if (r.applied.length > 0) {
+        toast(wasReset ? "既定に戻しました" : "保存しました", false);
+        flashSaved(rowRefs[item.key]);
+      }
     }, function (e) {
       errors = {};
       errors[item.key] = e.message;

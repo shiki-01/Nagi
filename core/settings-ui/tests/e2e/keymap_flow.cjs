@@ -3,7 +3,7 @@
 //   使い方（core/ で）:  cargo build -p nagi-settings-ui --bin nagi-settings -p nagi-server --bin imserver
 //                       node settings-ui/tests/e2e/keymap_flow.cjs [スクリーンショットの出力先]
 //   playwright は node_modules に無ければ、グローバルの場所（NODE_PATH / /opt/node22/lib/node_modules）から読む。
-//   見る点: 各ステップで「ユーザーの目に見える反応」があること（編集パネルが開く・フォーカス枠・取り込んだキーの表示・
+//   見る点: 各ステップで「ユーザーの目に見える反応」があること（ダイアログが開く・フォーカス枠・取り込んだキーの表示・
 //           トースト・行のハイライト）。画面内に収まっているか（getBoundingClientRect）も確かめる。
 "use strict";
 const fs = require("fs");
@@ -62,7 +62,7 @@ async function flow(browser, url, v) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
-  const shot = (n) => page.screenshot({ path: path.join(outDir, v.name + "-" + n + ".png") });
+  const shot = async (n) => { await page.waitForTimeout(400); return page.screenshot({ path: path.join(outDir, v.name + "-" + n + ".png") }); };
   await page.goto(url);
   await page.click('.nav-item[data-page="keymap"]');
   await page.waitForSelector(".kc-row");
@@ -73,86 +73,102 @@ async function flow(browser, url, v) {
   check((await page.locator("#kc-tab-converting").getAttribute("aria-selected")) === "true", "タブが選択状態になる");
   await mouseClick(page, page.locator("#kc-tab-composing"), "「入力中」タブ");
 
-  // 2) 行の「キーを追加」→ その行の下に編集パネル
+  // 2) 行の「キーを追加」→ モーダルのダイアログ
   const row = page.locator('.kc-row[data-action="ToKatakana"]');
   await row.waitFor();
   await mouseClick(page, row.locator(".kc-add"), "「キーを追加」");
-  const editor = page.locator(".kc-editor");
-  await editor.waitFor();
-  const title = await editor.locator("h3").innerText();
+  const dlg = page.locator("dialog[open]");
+  await dlg.waitFor();
+  const title = await dlg.locator("h2").innerText();
   check(/『.+』のキーを割り当てる/.test(title), "見出し: " + title);
   check(await row.evaluate((r) => r.classList.contains("editing")), "操作中の行が強調される");
-  check(await row.evaluate((r) => r.nextElementSibling && r.nextElementSibling.classList.contains("kc-editor")), "編集パネルは行のすぐ下に開く");
-  const ebox = await editor.boundingBox();
-  check(ebox && ebox.y >= 0 && ebox.y + Math.min(ebox.height, 200) <= v.h, "編集パネルが画面内に見えている");
-  check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-capture")), "キー入力欄に自動でフォーカスが入る");
+  const dbox = await dlg.boundingBox();
+  check(dbox && dbox.x >= 0 && dbox.y >= 0 && dbox.x + dbox.width <= v.w && dbox.y + dbox.height <= v.h + 1, "ダイアログが画面内に収まる");
+  check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-capture")), "開くとキー入力欄に自動でフォーカスが入る");
   check(/割り当てるキーを押してください/.test(await page.locator(".kc-capture").innerText()), "案内文: 割り当てるキーを押してください");
-  check(await editor.locator(".kc-save").isDisabled(), "取り込み前は「割り当てる」が無効");
-  await shot("02-editor-open");
+  check(await dlg.locator(".kc-save").isDisabled(), "取り込み前は「割り当てる」が無効");
+  check(/キーを押す/.test(await dlg.locator(".kc-next").innerText()), "押せない理由が表示される");
+  await shot("02-dialog-open");
 
-  // 3) キーを押す（IME オンの Process を模した合成イベントも）
+  // 3) キーを押す（取り込み → 検証が終わるまで「割り当てる」は無効）
   await page.keyboard.press("Control+Shift+KeyY");
   check((await page.locator(".kc-capture .kc-cap").allInnerTexts()).join("|") === "Ctrl|Shift|Y", "押したキーがキーチップで即座に出る");
   await page.waitForFunction(() => !document.querySelector(".kc-save").disabled, null, { timeout: 4000 });
-  check(true, "取り込み後に「割り当てる」が有効になる");
+  check(true, "検証のあとに「割り当てる」が有効になる");
   await shot("03-captured");
 
-  // 4) 実クリックで確定 → トースト・行のハイライト・パネルが閉じる
-  await mouseClick(page, editor.locator(".kc-save"), "「割り当てる」");
+  // 4) 実クリックで確定 → トースト・行のハイライト・ダイアログが閉じる
+  await mouseClick(page, dlg.locator(".kc-save"), "「割り当てる」");
   await page.waitForSelector(".toast");
   check(/保存しました/.test(await page.locator(".toast").last().innerText()), "トースト: 保存しました");
-  check((await page.locator(".kc-editor").count()) === 0, "編集パネルが閉じる");
+  check((await page.locator("dialog[open]").count()) === 0, "ダイアログが閉じる");
   check(await page.locator('.kc-row[data-action="ToKatakana"]').evaluate((r) => r.classList.contains("flash")), "保存した行がハイライトされる");
   const chip = page.locator('.kc-row[data-action="ToKatakana"] .kc-chip[data-key="Ctrl+Shift+y" i]');
   check((await chip.count()) === 1, "新しいキーがチップとして並ぶ");
+  check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-chip")), "保存後、新しいキーのチップにフォーカスが移る");
   await shot("04-saved");
 
-  // 5) キーチップ（ボタン）を実クリック → 変更/解除の編集パネル。Esc で閉じてフォーカスが戻る
+  // 5) キーチップ（ボタン）を実クリック → 変更/解除のダイアログ。Esc でダイアログだけ閉じ、フォーカスが戻る
   await page.waitForTimeout(3800);
   check(!(await page.locator('.kc-row[data-action="ToKatakana"]').evaluate((r) => r.classList.contains("flash"))), "ハイライトは数秒で消える");
   await mouseClick(page, chip, "キーチップ");
-  await editor.waitFor();
-  check(/変更する/.test(await editor.locator("h3").innerText()), "チップを押すと変更パネルが開く");
-  check(await editor.getByRole("button", { name: /このキーを解除/ }).count() === 1, "「このキーを解除」がある");
-  await shot("05-chip-editor");
+  await dlg.waitFor();
+  check(/変更する/.test(await dlg.locator("h2").innerText()), "チップを押すと変更のダイアログが開く");
+  check(await dlg.getByRole("button", { name: /このキーを解除/ }).count() === 1, "「このキーを解除」がある");
+  await shot("05-chip-dialog");
   await page.keyboard.press("Escape");
-  check((await page.locator(".kc-editor").count()) === 0, "Esc で編集パネルが閉じる（設定画面は閉じない）");
-  check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-chip")), "閉じるとフォーカスがチップへ戻る");
+  check((await page.locator("dialog[open]").count()) === 0, "Esc でダイアログが閉じる");
+  check((await page.locator(".kc-row").count()) > 0 && (await page.locator("#main").count()) === 1, "設定画面は閉じない");
+  check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-chip") && document.activeElement.getAttribute("data-key").toLowerCase() === "ctrl+shift+y"), "閉じるとフォーカスがチップへ戻る");
 
-  // 6) 「キー」ラベルを押しても入力欄にフォーカスが入る
+  // 6) 「キー」ラベルを押しても入力欄にフォーカスが入る。Tab はダイアログ内で循環する
   await mouseClick(page, row.locator(".kc-add"), "「キーを追加」");
-  await mouseClick(page, page.locator('.kc-editor .kc-field > label[for$="-cap"]'), "「キー」ラベル");
+  await dlg.waitFor();
+  await page.locator(".kc-save").focus().catch(() => {});
+  await page.evaluate(() => document.querySelector(".kc-cancel").focus());
+  await mouseClick(page, page.locator('dialog .kc-field > label[for$="-cap"]'), "「キー」ラベル");
   check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-capture")), "「キー」ラベルを押すと入力欄にフォーカスが入る");
-  // 取り込み枠を押しても取り込み待ちになる
-  await page.locator("#kc-panel").click({ position: { x: 5, y: 5 } });
-  await mouseClick(page, page.locator(".kc-editor .kc-capture"), "キー入力欄");
+  await page.evaluate(() => document.querySelector(".kc-cancel").focus());
+  for (let i = 0; i < 12; i++) {
+    await page.keyboard.press("Tab");
+    if (!(await page.evaluate(() => !!document.activeElement.closest("dialog")))) break;
+  }
+  check(await page.evaluate(() => !!document.activeElement.closest("dialog")), "Tab を繰り返してもフォーカスがダイアログの外へ出ない");
+  await page.keyboard.press("Shift+Tab");
+  check(await page.evaluate(() => !!document.activeElement.closest("dialog")), "Shift+Tab でもダイアログの中にいる");
+  await mouseClick(page, page.locator("dialog .kc-capture"), "キー入力欄");
   check(/割り当てるキーを押してください/.test(await page.locator(".kc-capture").innerText()), "入力欄を押すと取り込み待ちの表示になる");
+  // IME 処理中（key が Process）でも、物理キー（code）から取り込む
+  const viaCode = await page.evaluate(() => ["F8", "ArrowLeft", "Space", "Enter"].map((code) => window.NagiKeymapKeys.specFromEvent({ key: "Process", code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }).spec).join(","));
+  check(viaCode === "F8,Left,Space,Enter", "IME 処理中でも F8・矢印・Space・Enter を取り込める: " + viaCode);
   await page.keyboard.press("Escape");
+  check((await page.locator("dialog[open]").count()) === 0, "取り込み中の Esc でもダイアログだけが閉じる");
+  check((await page.locator(".kc-row").count()) > 0, "設定画面は閉じない");
+  check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-add")), "閉じると「キーを追加」へフォーカスが戻る");
 
   // 7) チップから解除
   await mouseClick(page, chip, "キーチップ");
-  await mouseClick(page, editor.getByRole("button", { name: /このキーを解除/ }), "「このキーを解除」");
-  await page.waitForFunction(() => !document.querySelector('.kc-chip[data-key="Ctrl+Shift+y" i]'));
+  await mouseClick(page, dlg.getByRole("button", { name: /このキーを解除/ }), "「このキーを解除」");
+  await page.waitForFunction(() => !document.querySelector('.kc-chip[data-key="Ctrl+Shift+y" i]') && !document.querySelector("dialog[open]"));
   check(/解除しました/.test(await page.locator(".toast").last().innerText()), "トースト: 解除しました");
   await shot("06-removed");
 
-  // 8) キーボードだけで一巡（Enter で開く → Ctrl+Shift+U を押す → 保存ボタンへ Tab → Enter）
+  // 8) キーボードだけで一巡（Enter で開く → Ctrl+Shift+U を押す → 保存ボタンへ → Enter）
   await row.locator(".kc-add").focus();
   await page.keyboard.press("Enter");
-  await editor.waitFor();
+  await dlg.waitFor();
   await page.keyboard.press("Control+Shift+KeyU");
   await page.waitForFunction(() => !document.querySelector(".kc-save").disabled, null, { timeout: 4000 });
   await page.locator(".kc-save").focus();
   await page.keyboard.press("Enter");
   await page.waitForSelector('.kc-row[data-action="ToKatakana"] .kc-chip[data-key="Ctrl+Shift+u" i]');
-  check(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("data-key").toLowerCase() === "ctrl+shift+u"), "保存後、新しいキーのチップにフォーカスが移る");
+  check(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("data-key").toLowerCase() === "ctrl+shift+u"), "保存後、新しいキーのチップにフォーカスが移る（キーボード）");
   await page.keyboard.press("Enter");
-  await editor.waitFor();
-  await page.keyboard.press("Tab"); // 解除ボタンなど、パネル内をたどれる
+  await dlg.waitFor();
   await page.getByRole("button", { name: /このキーを解除/ }).focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => !document.querySelector('.kc-chip[data-key="Ctrl+Shift+u" i]'));
-  check(true, "キーボードだけで追加・変更パネル・解除ができる");
+  check(true, "キーボードだけで追加・変更ダイアログ・解除ができる");
   // 窓を最大にしなくても入る幅か（横スクロールが無い）
   check(await page.evaluate(() => document.getElementById("main").scrollWidth <= document.getElementById("main").clientWidth + 1), "横スクロールが出ない");
   check(errors.length === 0, "コンソールにエラーが無い" + (errors.length ? ": " + errors.join(" / ") : ""));

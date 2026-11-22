@@ -1,15 +1,14 @@
-//! 「動作確認」（診断）の HTTP 側。ネイティブ版（`native_worker` の診断コマンド）と同じ流れ:
-//! 実行はワーカースレッド（HTTP のループを止めない）、状態は [`DiagModel`]、実行・保存は [`DiagService`]。
+//! 「動作確認」（診断）の HTTP 側。実行はワーカースレッド（HTTP のループを止めない）、状態は [`DiagModel`]、実行・保存は [`DiagService`]。
 //!
 //! 画面（JS）は `status` をポーリングして進捗・結果を描く（実行中だけ。0.5 秒間隔）。
 //! 状態の JSON 化（[`status_json`]）は純粋な関数で、ここでテストする。
 
 use crate::diag::service::DiagService;
 use crate::diag::{ItemId, ItemResult, Kind, Phase as DiagPhase, Report, Status};
-use crate::native_diag::{
-    BadgeKind, DiagModel, RunState, badge_kind, badge_label, item_detail, summary_line,
+use crate::diag_model::{
+    BadgeKind, DiagModel, DiagProgress, RunState, badge_kind, badge_label, item_detail,
+    summary_line,
 };
-use crate::native_worker::DiagProgress;
 use serde_json::{Value, json};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard};

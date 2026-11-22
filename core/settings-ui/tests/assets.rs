@@ -133,3 +133,32 @@ fn script_passes_a_node_syntax_check_when_node_is_available() {
         Err(_) => eprintln!("skip: node が無い"),
     }
 }
+
+#[test]
+fn motion_css_is_served_linked_and_respects_reduced_motion() {
+    let page = render_page("abc123");
+    assert!(page.contains("<link rel=\"stylesheet\" href=\"/motion.css?t=abc123\">"));
+    let asset = find_static("/motion.css").expect("motion.css は配られる");
+    assert!(asset.content_type.starts_with("text/css"));
+    let css = sources()[4];
+    assert_eq!(asset.body, css);
+    for needle in [
+        "--motion-fast: 120ms",
+        "--motion-base: 180ms",
+        "--motion-slow: 240ms",
+        "--ease-out",
+        "--ease-in-out",
+        "prefers-reduced-motion: reduce",
+        "forced-colors: active",
+        ".page-body.enter",
+        "@starting-style",
+    ] {
+        assert!(css.contains(needle), "{needle}");
+    }
+    // 外部参照・アクセシビリティを損なう指定・ホバーで動かす指定を持ち込まない
+    assert!(!css.contains("url("));
+    assert!(!css.contains("scroll-behavior"));
+    assert!(!css.contains("will-change"));
+    assert!(!css.contains("transition: all"));
+    assert!(!css.contains("outline var"), "フォーカス輪郭は遅らせない");
+}

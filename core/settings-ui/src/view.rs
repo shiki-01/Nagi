@@ -104,7 +104,7 @@ pub(crate) fn is_desktop(i: &SettingItem) -> bool {
 }
 
 /// デスクトップ向けの項目をカテゴリごとにまとめる。カテゴリはコアが返した順（同じ `group` が連続する
-/// 前提だが、離れていても最初に現れた位置にまとめる）。Web 画面とネイティブ画面で共有する
+/// 前提だが、離れていても最初に現れた位置にまとめる）。Web 画面（ブラウザ・WebView2）が使う
 pub(crate) fn desktop_groups(snapshot: &SettingsSnapshot) -> Vec<(String, Vec<&SettingItem>)> {
     let mut groups: Vec<(String, Vec<&SettingItem>)> = Vec::new();
     for i in snapshot.items.iter().filter(|i| is_desktop(i)) {

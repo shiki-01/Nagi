@@ -1,0 +1,132 @@
+/* Nagi 設定画面のモーション。Windows 11 の「設定」アプリのような、控えめで機能的な動きだけを足す。
+   app.css / userdict.css / keymap.js の後に読み込み、既存のクラス名に対するスタイルだけで効かせる（それらのファイルは変えない）。
+
+   約束:
+   - 時間は 120〜240ms。イージングは ease-out 系。派手な動き・常時動くものは入れない。
+   - ホバー・押下の要素そのものを transform で動かさない（端でホバーが外れてちらつくため。H-132）。
+     transform を使うのは、ページ切替・トースト・ダイアログ・サイドバーの縦線（疑似要素）だけ。
+   - transition は色・影・不透明度が中心。width / height の transition はスイッチのつまみと進捗バーだけ。
+   - フォーカス輪郭（outline）は即時（遅らせない）。アニメーション用の最適化ヒントは常時付けない。
+   - 動きを減らす設定・ハイコントラストでは、下のブロックで止める／減らす。 */
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --accent-wash: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ---- ページ切替: 内容が下から 8px、フェード＋スライドで現れる。最初の 6 枚は 30ms ずつずらす ----
+   .enter は app.js がページ id の変わったときだけ付ける（保存・再描画では付かない）。
+   fill は backwards のみ（終わったら transform を残さない。残すと後ろの固定配置・スクロールに影響する） */
+@keyframes motion-page-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes motion-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.page-body.enter > * { animation: motion-page-in var(--motion-base) var(--ease-out) backwards; }
+.page-body.enter > :nth-child(2) { animation-delay: 30ms; }
+.page-body.enter > :nth-child(3) { animation-delay: 60ms; }
+.page-body.enter > :nth-child(4) { animation-delay: 90ms; }
+.page-body.enter > :nth-child(5) { animation-delay: 120ms; }
+.page-body.enter > :nth-child(n+6) { animation-delay: 150ms; }
+
+/* ---- サイドバー: 背景はなめらかに。選択の縦線は scaleY で伸びる（疑似要素なので transform してよい） ---- */
+.nav-item { transition: background-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out); }
+.nav-item::before {
+  content: ""; position: absolute; left: 0; top: 50%; width: 3px; height: 16px; margin-top: -8px;
+  border-radius: 2px; background: var(--accent); transform: scaleY(0); opacity: 0;
+  transition: transform var(--motion-base) var(--ease-out), opacity var(--motion-fast) var(--ease-out);
+}
+.nav-item[aria-current="page"]::before { transform: scaleY(1); opacity: 1; }
+
+/* ---- トグルスイッチ: つまみが滑り、トラックの色が変わる。押している間はつまみが横に広がる（width の変化。transform は使わない） ---- */
+input.switch { transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out); }
+input.switch::after {
+  transition: left 150ms var(--ease-out), width 150ms var(--ease-out), height 150ms var(--ease-out), margin 150ms var(--ease-out), background-color 150ms var(--ease-out);
+}
+input.switch:active::after,
+.clickable:active input.switch::after { width: 17px; height: 14px; margin-top: -7px; left: 2px; }
+input.switch:checked:active::after,
+.clickable:active input.switch:checked::after { left: 19px; }
+
+/* ---- ボタン・入力欄・選択・押せる行: 色・枠・影だけをなめらかに（outline は含めない = フォーカス輪郭は即時） ---- */
+.btn, .field, .row.clickable, .kc-chip, .kc-tab, .kc-chip-btn, .kc-capture, .report-text {
+  transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+
+/* ---- ダイアログ: 背景がフェード、本体はフェード＋わずかに拡大（0.98→1）。閉じるときは 120ms で薄くなる。
+   @starting-style / transition-behavior: allow-discrete が使えない古いエンジンでは、動きなしで即座に開閉する（機能は同じ） ---- */
+dialog {
+  opacity: 0; transform: scale(0.98);
+  transition: opacity var(--motion-fast) var(--ease-in-out), transform var(--motion-fast) var(--ease-in-out),
+    overlay var(--motion-fast) allow-discrete, display var(--motion-fast) allow-discrete;
+}
+dialog[open] {
+  opacity: 1; transform: none;
+  transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out),
+    overlay var(--motion-base) allow-discrete, display var(--motion-base) allow-discrete;
+}
+@starting-style { dialog[open] { opacity: 0; transform: scale(0.98); } }
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0);
+  transition: background-color var(--motion-fast) var(--ease-in-out), overlay var(--motion-fast) allow-discrete, display var(--motion-fast) allow-discrete;
+}
+dialog[open]::backdrop { background: rgba(0, 0, 0, 0.3); transition-duration: var(--motion-base); }
+@starting-style { dialog[open]::backdrop { background: rgba(0, 0, 0, 0); } }
+
+/* ---- トースト: 下から 12px、フェード＋スライドで入り、フェードアウトで消える（消すタイミングは app.js が決める） ---- */
+@keyframes motion-toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes motion-toast-out { from { opacity: 1; } to { opacity: 0; transform: translateY(4px); } }
+.toast { animation: motion-toast-in var(--motion-base) var(--ease-out) backwards; }
+.toast.leaving { animation: motion-toast-out var(--motion-base) var(--ease-in-out) forwards; }
+
+/* ---- 動作確認: 進捗バーは width でなめらかに。進捗の帯は現れるときにフェード。結果行は上から順に（最大 10 件）。
+   ページ切替で出るときは上のページ切替の動きに任せる（二重にしない） ---- */
+.bar-fill { transition: width var(--motion-slow) var(--ease-out); }
+.progress { animation: motion-fade-in var(--motion-base) var(--ease-out) backwards; }
+.badge-slot .badge { animation: motion-fade-in var(--motion-fast) var(--ease-out) backwards; }
+.page-body:not(.enter) .diag-item:nth-child(-n+10) { animation: motion-fade-in var(--motion-base) var(--ease-out) backwards; }
+.page-body:not(.enter) .diag-item:nth-child(2) { animation-delay: 30ms; }
+.page-body:not(.enter) .diag-item:nth-child(3) { animation-delay: 60ms; }
+.page-body:not(.enter) .diag-item:nth-child(4) { animation-delay: 90ms; }
+.page-body:not(.enter) .diag-item:nth-child(5) { animation-delay: 120ms; }
+.page-body:not(.enter) .diag-item:nth-child(6) { animation-delay: 150ms; }
+.page-body:not(.enter) .diag-item:nth-child(7) { animation-delay: 180ms; }
+.page-body:not(.enter) .diag-item:nth-child(8) { animation-delay: 210ms; }
+.page-body:not(.enter) .diag-item:nth-child(9) { animation-delay: 240ms; }
+.page-body:not(.enter) .diag-item:nth-child(10) { animation-delay: 270ms; }
+
+/* ---- 折りたたみ（根拠・詳細）: 高さと不透明度で開閉。::details-content が無いエンジンでは動きなし ---- */
+@supports selector(::details-content) {
+  details { interpolate-size: allow-keywords; }
+  details::details-content {
+    block-size: 0; opacity: 0; overflow: clip;
+    transition: block-size var(--motion-base) var(--ease-out), opacity var(--motion-base) var(--ease-out),
+      content-visibility var(--motion-base) allow-discrete;
+  }
+  details[open]::details-content { block-size: auto; opacity: 1; }
+}
+
+/* ---- 保存した行の一瞬のハイライト（app.js が行に .saved を付ける。キー割当の .flash とは別） ---- */
+@keyframes motion-saved { from { background-color: var(--accent-wash); } }
+.row.saved { animation: motion-saved 1200ms var(--ease-out); }
+
+/* ---- ハイコントラスト: 色・影の動きは無くし、位置と不透明度だけ残す ---- */
+@media (forced-colors: active) {
+  .nav-item, .btn, .field, .row.clickable, .kc-chip, .kc-tab, .kc-chip-btn, .kc-capture, .report-text, input.switch { transition-property: none; }
+  input.switch::after { transition-property: left, width, height, margin; }
+  .row.saved { animation: none; }
+  dialog::backdrop { transition-property: none; }
+}
+
+/* ---- 動きを減らす設定: すべてのアニメーションと transition を止める（待ち時間も 0。遅延が残ると要素が見えないままになる） ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important; transition-delay: 0s !important;
+  }
+  .row.saved { animation: none !important; }
+}

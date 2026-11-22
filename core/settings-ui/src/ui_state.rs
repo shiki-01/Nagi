@@ -1,13 +1,13 @@
-//! 設定ウィンドウの UI の状態（「詳細設定を表示」・最後に開いたページ・ウィンドウの位置とサイズ）の保存と復元
-//! （OS 非依存の純粋ロジック）。`docs/decisions.md` H-118。
+//! 設定ウィンドウの UI の状態（ウィンドウの位置とサイズ。ほかに旧ネイティブ版が使った「詳細設定を表示」・
+//! 最後に開いたページも、ファイルの互換のため読み書きだけ残す）の保存と復元（OS 非依存の純粋ロジック）。
+//! `docs/decisions.md` H-118・H-136。
 //!
 //! 保存先は Windows では `%LOCALAPPDATA%\Nagi\settings-ui-state.json`（ログ・更新と同じ `Nagi` フォルダ。
 //! 設定の本体 `config.toml` とは別で、設定の項目ではない）。スキーマ番号つきの小さな JSON で、
 //! 書き込みは一時ファイル → 置き換えで原子的に行う。読めない・壊れている・知らない版のときは
 //! 既定の状態で起動する（項目ごとに検証し、有効な項目だけ使う）。入力内容は含まない。
 
-use crate::native_layout::Rect;
-use crate::native_model::Page;
+use crate::window_geom::Rect;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -39,9 +39,9 @@ pub struct WindowState {
 /// 保存する UI の状態
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UiState {
-    /// 「詳細設定を表示」
+    /// 「詳細設定を表示」（旧ネイティブ版の項目。いまは使わず、そのまま保つだけ）
     pub detail: bool,
-    /// 最後に開いていたページ（[`page_key`] の文字列）
+    /// 最後に開いていたページ（旧ネイティブ版の識別子。いまは使わず、そのまま保つだけ）
     pub page: Option<String>,
     /// ウィンドウの位置とサイズ
     pub window: Option<WindowState>,
@@ -154,28 +154,6 @@ pub fn save(path: &Path, state: &UiState) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
-}
-
-// ---- ページの識別 ----
-
-/// ページを保存用の文字列にする。読み込み中の表示（`Page::Status`）は保存しない。
-/// カテゴリは表示名（`title`）で識別する（添字は項目の増減で変わるため）
-pub fn page_key(page: Page, title: &str) -> Option<String> {
-    match page {
-        Page::Category(_) => Some(format!("category:{title}")),
-        Page::Update => Some("update".to_owned()),
-        Page::Data => Some("data".to_owned()),
-        Page::Extra(id) => Some(format!("extra:{id}")),
-        Page::Status => None,
-    }
-}
-
-/// 保存した文字列を、いま左の一覧にあるページへ戻す（`entries` は `(ページ, 表示名)`）。無ければ `None`
-pub fn resolve_page(key: &str, entries: &[(Page, String)]) -> Option<Page> {
-    entries
-        .iter()
-        .find(|(page, title)| page_key(*page, title).as_deref() == Some(key))
-        .map(|(page, _)| *page)
 }
 
 // ---- ウィンドウの位置 ----
@@ -377,39 +355,6 @@ mod tests {
         assert_eq!(default_path("linux", &env), None);
         assert_eq!(default_path("macos", &env), None);
         assert_eq!(default_path("windows", &|_| None), None);
-    }
-
-    fn entries() -> Vec<(Page, String)> {
-        vec![
-            (Page::Category(0), "入力".to_owned()),
-            (Page::Category(1), "変換".to_owned()),
-            (Page::Update, "更新".to_owned()),
-            (Page::Data, "データ・ファイル".to_owned()),
-            (Page::Extra("diag"), "動作確認".to_owned()),
-        ]
-    }
-
-    #[test]
-    fn page_keys_round_trip_through_the_sidebar() {
-        let entries = entries();
-        for (page, title) in &entries {
-            let key = page_key(*page, title).unwrap();
-            assert_eq!(resolve_page(&key, &entries), Some(*page), "{key}");
-        }
-        assert_eq!(page_key(Page::Status, "設定"), None);
-        // 無くなったページ・知らない識別子は復元しない（先頭のページで開く）
-        assert_eq!(resolve_page("category:消えた", &entries), None);
-        assert_eq!(resolve_page("extra:other", &entries), None);
-        assert_eq!(resolve_page("", &entries), None);
-        // カテゴリの並びが変わっても、名前で同じページに戻る
-        let reordered = vec![
-            (Page::Category(0), "変換".to_owned()),
-            (Page::Category(1), "入力".to_owned()),
-        ];
-        assert_eq!(
-            resolve_page("category:変換", &reordered),
-            Some(Page::Category(0))
-        );
     }
 
     const SCREEN: Rect = Rect {

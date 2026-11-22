@@ -234,6 +234,7 @@ fn static_files_are_served_with_the_token_and_the_right_types() {
     for (path, content_type) in [
         ("/app.css", "text/css"),
         ("/app.js", "text/javascript"),
+        ("/motion.css", "text/css"),
         ("/icon.svg", "image/svg+xml"),
     ] {
         let mut req = page_request();
@@ -995,7 +996,7 @@ fn diag_worker_panic_is_reported_and_unlocks() {
 }
 
 #[test]
-fn update_check_carries_the_same_wording_as_the_native_page() {
+fn update_check_carries_the_described_wording() {
     let (mut app, _, now) = app();
     let v = json_of(&app.handle(&api_request("/api/update/check", "{}"), now));
     // 既存の項目はそのまま。`view` が足される

@@ -11,6 +11,7 @@ const APP_JS: &str = include_str!("../assets/app.js");
 const KEYMAP_JS: &str = include_str!("../assets/keymap.js");
 const USERDICT_JS: &str = include_str!("../assets/userdict.js");
 const USERDICT_CSS: &str = include_str!("../assets/userdict.css");
+const MOTION_CSS: &str = include_str!("../assets/motion.css");
 const ICON_SVG: &str = include_str!("../assets/icon.svg");
 
 /// 配る静的ファイル 1 つ
@@ -25,7 +26,7 @@ pub struct StaticAsset {
 }
 
 /// 配る静的ファイルの一覧（HTML が参照するものだけ）
-pub const STATIC_ASSETS: [StaticAsset; 6] = [
+pub const STATIC_ASSETS: [StaticAsset; 7] = [
     StaticAsset {
         path: "/app.css",
         content_type: "text/css; charset=utf-8",
@@ -50,6 +51,11 @@ pub const STATIC_ASSETS: [StaticAsset; 6] = [
         path: "/userdict.css",
         content_type: "text/css; charset=utf-8",
         body: USERDICT_CSS,
+    },
+    StaticAsset {
+        path: "/motion.css",
+        content_type: "text/css; charset=utf-8",
+        body: MOTION_CSS,
     },
     StaticAsset {
         path: "/icon.svg",
@@ -82,8 +88,8 @@ pub fn render_page(token: &str) -> String {
     INDEX_HTML.replace("{{TOKEN}}", &escape(token))
 }
 
-/// テスト用: 埋め込みの素材（プレースホルダーつき）。順に HTML・CSS・JS・アイコン
+/// テスト用: 埋め込みの素材（プレースホルダーつき）。順に HTML・CSS・JS・アイコン・モーション CSS
 #[doc(hidden)]
-pub fn sources() -> [&'static str; 4] {
-    [INDEX_HTML, APP_CSS, APP_JS, ICON_SVG]
+pub fn sources() -> [&'static str; 5] {
+    [INDEX_HTML, APP_CSS, APP_JS, ICON_SVG, MOTION_CSS]
 }

@@ -1,14 +1,14 @@
-//! Windows 向けのビルドで、アプリケーションマニフェストとアイコンを埋め込む（ネイティブ設定ウィンドウ用）。
+//! Windows 向けのビルドで、アプリケーションマニフェストとアイコンを埋め込む（WebView2 の設定ウィンドウ用）。
 //!
 //! アイコンは exe のリソース ID 1 に `frontend-windows/assets/nagi.ico`（Nagi のロゴ）を入れる（H-115）。
 //! エクスプローラー・タスクバー・Alt+Tab・ショートカットに出るほか、ウィンドウのアイコンも同じリソースを読む
-//! （`src/native/window.rs` の `app_icon`）。
+//! （`src/webview.rs` のウィンドウクラスのアイコン）。
 //!
 //! マニフェスト:
 //!
 //! `embed_manifest::new_manifest` の既定値が次を含む:
 //! - Per-Monitor V2 の DPI 対応（モニターごとの拡大率でぼやけない）
-//! - Common Controls v6（ビジュアルスタイル。ボタン・コンボボックス等が現行の見た目になる）
+//! - Common Controls v6（WebView2 のウィンドウは使わないが、既定値に含まれるので害はない）
 //! - UTF-8 のアクティブコードページ
 //!
 //! MSVC はリンカーの `/MANIFEST`、GNU は `embed-manifest` が生成する COFF オブジェクトで埋め込む
@@ -51,7 +51,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         embed_icon();
-        // 既定値が Per-Monitor V2・Common Controls v6・UTF-8・Windows 7〜11 対応・asInvoker
+        // 既定値が Per-Monitor V2・Common Controls v6・UTF-8・Windows 7〜11 対応・asInvoker（必要なのは DPI 対応と UTF-8）
         if let Err(error) = embed_manifest(new_manifest("Nagi.Settings")) {
             // マニフェスト無しでも動く（見た目が古くなる）ので、ビルドは止めない
             println!("cargo:warning=マニフェストを埋め込めません: {error}");

@@ -5,8 +5,7 @@
 //! 判断（起動方式・ポート・メッセージ・ナビゲーションの許可）は OS 非依存の `webview_host` にあり、
 //! unsafe はこのモジュールに隔離する。
 //!
-//! 起動の流れ: COM（STA）→ WebView2 ランタイムの有無 → 多重起動の抑止（名前付きミューテックス。ネイティブ版と
-//! 同じ名前）→ 非表示のウィンドウ → 環境・コントローラー（ここまでで失敗したら `Err`。呼び出し側がネイティブ版へ
+//! 起動の流れ: COM（STA）→ WebView2 ランタイムの有無 → 多重起動の抑止（名前付きミューテックス）→ 非表示のウィンドウ → 環境・コントローラー（ここまでで失敗したら `Err`。呼び出し側が既定のブラウザへ
 //! フォールバックする。ウィンドウはまだ見えていない）→ 設定・ハンドラー → 表示 → サーバースレッドを起動
 //! （`imserver` の起動を待ってから URL を `WM_APP` で受け取り、`Navigate`）。ウィンドウを閉じるとすぐ隠し、
 //! サーバースレッド（`imserver` の終了を含む）を最大 6 秒待つ。
@@ -14,14 +13,14 @@
 
 use crate::backend::{FailedBackend, ImserverBackend, ImserverSpec, SettingsBackend};
 use crate::http::App;
-use crate::native_layout::{Rect, initial_client_size, scale, unscale};
-use crate::native_theme::{Rgb, ThemeKind};
-use crate::native_ui_state::{self, WindowState, clamp_to_monitors};
 use crate::opener::{Opener, SystemOpener};
+use crate::theme::{Rgb, ThemeKind};
+use crate::ui_state::{self, WindowState, clamp_to_monitors};
 use crate::webview_host::{
     BASE_TITLE, PageMessage, background_rgb, is_allowed_navigation, is_external_url,
     keep_context_menu_item, parse_page_message, window_title,
 };
+use crate::window_geom::{Rect, initial_client_size, scale, unscale};
 use crate::{run, token};
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -85,15 +84,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, HSTRING, Interface, PCWSTR, PWSTR};
 
-/// 多重起動の抑止に使うミューテックス（ネイティブ版 `native/window.rs` と同じ名前。どちらの方式でも 1 つだけ開く）
+/// 多重起動の抑止に使うミューテックス
 const MUTEX_NAME: &str = "Local\\NagiSettingsWindow";
-/// ウィンドウクラス名（ネイティブ版と同じ。別プロセスの 2 つ目の起動が `FindWindowW` で見つけて前面に出せる）
+/// ウィンドウクラス名（別プロセスの 2 つ目の起動が `FindWindowW` で見つけて前面に出せる）
 const MAIN_CLASS: &str = "NagiSettingsMainWindow";
 /// サーバースレッドが URL を用意できた（`imserver` の起動後）
 const WM_NAVIGATE: u32 = WM_APP + 21;
 /// ウィンドウを閉じたあと、サーバースレッド（`imserver` の終了を含む）を待つ最長時間
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(6);
-/// 最小のクライアント領域（dp）。Web 画面は幅に追従して並び替わるので、ネイティブ版より小さくできる
+/// 最小のクライアント領域（dp）。Web 画面は幅に追従して並び替わるので、小さくしても使える
 const MIN_CLIENT_W: i32 = 560;
 const MIN_CLIENT_H: i32 = 420;
 
@@ -115,7 +114,7 @@ pub struct WebViewOptions {
 
 /// ウィンドウを開き、閉じられるまで動かす。すでに開いている設定ウィンドウがあれば、それを前面に出して
 /// すぐ戻る（`Ok`）。WebView2 が使えない・初期化に失敗した（ウィンドウを表示する前）ときは `Err`
-/// （理由つき）。呼び出し側がネイティブ版へフォールバックできるよう、`Err` のときは何も残さない
+/// （理由つき）。呼び出し側が既定のブラウザへフォールバックできるよう、`Err` のときは何も残さない
 /// （ミューテックス・ウィンドウクラス・COM を解放済み）
 pub fn run(options: WebViewOptions) -> Result<(), String> {
     ensure_dpi_awareness();
@@ -132,7 +131,7 @@ pub fn run(options: WebViewOptions) -> Result<(), String> {
     let saved = options
         .ui_state_path
         .as_deref()
-        .map(native_ui_state::load)
+        .map(ui_state::load)
         .unwrap_or_default();
     let hwnd = create_window(saved.window.as_ref())?;
     let result = run_with_window(hwnd, options, saved.window.is_some_and(|w| w.maximized));
@@ -168,7 +167,7 @@ fn current_host() -> Option<Rc<Host>> {
 }
 
 fn run_with_window(hwnd: HWND, options: WebViewOptions, maximized: bool) -> Result<(), String> {
-    // 4. サーバーのソケット（ポートが要る。失敗したらネイティブ版に任せる）
+    // 4. サーバーのソケット（ポートが要る。失敗したら呼び出し側がブラウザで開く）
     let (server, port) = run::bind_preferred()?;
     let token_value = token::generate_token()?;
 
@@ -192,7 +191,7 @@ fn run_with_window(hwnd: HWND, options: WebViewOptions, maximized: bool) -> Resu
     });
     apply_theme(&host, true);
     if let Err(e) = configure(&host, &controller, &webview, options.devtools) {
-        // 表示前の失敗: WebView2 を閉じてから、呼び出し側がネイティブ版へフォールバックする
+        // 表示前の失敗: WebView2 を閉じてから、呼び出し側が既定のブラウザへフォールバックする
         let _ = unsafe { controller.Close() };
         let brush = host.brush.replace(HBRUSH::default());
         if !brush.is_invalid() {
@@ -324,7 +323,7 @@ impl Drop for ComGuard {
     }
 }
 
-/// 名前付きミューテックス。`Drop` で閉じる（フォールバック先のネイティブ版が同じ名前で取り直せるように）
+/// 名前付きミューテックス。`Drop` で閉じる（失敗後の再試行・別の起動が同じ名前で取り直せるように）
 struct MutexGuard(HANDLE);
 
 impl MutexGuard {
@@ -353,7 +352,7 @@ impl Drop for MutexGuard {
     }
 }
 
-/// ウィンドウクラス。`Drop` で登録を解除する（フォールバック先のネイティブ版が同じクラス名を登録できるように）
+/// ウィンドウクラス。`Drop` で登録を解除する（再登録できるように）
 struct ClassGuard;
 
 impl ClassGuard {
@@ -994,14 +993,14 @@ fn capture_window(host: &Host, prev: Option<WindowState>) -> Option<WindowState>
     })
 }
 
-/// ウィンドウの位置・サイズ・最大化を保存する（ネイティブ版の詳細設定・ページは書き換えない）。失敗しても何も出さない
+/// ウィンドウの位置・サイズ・最大化を保存する（旧版が書いた詳細設定・ページの項目は書き換えない）。失敗しても何も出さない
 fn persist_window(host: &Host) {
     let Some(path) = host.ui_state_path.as_deref() else {
         return;
     };
-    let mut state = native_ui_state::load(path);
+    let mut state = ui_state::load(path);
     state.window = capture_window(host, state.window);
-    let _ = native_ui_state::save(path, &state);
+    let _ = ui_state::save(path, &state);
 }
 
 fn on_navigate(host: &Host) {

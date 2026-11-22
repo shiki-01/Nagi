@@ -2474,6 +2474,8 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 
 ### H-130. Windows: 設定画面を WebView2 + Web UI に切り替え、ネイティブ版はフォールバックにする（2026-11-22、0.1.24、`97f8762`。ユーザー決定。**H-104 の「WebView2 案は不採用」を置き換える**）
 
+> **追記（H-136）**: 下の「フォールバックの優先順位」「ネイティブ版はフォールバック」の記述は **H-136 で置き換えた**。ネイティブ画面は削除し、WebView2 を使えないときのフォールバックは「既定のブラウザで `--web` の画面を開く」になった。
+
 - **決定の経緯**: H-104 は「ランタイム依存・埋め込みの複雑さに見合わない」として WebView2 を退け、ネイティブ（Win32）にした。そのネイティブ版を H-114・H-118・H-121 で磨いたが、**ネイティブ描画ではスクロールの滑らかさ・見た目の作り込みに限界がある**（GDI のダブルバッファ・背景キャッシュ・補間を足しても、Web の描画・レイアウトの水準に届かない）と判断し、ユーザーが WebView2 への切替を決めた。画面の中身は H-97 の Web 画面（`--web`）をそのまま育てる（H-131）ので、2 系統の画面を作り分けるコストも増えない。
 - **構成**: 既定（Windows）は WebView2 のウィンドウ。画面は `--web` と同じ**ローカル HTTP サーバー**（127.0.0.1・トークンつき。`http.rs`・`run.rs`）が返す Web 画面で、`webview.rs` は**ウィンドウと WebView2 のホストだけ**を持つ。`webview2-com` 0.39 を**直接使い**、`wry` / `tao` は使わない（`windows` 0.62 と版が揃う。MSVC は静的ローダー〈`WebView2LoaderStatic.lib` をリンクするので `WebView2Loader.dll` は同梱しない〉、GNU は動的ローダーで型検査だけ）。判断（起動方式・ポート・メッセージ・ナビゲーションの許可）は OS 非依存の `webview_host.rs` に置いて Linux でテストし、unsafe は `webview.rs` に隔離する。
 - **起動の流れ**: COM（STA）→ WebView2 ランタイムの有無 → 多重起動の抑止（名前付きミューテックス。ネイティブ版と同じ名前なので、どちらで開いていても 2 つ目は既存のウィンドウを前面に出す）→ 非表示のウィンドウ → 環境・コントローラー（ここまでで失敗したら `Err`。呼び出し側がネイティブ版へフォールバックする。ウィンドウはまだ見えていない）→ 設定・ハンドラー → 表示 → サーバースレッド（imserver の起動を待って URL を `WM_APP` で受け取り `Navigate`）。ウィンドウを閉じるとすぐ隠し、サーバースレッド（imserver の終了を含む）を最大 6 秒待つ。位置・大きさ・最大化は `settings-ui-state.json`（H-118）に保存・復元。ライト/ダーク・ハイコントラストは WebView2 がシステムに追従し、ページは `prefers-color-scheme` / `forced-colors` を使う。
@@ -2516,3 +2518,14 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 | 0.1.24 | 2026-11-22 | `97f8762` | WebView2 + Web UI、診断の HTTP API（H-130・H-131） | **診断は NG 0・要確認 0・OK 23。WebView2 の設定画面は問題なし**。言語のオプションの「オプション」「削除」は**未解決**（再起動後の確認待ち。H-126・H-129 の登録は反映済み） |
 
 配布は `windows-release.yml`（手動実行）で行った版。ワークフローの run 番号は記録していない（このまとめはバージョンを上げたコミットが根拠）。
+
+### H-136. Windows: ネイティブ設定画面を削除し、フォールバックを既定のブラウザにする（2026-11-22、ユーザー決定。H-130 のフォールバックを置き換える。Linux での単体テストと Windows 向けの型検査・clippy のみ・実機未確認）
+
+- **決定**: ネイティブ（Win32）の設定画面は不要。理由: (1) WebView2 + Web UI が既定になった 0.1.24 の実機で問題なし（H-130）。(2) WebView2 ランタイムは Windows 11 に標準搭載で、Windows 10 でも Edge の更新で入っていることが多い。(3) 2 つの画面（ネイティブと Web）を保守する費用が大きい。ネイティブの描画・レイアウト・スクロールは約 5,500 行（`native/`・`native_scroll.rs`）に加え、画面モデル・レイアウト計算・ワーカー・テーマなどの周辺（`native_*`）を含めて**約 11,000 行**を削除した（OS 非依存の共有部分を移した新規の約 1,000 行を除いても約 10,000 行の削減）。
+- **削除したもの**: `core/settings-ui/src/native/`、`native_scroll.rs`、`native_worker.rs` の `WorkerHandle`/`Command`/`Reply`/`Factory`、`native_model.rs` の `SettingsView`/`FieldView`/サイドバー・コントロール ID、`native_layout.rs` のレイアウト計算、`native_theme.rs` のパレット・トグル・バッジの描画寸法、`native_diag.rs` のページの行の計画（`plan_rows`）、`native_ui_state.rs` のページの識別（`page_key`/`resolve_page`）と、それらの単体テスト。`windows` クレートの feature `Win32_Graphics_GdiPlus`・`Win32_System_SystemServices`・`Win32_UI_Controls`・`Win32_UI_Input_KeyboardAndMouse`・`Win32_UI_Shell` も外した。
+- **残して改名したもの**（`native_` の接頭辞が実態に合わないため）: `native_ui_state` → `ui_state`（ウィンドウの位置・大きさの保存。旧ネイティブ版が書いた詳細設定・ページの項目は、読み書きだけ残して書き換えない）、`native_layout` の残り（`Rect`・`scale`/`unscale`・初期サイズ）→ `window_geom`、`native_theme` の残り（`Rgb`・`ThemeKind`）→ `theme`、`native_diag` + `native_worker` の `DiagProgress`/`CancelFlag` → `diag_model`（「動作確認」ページの状態。HTTP 側が使う）、`native_model` の更新確認の文言（`describe_update`・`update_headline`）→ `update_text`。
+- **起動の優先順位（変更後）**: Windows 以外は常にブラウザ → `--web`（ブラウザ）→ `--webview`（WebView2 に固定。使えなければフォールバックせずエラー終了）→ 既定（WebView2。**使えない・初期化に失敗したら既定のブラウザで `--web` の画面を開く**）。フォールバックした理由は標準エラーと `%LOCALAPPDATA%\Nagi\logs\settings-ui.log` に 1 行（「WebView2 を使えないため、既定のブラウザで開きます: <理由>」）。`Mode::WebView` の引数は `fallback_native` → `fallback_browser`。
+- **`--native` の扱い**: 廃止。古いショートカット・スクリプトを壊さないよう、**エラーにせず無視**し、警告を 1 行（`--native は廃止されました。無視して通常の方式で開きます`）ログに出す。`--web` / `--webview` との併用も可（排他は `--web` と `--webview` だけ）。
+- **失うもの**: (1) WebView2 ランタイムが無い Windows 10 でのネイティブ画面（代わりにブラウザで開く）。(2) `--native`（上記のとおり無視）。(3) フォールバック時の**多重起動の抑止**（ネイティブ版は名前付きミューテックスで 1 つだけ開いたが、ブラウザ版は抑止しない。起動するたびに新しいタブ・サーバーができる）と**ウィンドウの位置・大きさの保存**。ブラウザ版の性質は従来の `--web` と同じ: ブラウザのタブを閉じる、または 15 分間操作が無いと終了する。
+- **更新した文書**: `docs/windows-install.md`、`docs/real-hardware-checklist.md` §8.5c（ネイティブの項目を整理し、「WebView2 が無い環境でブラウザが開く」の確認を追加）、`docs/progress.md`、`CLAUDE.md`。H-104・H-114・H-118・H-121 は履歴なので書き換えない（ネイティブ版の記録として読む）。
+- **確認**: `cargo clippy -p nagi-settings-ui -p nagi-windows-tsf -p nagi-windows --all-targets --target x86_64-pc-windows-gnu -- -D warnings` と `cargo check -p nagi-settings-ui --target x86_64-pc-windows-gnu --all-targets` が通る。Windows 実機で、WebView2 を使えない環境でブラウザが開くことは**未確認**。
