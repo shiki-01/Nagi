@@ -1,15 +1,15 @@
 //! キー割当の編集 API（`/api/keymap/*`。すべて POST・JSON）。
 //!
 //! 検査（Host / Origin / トークン / メソッド / Content-Type / 本文の大きさ）は `http::App::handle` と
-//! `App::api` が済ませている。ここでは本文を型に読み、**固定の 6 メソッドだけ**をコアへ中継する
+//! `App::api` が済ませている。ここでは本文を型に読み、**固定の 7 メソッドだけ**をコアへ中継する
 //! （クライアントが任意の JSON-RPC メソッドを呼べないようにする）。キー・Action・TOML の意味の検査と
 //! `config.toml` への書き込みはすべてコア（`imserver`）が行い、ここには持たない。
 
 use super::{Response, backend_error};
 use crate::backend::SettingsBackend;
 use nagi_protocol::methods::{
-    GetKeymapParams, ImportKeymapParams, ResetKeymapParams, SetKeymapParams, ValidateKeymapParams,
-    method,
+    GetKeymapParams, ImportKeymapParams, ReplaceKeymapParams, ResetKeymapParams, SetKeymapParams,
+    ValidateKeymapParams, method,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -51,6 +51,10 @@ pub fn handle<B: SettingsBackend>(backend: &mut B, path: &str, body: &[u8]) -> R
         },
         "/api/keymap/set" => match read::<SetKeymapParams>(body) {
             Some(p) => relay(backend, method::SET_KEYMAP, &p),
+            None => bad_request(),
+        },
+        "/api/keymap/replace" => match read::<ReplaceKeymapParams>(body) {
+            Some(p) => relay(backend, method::REPLACE_KEYMAP, &p),
             None => bad_request(),
         },
         "/api/keymap/validate" => match read::<ValidateKeymapParams>(body) {
@@ -180,6 +184,11 @@ mod tests {
                 "set_keymap",
             ),
             (
+                "/api/keymap/replace",
+                r#"{"context":"composing","old_key":"F8","new_key":"Ctrl+Shift+y","action":"ToKatakana","disable_old":true}"#,
+                "replace_keymap",
+            ),
+            (
                 "/api/keymap/validate",
                 r#"{"toml":"[keymap.composing]\nF2 = \"Commit\"\n"}"#,
                 "validate_keymap",
@@ -242,6 +251,10 @@ mod tests {
             ("/api/keymap/set", "{}"),
             ("/api/keymap/set", r#"{"context":"bogus","key":"F2"}"#),
             ("/api/keymap/set", "not json"),
+            (
+                "/api/keymap/replace",
+                r#"{"context":"composing","old_key":"F8"}"#,
+            ),
             ("/api/keymap/validate", "{}"),
             ("/api/keymap/reset", r#"{"scope":"everything"}"#),
             ("/api/keymap/import", r#"{"merge":true}"#),

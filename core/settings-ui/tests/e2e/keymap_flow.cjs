@@ -73,20 +73,20 @@ async function flow(browser, url, v) {
   check((await page.locator("#kc-tab-converting").getAttribute("aria-selected")) === "true", "タブが選択状態になる");
   await mouseClick(page, page.locator("#kc-tab-composing"), "「入力中」タブ");
 
-  // 2) 行の「キーを追加」→ モーダルのダイアログ
+  // 2) 行の「キーを追加」→ モーダルのダイアログ（用語: 追加）
   const row = page.locator('.kc-row[data-action="ToKatakana"]');
   await row.waitFor();
   await mouseClick(page, row.locator(".kc-add"), "「キーを追加」");
   const dlg = page.locator("dialog[open]");
   await dlg.waitFor();
   const title = await dlg.locator("h2").innerText();
-  check(/『.+』のキーを割り当てる/.test(title), "見出し: " + title);
+  check(/『.+』のキーを追加する/.test(title), "見出し: " + title);
   check(await row.evaluate((r) => r.classList.contains("editing")), "操作中の行が強調される");
   const dbox = await dlg.boundingBox();
   check(dbox && dbox.x >= 0 && dbox.y >= 0 && dbox.x + dbox.width <= v.w && dbox.y + dbox.height <= v.h + 1, "ダイアログが画面内に収まる");
   check(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains("kc-capture")), "開くとキー入力欄に自動でフォーカスが入る");
-  check(/割り当てるキーを押してください/.test(await page.locator(".kc-capture").innerText()), "案内文: 割り当てるキーを押してください");
-  check(await dlg.locator(".kc-save").isDisabled(), "取り込み前は「割り当てる」が無効");
+  check(/新しいキーを押してください/.test(await page.locator(".kc-capture").innerText()), "案内文: 新しいキーを押してください");
+  check(await dlg.locator(".kc-save").isDisabled(), "取り込み前は「追加する」が無効");
   check(/キーを押す/.test(await dlg.locator(".kc-next").innerText()), "押せない理由が表示される");
   await shot("02-dialog-open");
 
@@ -94,13 +94,13 @@ async function flow(browser, url, v) {
   await page.keyboard.press("Control+Shift+KeyY");
   check((await page.locator(".kc-capture .kc-cap").allInnerTexts()).join("|") === "Ctrl|Shift|Y", "押したキーがキーチップで即座に出る");
   await page.waitForFunction(() => !document.querySelector(".kc-save").disabled, null, { timeout: 4000 });
-  check(true, "検証のあとに「割り当てる」が有効になる");
+  check(true, "検証のあとに「追加する」が有効になる");
   await shot("03-captured");
 
   // 4) 実クリックで確定 → トースト・行のハイライト・ダイアログが閉じる
-  await mouseClick(page, dlg.locator(".kc-save"), "「割り当てる」");
+  await mouseClick(page, dlg.locator(".kc-save"), "「追加する」");
   await page.waitForSelector(".toast");
-  check(/保存しました/.test(await page.locator(".toast").last().innerText()), "トースト: 保存しました");
+  check(/追加しました: Ctrl\+Shift\+Y/.test((await page.locator(".toast").allInnerTexts()).join(" ")), "トースト: 追加しました: Ctrl+Shift+Y（操作名）");
   check((await page.locator("dialog[open]").count()) === 0, "ダイアログが閉じる");
   check(await page.locator('.kc-row[data-action="ToKatakana"]').evaluate((r) => r.classList.contains("flash")), "保存した行がハイライトされる");
   const chip = page.locator('.kc-row[data-action="ToKatakana"] .kc-chip[data-key="Ctrl+Shift+y" i]');
@@ -113,8 +113,9 @@ async function flow(browser, url, v) {
   check(!(await page.locator('.kc-row[data-action="ToKatakana"]').evaluate((r) => r.classList.contains("flash"))), "ハイライトは数秒で消える");
   await mouseClick(page, chip, "キーチップ");
   await dlg.waitFor();
-  check(/変更する/.test(await dlg.locator("h2").innerText()), "チップを押すと変更のダイアログが開く");
-  check(await dlg.getByRole("button", { name: /このキーを解除/ }).count() === 1, "「このキーを解除」がある");
+  check(/変更する/.test(await dlg.locator("h2").innerText()), "ユーザーのキーのチップを押すと変更のダイアログが開く");
+  check(await dlg.getByRole("button", { name: /このキーを削除/ }).count() === 1, "「このキーを削除」がある");
+  check(/変更する/.test(await dlg.locator(".kc-save").innerText()), "確定ボタンは「変更する」");
   await shot("05-chip-dialog");
   await page.keyboard.press("Escape");
   check((await page.locator("dialog[open]").count()) === 0, "Esc でダイアログが閉じる");
@@ -137,7 +138,7 @@ async function flow(browser, url, v) {
   await page.keyboard.press("Shift+Tab");
   check(await page.evaluate(() => !!document.activeElement.closest("dialog")), "Shift+Tab でもダイアログの中にいる");
   await mouseClick(page, page.locator("dialog .kc-capture"), "キー入力欄");
-  check(/割り当てるキーを押してください/.test(await page.locator(".kc-capture").innerText()), "入力欄を押すと取り込み待ちの表示になる");
+  check(/新しいキーを押してください/.test(await page.locator(".kc-capture").innerText()), "入力欄を押すと取り込み待ちの表示になる");
   // IME 処理中（key が Process）でも、物理キー（code）から取り込む
   const viaCode = await page.evaluate(() => ["F8", "ArrowLeft", "Space", "Enter"].map((code) => window.NagiKeymapKeys.specFromEvent({ key: "Process", code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }).spec).join(","));
   check(viaCode === "F8,Left,Space,Enter", "IME 処理中でも F8・矢印・Space・Enter を取り込める: " + viaCode);
@@ -148,9 +149,9 @@ async function flow(browser, url, v) {
 
   // 7) チップから解除
   await mouseClick(page, chip, "キーチップ");
-  await mouseClick(page, dlg.getByRole("button", { name: /このキーを解除/ }), "「このキーを解除」");
+  await mouseClick(page, dlg.getByRole("button", { name: /このキーを削除/ }), "「このキーを削除」");
   await page.waitForFunction(() => !document.querySelector('.kc-chip[data-key="Ctrl+Shift+y" i]') && !document.querySelector("dialog[open]"));
-  check(/解除しました/.test(await page.locator(".toast").last().innerText()), "トースト: 解除しました");
+  check(/削除しました: Ctrl\+Shift\+Y/.test((await page.locator(".toast").allInnerTexts()).join(" ")), "トースト: 削除しました");
   await shot("06-removed");
 
   // 8) キーボードだけで一巡（Enter で開く → Ctrl+Shift+U を押す → 保存ボタンへ → Enter）
@@ -165,10 +166,95 @@ async function flow(browser, url, v) {
   check(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("data-key").toLowerCase() === "ctrl+shift+u"), "保存後、新しいキーのチップにフォーカスが移る（キーボード）");
   await page.keyboard.press("Enter");
   await dlg.waitFor();
-  await page.getByRole("button", { name: /このキーを解除/ }).focus();
+  await page.getByRole("button", { name: /このキーを削除/ }).focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => !document.querySelector('.kc-chip[data-key="Ctrl+Shift+u" i]'));
-  check(true, "キーボードだけで追加・変更ダイアログ・解除ができる");
+  check(true, "キーボードだけで追加・変更ダイアログ・削除ができる");
+
+  // 9) 既定のキー（入力中の F8 = 半角カナ）: 「別のキーに変更」「別のキーも追加」「無効にする」
+  const f8 = '.kc-row[data-action="ToHankakuKana"] .kc-chip[data-key="F8"]';
+  const newKey = '.kc-row[data-action="ToHankakuKana"] .kc-chip[data-key="Ctrl+Shift+e" i]';
+  const dlgTop = () => page.locator("dialog[open]").last();
+  const inNoOp = '.kc-row[data-action="NoOp"] .kc-chip[data-key="F8"]';
+  async function waitToast(re) {
+    await page.waitForFunction((src) => Array.from(document.querySelectorAll(".toast")).some((t) => new RegExp(src).test(t.innerText)), re.source, { timeout: 4000 }).catch(() => {});
+  }
+  async function waitSave() { await page.waitForFunction(() => { const b = document.querySelector("dialog[open] .kc-save"); return b && !b.disabled; }, null, { timeout: 4000 }); }
+  async function cleanup() {
+    // 後始末: ユーザーの割り当てをすべて削除して既定へ戻す（次の構成のため）
+    for (let i = 0; i < 4; i++) {
+      const chipUser = page.locator(".kc-chip.user").first();
+      if ((await chipUser.count()) === 0) break;
+      await mouseClick(page, chipUser, "ユーザーのキー");
+      await mouseClick(page, page.locator("dialog[open]").getByRole("button", { name: /このキーを削除/ }), "「このキーを削除」");
+      await page.waitForFunction(() => !document.querySelector("dialog[open]"));
+      await page.waitForTimeout(150);
+    }
+  }
+  // (a) 変更
+  await mouseClick(page, page.locator(f8), "F8 のキーチップ（既定）");
+  await dlg.waitFor();
+  const names = await dlg.locator(".kc-choice button").allInnerTexts();
+  check(names.join("|").replace(/\s+/g, "") === "別のキーに変更|別のキーも追加|無効にする", "既定のキーのダイアログのボタン: " + names.join(" / "));
+  const descs = await dlg.locator(".kc-choice .row-desc").allInnerTexts();
+  check(/『F8』は使えなくなり、新しいキーが有効/.test(descs[0]) && /『F8』も使えるまま/.test(descs[1]) && /『F8』を使えなくします/.test(descs[2]), "各ボタンの説明: " + descs.join(" / "));
+  check(await dlg.locator(".kc-choose-change").evaluate((b) => b.classList.contains("primary")) && !(await dlg.locator(".kc-choose-off").evaluate((b) => b.classList.contains("danger"))), "「別のキーに変更」が主要ボタン・「無効にする」は危険ボタンではない");
+  const cb = await dlg.boundingBox();
+  check(cb && cb.x >= 0 && cb.y >= 0 && cb.x + cb.width <= v.w && cb.y + cb.height <= v.h + 1, "選択のダイアログが画面内に収まる");
+  await shot("07-choose");
+  await mouseClick(page, dlg.locator(".kc-choose-change"), "「別のキーに変更」");
+  await page.waitForSelector("dialog[open] .kc-capture");
+  check(/『.+』のキーを変更する（いまは F8）/.test(await dlg.locator("h2").innerText()), "見出し: " + (await dlg.locator("h2").innerText()));
+  check(/『F8』は使えなくなり/.test(await dlg.innerText()), "元のキーが使えなくなる説明が出る");
+  check(/変更する/.test(await dlg.locator(".kc-save").innerText()), "確定ボタンは「変更する」");
+  await page.keyboard.press("F8");
+  check(await dlg.locator(".kc-save").isDisabled() && /同じ/.test(await dlg.locator(".kc-next").innerText()), "元と同じキーでは確定できない");
+  await shot("08-replace-same");
+  await page.keyboard.press("Control+Shift+KeyE");
+  await waitSave();
+  await shot("09-replace-captured");
+  await mouseClick(page, dlg.locator(".kc-save"), "「変更する」");
+  await waitToast(/変更しました/);
+  check(/変更しました: F8 → Ctrl\+Shift\+E（/.test((await page.locator(".toast").allInnerTexts()).join(" ")), "トースト: " + ((await page.locator(".toast").allInnerTexts()).join(" ")));
+  check((await page.locator(f8).count()) === 0 && (await page.locator(inNoOp).count()) === 1, "元の F8 は半角カナの行から外れ、無効（何もしない）になる");
+  check((await page.locator(newKey).count()) === 1, "新しいキーが半角カナの行に並ぶ");
+  await shot("10-replaced");
+  await cleanup();
+  check((await page.locator(f8).count()) === 1 && (await page.locator(".kc-chip.user").count()) === 0, "削除すると F8 が既定へ戻る");
+
+  // (b) 追加（元のキーも残る）
+  await mouseClick(page, page.locator(f8), "F8 のキーチップ（既定）");
+  await mouseClick(page, dlgTop().locator(".kc-choose-add"), "「別のキーも追加」");
+  await page.waitForSelector("dialog[open] .kc-capture");
+  check(/『.+』のキーを追加する/.test(await dlgTop().locator("h2").innerText()) && /追加する/.test(await dlgTop().locator(".kc-save").innerText()), "追加のダイアログ: " + (await dlgTop().locator("h2").innerText()));
+  check(/『F8』も使えるまま/.test(await dlgTop().innerText()), "元のキーが残る説明が出る");
+  await page.keyboard.press("Control+Shift+KeyE");
+  await waitSave();
+  await mouseClick(page, dlgTop().locator(".kc-save"), "「追加する」");
+  await waitToast(/追加しました: Ctrl\+Shift\+E/);
+  check(/追加しました: Ctrl\+Shift\+E/.test((await page.locator(".toast").allInnerTexts()).join(" ")), "トースト: " + ((await page.locator(".toast").allInnerTexts()).join(" ")));
+  check((await page.locator(f8).count()) === 1 && (await page.locator(newKey).count()) === 1, "F8 と新しいキーの両方が半角カナの行にある");
+  await shot("11-added");
+  await cleanup();
+
+  // (c) 無効にする（確認 → 無効）
+  await mouseClick(page, page.locator(f8), "F8 のキーチップ（既定）");
+  await mouseClick(page, dlgTop().locator(".kc-choose-off"), "「無効にする」");
+  await page.waitForFunction(() => document.querySelectorAll("dialog[open]").length === 2);
+  check(/無効にしますか/.test(await dlgTop().locator("h2").innerText()), "確認ダイアログ: " + (await dlgTop().locator("h2").innerText()));
+  await shot("12-confirm-disable");
+  await mouseClick(page, dlgTop().getByRole("button", { name: "無効にする" }), "確認の「無効にする」");
+  await page.waitForFunction(() => !document.querySelector("dialog[open]"));
+  await waitToast(/無効にしました/);
+  check(/無効にしました: F8/.test((await page.locator(".toast").allInnerTexts()).join(" ")), "トースト: " + ((await page.locator(".toast").allInnerTexts()).join(" ")));
+  check((await page.locator(f8).count()) === 0 && (await page.locator(inNoOp).count()) === 1, "F8 が無効（何もしない）になる");
+  await shot("13-disabled");
+  await cleanup();
+  check((await page.locator(f8).count()) === 1, "後始末で F8 が既定へ戻る");
+  // 選択ダイアログのキャンセルでフォーカスが戻る
+  await mouseClick(page, page.locator(f8), "F8 のキーチップ（既定）");
+  await page.keyboard.press("Escape");
+  check(await page.evaluate(() => document.activeElement && document.activeElement.getAttribute("data-key") === "F8"), "選択ダイアログを Esc で閉じるとチップへフォーカスが戻る");
   // 窓を最大にしなくても入る幅か（横スクロールが無い）
   check(await page.evaluate(() => document.getElementById("main").scrollWidth <= document.getElementById("main").clientWidth + 1), "横スクロールが出ない");
   check(errors.length === 0, "コンソールにエラーが無い" + (errors.length ? ": " + errors.join(" / ") : ""));

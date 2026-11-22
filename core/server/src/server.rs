@@ -15,10 +15,10 @@ use nagi_protocol::methods::{
     GetKeymapParams, GlideInputParams, ImportKeymapParams, ImportSkipReason, ImportUserDictParams,
     ImportUserDictResult, InitializeParams, InitializeResult, InsertReadingTouchParams,
     ListSuppressedResult, NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams,
-    ReloadConfigResult, RestoreSessionParams, SelectCandidateParams, ServerCapabilities,
-    SessionParams, SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams,
-    SuppressCandidateParams, SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams,
-    UserDictFormat, ValidateKeymapParams, method,
+    ReloadConfigResult, ReplaceKeymapParams, RestoreSessionParams, SelectCandidateParams,
+    ServerCapabilities, SessionParams, SetContextParams, SetEnvironmentParams,
+    SetLayoutGeometryParams, SuppressCandidateParams, SuppressedItem, UpdateCandidatesParams,
+    UpdatePreeditParams, UserDictFormat, ValidateKeymapParams, method,
 };
 use nagi_protocol::methods::{
     EditKeymapResult, ExportKeymapResult, ResetKeymapParams, SetKeymapParams,
@@ -904,6 +904,17 @@ impl Server {
                     context: p.context,
                     key: p.key,
                     action: p.action,
+                })
+            }
+            method::REPLACE_KEYMAP => {
+                self.require_initialized()?;
+                let p: ReplaceKeymapParams = params(req)?;
+                self.edit_keymap(crate::keymap_tools::EditRequest::Replace {
+                    context: p.context,
+                    old_key: p.old_key,
+                    new_key: p.new_key,
+                    action: p.action,
+                    disable_old: p.disable_old,
                 })
             }
             method::RESET_KEYMAP => {

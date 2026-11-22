@@ -50,6 +50,8 @@ pub mod method {
     pub const VALIDATE_KEYMAP: &str = "validate_keymap";
     /// `set_keymap` メソッド（1 キーの割当を `config.toml` の `[keymap.*]` に保存・解除する）
     pub const SET_KEYMAP: &str = "set_keymap";
+    /// `replace_keymap` メソッド（あるキーを別のキーに置き換える。古いキーの解除・無効化と新しいキーの割当を 1 回の保存で行う）
+    pub const REPLACE_KEYMAP: &str = "replace_keymap";
     /// `reset_keymap` メソッド（文脈ごと・全体の利用者の上書きを消す）
     pub const RESET_KEYMAP: &str = "reset_keymap";
     /// `export_keymap` メソッド（利用者の上書きを `[keymap.*]` の TOML 断片で返す）
@@ -1164,6 +1166,25 @@ pub struct SetKeymapParams {
     /// （既定・プリセットの割当があればそれに戻る）
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub action: Option<String>,
+}
+
+/// `replace_keymap` メソッドの要求パラメータ（キーの付け替え。`config.toml` への書き込みは 1 回で、
+/// 途中の状態は作らない）
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplaceKeymapParams {
+    /// 文脈。上書きできるのは `composing` / `converting` だけ
+    pub context: KeymapContext,
+    /// 置き換える（元の）キー
+    pub old_key: String,
+    /// 新しいキー。検証（二重割当・重要キー・OS 予約キーなど）はこのキーに対して行い、警告は応答に入る
+    pub new_key: String,
+    /// 新しいキーに割り当てる Action 名
+    pub action: String,
+    /// `true` なら元のキーを `NoOp`（何もしない）で上書きして無効にする（既定・プリセット由来のキー）。
+    /// `false` なら元のキーの利用者の上書きを解除する（既定・プリセットの割当があればそれに戻る）
+    #[serde(default)]
+    pub disable_old: bool,
 }
 
 /// `reset_keymap` の範囲

@@ -281,3 +281,83 @@ fn edits_require_initialize_and_a_config_path() {
     let r = rpc(&mut s, "export_keymap", json!({}));
     assert_eq!(r["result"]["toml"], "");
 }
+
+#[test]
+fn replace_disables_the_default_key_and_binds_the_new_one_in_one_write() {
+    let src = "# 私の設定\n[update]\nauto_check = false\n";
+    let (mut s, path) = server_with_config("replace", Some(src));
+    let r = rpc(
+        &mut s,
+        "replace_keymap",
+        json!({"context":"composing","old_key":"F8","new_key":"Ctrl+Shift+y","action":"ToHankakuKana","disable_old":true}),
+    );
+    assert!(r.get("error").is_none(), "{r}");
+    let keymap = &r["result"]["keymap"];
+    assert_eq!(
+        binding(keymap, "composing", "F8"),
+        Some(("NoOp".into(), "user".into()))
+    );
+    assert_eq!(
+        binding(keymap, "composing", "Ctrl+Shift+y"),
+        Some(("ToHankakuKana".into(), "user".into()))
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("# 私の設定") && text.contains("auto_check = false"),
+        "{text}"
+    );
+    // 同じキーへの付け替え・解釈できないキーは断り、ファイルを変えない
+    for params in [
+        json!({"context":"composing","old_key":"F8","new_key":"f8","action":"ToHankakuKana","disable_old":true}),
+        json!({"context":"composing","old_key":"F9","new_key":"NotAKey","action":"ToHankakuKana","disable_old":true}),
+        json!({"context":"composing","old_key":"NotAKey","new_key":"F2","action":"Commit","disable_old":true}),
+        json!({"context":"composing","old_key":"F9","new_key":"F2","action":"NotAnAction","disable_old":true}),
+        json!({"context":"direct","old_key":"F9","new_key":"F2","action":"Commit"}),
+    ] {
+        let before = std::fs::read_to_string(&path).unwrap();
+        let r = rpc(&mut s, "replace_keymap", params.clone());
+        assert_eq!(r["error"]["code"], -32602, "{params} {r}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "{params}");
+    }
+}
+
+#[test]
+fn replace_a_user_binding_removes_it_and_returns_the_old_key_to_the_default() {
+    let (mut s, path) = server_with_config(
+        "replace_user",
+        Some("[keymap.composing]\nF8 = \"ToKatakana\"\n"),
+    );
+    let r = rpc(
+        &mut s,
+        "replace_keymap",
+        json!({"context":"composing","old_key":"F8","new_key":"Ctrl+Shift+y","action":"ToKatakana"}),
+    );
+    assert!(r.get("error").is_none(), "{r}");
+    let keymap = &r["result"]["keymap"];
+    // 元のキーはユーザーの割当が消え、既定（半角カナ）に戻る
+    assert_eq!(
+        binding(keymap, "composing", "F8"),
+        Some(("ToHankakuKana".into(), "default".into()))
+    );
+    assert_eq!(
+        binding(keymap, "composing", "Ctrl+Shift+y"),
+        Some(("ToKatakana".into(), "user".into()))
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("F8"), "{text}");
+}
+
+#[test]
+fn replace_returns_warnings_for_the_new_key_but_saves() {
+    let (mut s, _) = server_with_config("replace_warn", None);
+    let r = rpc(
+        &mut s,
+        "replace_keymap",
+        json!({"context":"converting","old_key":"F8","new_key":"Enter","action":"Cancel","disable_old":true}),
+    );
+    assert!(r.get("error").is_none(), "{r}");
+    assert!(
+        !r["result"]["warnings"].as_array().unwrap().is_empty(),
+        "{r}"
+    );
+}

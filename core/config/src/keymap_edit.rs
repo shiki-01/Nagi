@@ -19,6 +19,19 @@ pub enum KeymapEdit {
         /// Action 仕様文字列。`None` = 上書きを消す
         action: Option<String>,
     },
+    /// キーの付け替え（1 回の書き換えで、元のキーの解除・無効化と新しいキーの割当を行う）
+    Swap {
+        /// 文脈
+        context: FragmentContext,
+        /// 元のキー
+        old_key: String,
+        /// 元のキーに書く Action（`Some("NoOp")` で無効化、`None` で上書きを消す）
+        old_action: Option<String>,
+        /// 新しいキー
+        new_key: String,
+        /// 新しいキーの Action
+        new_action: String,
+    },
     /// 1 つの文脈の上書きをすべて消す
     ClearContext(FragmentContext),
     /// すべての文脈の上書きを消す（`preset` は残す）
@@ -58,6 +71,16 @@ pub fn edit_keymap(
             key,
             action,
         } => set_binding(&mut doc, *context, key, action.as_deref(), same_key)?,
+        KeymapEdit::Swap {
+            context,
+            old_key,
+            old_action,
+            new_key,
+            new_action,
+        } => {
+            set_binding(&mut doc, *context, old_key, old_action.as_deref(), same_key)?;
+            set_binding(&mut doc, *context, new_key, Some(new_action), same_key)?;
+        }
         KeymapEdit::ClearContext(context) => clear_context(&mut doc, *context)?,
         KeymapEdit::ClearAll => {
             for context in CONTEXTS {
@@ -237,6 +260,34 @@ mod tests {
     }
 
     use FragmentContext::{Composing, Converting};
+
+    #[test]
+    fn swap_disables_or_removes_the_old_key_and_sets_the_new_one_in_one_edit() {
+        let swap = |src: Option<&str>, old_action: Option<&str>| {
+            edit_keymap(
+                src,
+                &KeymapEdit::Swap {
+                    context: Composing,
+                    old_key: "F8".into(),
+                    old_action: old_action.map(str::to_string),
+                    new_key: "Ctrl+Shift+y".into(),
+                    new_action: "ToHankakuKana".into(),
+                },
+                &same,
+            )
+            .unwrap()
+        };
+        // 既定のキーを無効にして付け替える
+        assert_eq!(
+            swap(Some("x = 1\n"), Some("NoOp")),
+            "x = 1\n\n[keymap.composing]\nF8 = \"NoOp\"\n\"Ctrl+Shift+y\" = \"ToHankakuKana\"\n"
+        );
+        // ユーザーの割り当てなら、元のキーの行を消して新しいキーを書く
+        assert_eq!(
+            swap(Some("[keymap.composing]\nF8 = \"ToKatakana\"\n"), None),
+            "[keymap.composing]\n\"Ctrl+Shift+y\" = \"ToHankakuKana\"\n"
+        );
+    }
 
     #[test]
     fn creates_the_table_in_an_empty_or_missing_file() {

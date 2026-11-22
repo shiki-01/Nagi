@@ -43,6 +43,16 @@
   var srLive = document.getElementById("sr-live");
   var detailToggle = document.getElementById("detail-toggle");
 
+  // 表示用の文字列。この画面は Windows でしか出ないので、記述子の「（Windows のみ）」の注記は表示しない
+  // （記述子は macOS の設定画面と共有で、そちらでは必要）。文中の「Windows」の言及は消さない
+  function displayText(s) {
+    if (typeof s !== "string") return s;
+    return s
+      .replace(/[\s\u3000]*[（(][\s\u3000]*Windows[\s\u3000]*のみ[\s\u3000]*[）)]/g, "")
+      .replace(/[\s\u3000]*Windows[\s\u3000]*のみ(?=[。、.,\s\u3000]|$)/g, "");
+  }
+  window.NagiDisplayText = displayText;
+
   // ---- 小さな DOM 補助 ----
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -136,7 +146,7 @@
   }
 
   function toast(message, isError) {
-    var node = el("div", { "class": "toast" + (isError ? " error" : "") }, [icon(isError ? "alert" : "check"), el("span", { text: message })]);
+    var node = el("div", { "class": "toast" + (isError ? " error" : "") }, [icon(isError ? "alert" : "check"), el("span", { text: displayText(message) })]);
     toastsEl.appendChild(node);
     while (toastsEl.children.length > 3) toastsEl.removeChild(toastsEl.firstChild);
     window.setTimeout(function () {
@@ -165,7 +175,7 @@
     "学習": { group: "dict", order: 40, title: "学習の設定" },
     "候補ウィンドウ": { group: "display", order: 10 },
     "通知・モード表示": { group: "display", order: 20 },
-    "Windows の表示": { group: "display", order: 30, title: "Windows での表示" },
+    "Windows の表示": { group: "display", order: 30, title: "タスクバーのアイコン" },
     "動作モード": { group: "system", order: 10 },
     "アプリごとの設定": { group: "system", order: 20 },
     "アップデート": { group: "system", order: 70, title: "自動更新の設定" }
@@ -198,7 +208,7 @@
     if (screen) {
       visibleGroups().forEach(function (g) {
         var nav = categoryNav(g.name);
-        add({ id: "cat:" + g.name, title: nav.title || g.name, icon: categoryIcon(g.name), group: nav.group, order: nav.order });
+        add({ id: "cat:" + g.name, title: displayText(nav.title || g.name), icon: categoryIcon(g.name), group: nav.group, order: nav.order });
       });
       extraPages().forEach(function (x) {
         var d = EXTRA_NAV[x.id] || {};
@@ -265,20 +275,20 @@
     markNav();
     renderPage(changed);
     var p = findPage(id);
-    if (changed && p) announce(p.title + "のページ");
+    if (changed && p) announce(displayText(p.title) + "のページ");
   }
 
   // ---- ページの共通部品 ----
   // ページ見出し（題と、必要なら 1 行の説明だけ。飾りは付けない）
   function hero(title, lead) {
     return el("header", { "class": "hero" }, [
-      el("h1", { id: "page-title", text: title }),
-      lead ? el("p", { "class": "lead", text: lead }) : null
+      el("h1", { id: "page-title", text: displayText(title) }),
+      lead ? el("p", { "class": "lead", text: displayText(lead) }) : null
     ]);
   }
   function section(title, meta, body) {
     var id = "sec-" + (++idCounter);
-    var head = el("div", { "class": "section-head" }, [el("h2", { id: id, text: title })]);
+    var head = el("div", { "class": "section-head" }, [el("h2", { id: id, text: displayText(title) })]);
     if (meta) head.appendChild(el("span", { "class": "meta", text: meta }));
     return el("section", { "class": "section", "aria-labelledby": id }, [head, body]);
   }
@@ -324,7 +334,7 @@
     else if (page === "diag") body.appendChild(pageDiag());
     else if (extraPage(page)) body.appendChild(extraPage(page).render(pageApi));
     else body.appendChild(pageCategory(page.slice(4)));
-    document.title = p.title + " - Nagi 設定";
+    document.title = displayText(p.title) + " - Nagi 設定";
     mainEl.scrollTop = keepScroll;
   }
   function frag(nodes) {
@@ -361,7 +371,7 @@
   function pageCategory(name) {
     var group = null;
     screen.groups.forEach(function (g) { if (g.name === name) group = g; });
-    var shown = categoryNav(name).title || name;
+    var shown = displayText(categoryNav(name).title || name);
     if (!group) return hero(shown, "");
     var simple = group.items.filter(function (i) { return i.level === "simple"; });
     var deep = detail ? group.items.filter(function (i) { return i.level !== "simple"; }) : [];
@@ -439,10 +449,10 @@
     var descId = id + "-desc";
     var ref = { item: item };
     rowRefs[item.key] = ref;
-    var label = el("label", { "class": "row-label", "for": id }, [el("span", { text: item.label })]);
+    var label = el("label", { "class": "row-label", "for": id }, [el("span", { text: displayText(item.label) })]);
     if (isDetail) label.appendChild(el("span", { "class": "tag detail", text: "詳細" }));
     if (item.requires_restart) label.appendChild(el("span", { "class": "tag restart", text: "再起動が必要" }));
-    var main = el("div", { "class": "row-main" }, [label, el("p", { "class": "row-desc", id: descId, text: item.description })]);
+    var main = el("div", { "class": "row-main" }, [label, el("p", { "class": "row-desc", id: descId, text: displayText(item.description) })]);
     var range = rangeText(item);
     if (range) main.appendChild(el("p", { "class": "row-desc", text: range }));
     if (item.requires_restart) main.appendChild(el("p", { "class": "row-hint", text: RESTART_HINT }));
@@ -481,7 +491,7 @@
     ref.resetSlot.textContent = "";
     if (item.explicit) {
       var reset = button("既定に戻す", "quiet sm", null, function () { commit(ref.item, null); });
-      reset.setAttribute("aria-label", item.label + "を既定に戻す");
+      reset.setAttribute("aria-label", displayText(item.label) + "を既定に戻す");
       ref.resetSlot.appendChild(reset);
     }
     var message = errors[item.key];

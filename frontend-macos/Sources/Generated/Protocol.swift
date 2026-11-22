@@ -1681,6 +1681,30 @@ public struct RemoveUserDictEntriesResult: Codable {
 	}
 }
 
+/// `replace_keymap` メソッドの要求パラメータ（キーの付け替え。`config.toml` への書き込みは 1 回で、
+/// 途中の状態は作らない）
+public struct ReplaceKeymapParams: Codable {
+	/// 文脈。上書きできるのは `composing` / `converting` だけ
+	public let context: KeymapContext
+	/// 置き換える（元の）キー
+	public let old_key: String
+	/// 新しいキー。検証（二重割当・重要キー・OS 予約キーなど）はこのキーに対して行い、警告は応答に入る
+	public let new_key: String
+	/// 新しいキーに割り当てる Action 名
+	public let action: String
+	/// `true` なら元のキーを `NoOp`（何もしない）で上書きして無効にする（既定・プリセット由来のキー）。
+	/// `false` なら元のキーの利用者の上書きを解除する（既定・プリセットの割当があればそれに戻る）
+	public let disable_old: Bool?
+
+	public init(context: KeymapContext, old_key: String, new_key: String, action: String, disable_old: Bool?) {
+		self.context = context
+		self.old_key = old_key
+		self.new_key = new_key
+		self.action = action
+		self.disable_old = disable_old
+	}
+}
+
 /// `reset_keymap` の範囲
 public enum KeymapResetScope: String, Codable {
 	/// 指定した文脈の利用者の上書きをすべて消す

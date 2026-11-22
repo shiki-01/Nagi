@@ -321,7 +321,7 @@
     }
     wrap.appendChild(toolbar(ctx));
     if (ctx.note) wrap.appendChild(UI.el("div", { "class": "kc-note" }, [UI.icon("lock"), UI.el("p", { text: ctx.note })]));
-    if (ctx.editable) wrap.appendChild(UI.el("p", { "class": "kc-guide", text: "キーの表示を押すと、そのキーを変更・解除できます。「キーを追加」で、その操作に別のキーを足せます。" }));
+    if (ctx.editable) wrap.appendChild(UI.el("p", { "class": "kc-guide", text: "キーの表示を押すと、そのキーを変更・無効化・削除できます。「キーを追加」で、その操作に別のキーを足せます。" }));
     var panel = UI.el("div", { id: "kc-panel", role: "tabpanel", "aria-labelledby": "kc-tab-" + ctx.id });
     panel.appendChild(table(ctx));
     wrap.appendChild(panel);
@@ -366,7 +366,7 @@
     var only = UI.el("input", { type: "checkbox", role: "switch", "class": "switch", id: "kc-only-user" });
     only.checked = S.userOnly;
     only.addEventListener("change", function () { S.userOnly = only.checked; paintBindings(); });
-    var assign = UI.button("キーを割り当てる", "primary kc-assign-top", "plus", function () { openAssign({ context: ctx.editable ? ctx.id : "composing" }); });
+    var assign = UI.button("キーを追加", "primary kc-assign-top", "plus", function () { openAssign({ mode: "add", context: ctx.editable ? ctx.id : "composing" }); });
     if (!ctx.editable) { assign.disabled = true; assign.title = "この場面のキーは変更できません"; }
     refs.tablePaint = function () {
       var panel = document.getElementById("kc-panel");
@@ -436,7 +436,7 @@
     if (row.keys.length === 0) chips.appendChild(UI.el("span", { "class": "kc-none", text: "未割り当て" }));
     var ops = UI.el("div", { "class": "kc-ops" });
     if (ctx.editable) {
-      var add = UI.button("キーを追加", "sm kc-add", "plus", function () { openAssign({ context: ctx.id, action: row.action }); });
+      var add = UI.button("キーを追加", "sm kc-add", "plus", function () { openAssign({ mode: "add", context: ctx.id, action: row.action }); });
       add.setAttribute("aria-label", actionLabel(row.action) + "にキーを追加");
       ops.appendChild(add);
       var mine = row.keys.filter(function (b) { return b.source === "user"; });
@@ -461,15 +461,15 @@
     var cls = "kc-chip " + src.cls;
     if (S.flash && S.flash.context === ctx.id && S.flash.action === row.action && S.flash.key && normKey(S.flash.key) === normKey(b.key)) cls += " flash";
     if (!ctx.editable) return UI.el("span", { "class": cls, "data-key": b.key }, kids);
-    // 編集できる場面のキーは、押せるボタン（押すと変更・解除のダイアログが開く）
+    // 編集できる場面のキーは、押せるボタン（押すと変更・追加・無効化・削除のダイアログが開く）
     kids.push(UI.icon("pencil"));
     var node = UI.el("button", {
       type: "button", "class": cls, "data-key": b.key, "aria-haspopup": "dialog",
-      "aria-label": "『" + actionLabel(b.action) + "』のキー " + name + "（" + src.label + "）。押すと" + (b.source === "user" ? "変更・解除" : "操作の変更・無効化") + "ができます"
+      "aria-label": "『" + actionLabel(b.action) + "』のキー " + name + "（" + src.label + "）。押すと" + (b.source === "user" ? "変更・削除" : "変更・追加・無効化") + "ができます"
     }, kids);
     node.addEventListener("click", function () {
-      if (b.source === "user") openAssign({ context: ctx.id, action: b.action, key: b.key, oldKey: b.key });
-      else openAssign({ context: ctx.id, action: b.action, key: b.key, lockKey: true });
+      if (b.source === "user") openAssign({ mode: "replace", context: ctx.id, action: b.action, key: b.key, oldKey: b.key, disableOld: false });
+      else openChoose(ctx.id, b);
     });
     return node;
   }
@@ -508,7 +508,7 @@
       setFlash(context, b.action, null);
       adopt(r);
       showFlash(false);
-      var msg = "解除しました（" + displayParts(b.key).join("+") + "）";
+      var msg = "削除しました: " + displayParts(b.key).join("+") + "（" + actionLabel(b.action) + "）";
       UI.toast(msg, false);
       UI.announce(msg);
     }, function (e) { UI.toast(e.message, true); });
@@ -516,7 +516,7 @@
   function disableBinding(context, b) {
     return confirmBox({
       title: "このキーを無効にしますか？",
-      lines: [displayParts(b.key).join(" + ") + " を「何もしない」に割り当てます。このキーは押されても消費され、" + actionLabel(b.action) + "は実行されません。「ユーザー」の割り当てとして残るので、あとから解除して元に戻せます。"],
+      lines: [displayParts(b.key).join(" + ") + " を「何もしない」に割り当てて、使えなくします。このキーを押しても「" + actionLabel(b.action) + "」は実行されません。「ユーザー」の割り当てとして残るので、あとで削除して元に戻せます。"],
       ok: "無効にする"
     }).then(function (ok) {
       if (!ok) return false;
@@ -524,7 +524,7 @@
         setFlash(context, "NoOp", b.key);
         adopt(r);
         showFlash(false);
-        UI.toast("無効にしました", false);
+        UI.toast("無効にしました: " + displayParts(b.key).join("+") + "（" + actionLabel(b.action) + "）", false);
         return true;
       });
     }).then(null, function (e) { UI.toast(e.message, true); return false; });
@@ -586,28 +586,77 @@
     });
   }
 
-  // opts: {context, action?, key?, oldKey?, lockKey?}
-  //   action 無し: 場面と操作を選んでキーを割り当てる（上のボタン）／ action あり: その操作にキーを追加（行のボタン）
-  //   oldKey あり: 「変更」（新しいキーを保存し、古いユーザー割当を解除）／ lockKey: 既定・プリセットのキーの操作を変える
-  function openAssign(opts) {
-    var state = { context: opts.context, action: opts.action || "", key: opts.key || "", result: null, seq: 0, timer: 0, busy: false };
-    var ed = { context: opts.context, rowAction: opts.action || "", chipKey: opts.oldKey || (opts.lockKey ? opts.key : "") || "" };
+  // ---- 既定・プリセットのキー: どうするかを選ぶダイアログ（変更 / 追加 / 無効にする） ----
+  function openChoose(ctxId, b) {
+    var keyName = displayParts(b.key).join("+");
+    var label = actionLabel(b.action);
+    var ed = { context: ctxId, rowAction: b.action, chipKey: b.key };
     S.editor = ed;
     markEditing();
     var scroller = findRow(ed.rowAction);
     if (scroller) { try { scroller.scrollIntoView({ block: "nearest" }); } catch (e0) { /* 古い WebView では何もしない */ } }
     return openDialog(function (body, id, close, dlg) {
+      body.appendChild(UI.el("h2", { id: id + "-t", text: "『" + label + "』のキー " + keyName + "（" + (SOURCES[b.source] || SOURCES["default"]).label + "）" }));
+      body.appendChild(UI.el("p", { "class": "row-desc", text: "このキーでどうしますか？" }));
+      function choice(text, cls, icon, desc, fn) {
+        var btn = UI.button(text, cls, icon, fn);
+        return UI.el("div", { "class": "kc-choice" }, [btn, UI.el("p", { "class": "row-desc", text: desc })]);
+      }
+      var change = choice("別のキーに変更", "primary kc-choose-change", "pencil",
+        "元のキー『" + keyName + "』は使えなくなり、新しいキーが有効になります。",
+        function () { close("other"); openAssign({ mode: "replace", context: ctxId, action: b.action, key: b.key, oldKey: b.key, disableOld: true }); });
+      var add = choice("別のキーも追加", "kc-choose-add", "plus",
+        "『" + keyName + "』も使えるまま、もう 1 つキーを追加します。",
+        function () { close("other"); openAssign({ mode: "add", context: ctxId, action: b.action, from: b.key }); });
+      var off = choice("無効にする", "kc-choose-off", "block",
+        "『" + keyName + "』を使えなくします。",
+        function () { disableBinding(ctxId, { key: b.key, action: b.action }).then(function (done) { if (done) close("done"); }); });
+      var list = UI.el("div", { "class": "kc-choices" }, [change, add, off]);
+      body.appendChild(list);
+      body.appendChild(UI.el("div", { "class": "buttons end" }, [UI.button("キャンセル", "kc-cancel", null, function () { close("cancel"); })]));
+      dlg.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") { e.stopPropagation(); return; }
+        if (e.key !== "Tab") return;
+        var fl = focusables(dlg);
+        if (fl.length === 0) return;
+        var first = fl[0];
+        var last = fl[fl.length - 1];
+        var active = document.activeElement;
+        if (e.shiftKey && (active === first || !dlg.contains(active))) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && (active === last || !dlg.contains(active))) { e.preventDefault(); first.focus(); }
+      });
+      return change.querySelector("button");
+    }).then(function (value) {
+      if (S.editor === ed) S.editor = null;
+      markEditing();
+      if (value !== "other") restoreFocus(ed);
+      return value;
+    });
+  }
+
+  // opts: {mode, context, action?, key?, oldKey?, disableOld?, from?}
+  //   mode "add":     その操作にキーを追加する（action 無し = 場面と操作を選ぶ。上のボタン）。from = 元のキーを残したまま足すときの元のキー
+  //   mode "replace": oldKey を新しいキーに付け替える（保存は 1 回）。disableOld なら元のキーを無効に、そうでなければ（ユーザーの割り当て）削除して既定に戻す
+  function openAssign(opts) {
+    var replace = opts.mode === "replace";
+    var oldKey = replace ? (opts.oldKey || opts.key) : "";
+    var state = { context: opts.context, action: opts.action || "", key: "", result: null, seq: 0, timer: 0, busy: false };
+    var ed = { context: opts.context, rowAction: opts.action || "", chipKey: replace ? oldKey : "" };
+    S.editor = ed;
+    markEditing();
+    var scroller = findRow(ed.rowAction);
+    if (scroller) { try { scroller.scrollIntoView({ block: "nearest" }); } catch (e0) { /* 古い WebView では何もしない */ } }
+    var verb = replace ? "変更" : "追加";
+    return openDialog(function (body, id, close, dlg) {
       var title = UI.el("h2", { id: id + "-t" });
       function updateTitle() {
         var label = state.action ? actionLabel(state.action) : "";
-        var keyName = opts.key ? displayParts(opts.key).join("+") : "";
-        if (opts.lockKey) title.textContent = keyName + " キーの操作を変える";
-        else if (opts.oldKey) title.textContent = "『" + label + "』のキーを変更する（いまは " + keyName + "）";
-        else title.textContent = label ? "『" + label + "』のキーを割り当てる" : "キーを割り当てる";
+        if (replace) title.textContent = "『" + label + "』のキーを変更する（いまは " + displayParts(oldKey).join("+") + "）";
+        else title.textContent = label ? "『" + label + "』のキーを追加する" : "キーを追加する";
       }
       updateTitle();
 
-      // 場面・操作（操作が決まっていないときだけ選ばせる。操作を変えるときも選ぶ）
+      // 場面・操作（操作が決まっていないときだけ選ばせる）
       var ctxSel = UI.el("select", { "class": "field", id: id + "-ctx" });
       CONTEXTS.filter(function (c) { return c.editable; }).forEach(function (c) { ctxSel.appendChild(UI.el("option", { value: c.id, text: c.title })); });
       ctxSel.value = state.context;
@@ -619,19 +668,13 @@
           if (a.contexts.indexOf(state.context) < 0) return;
           actSel.appendChild(UI.el("option", { value: a.name, text: a.label + "（" + a.name + "）" }));
         });
-        // 一覧に無い Action（NoOp にした既定の割当など）が現在の値のときも選べるようにする
-        if (state.action && !Array.prototype.some.call(actSel.options, function (o) { return o.value === state.action; })) {
-          actSel.appendChild(UI.el("option", { value: state.action, text: actionLabel(state.action) + "（" + state.action + "）" }));
-        }
         actSel.value = state.action;
       }
       fillActions();
 
       // キー入力（押して取り込む）と手入力
       var captureText = UI.el("span", { "class": "kc-capture-text" });
-      var capture;
-      if (opts.lockKey) capture = UI.el("button", { type: "button", "class": "kc-capture locked", id: id + "-cap", disabled: true, "aria-label": "キー（変更できません）" }, [captureText]);
-      else capture = UI.el("button", { type: "button", "class": "kc-capture", id: id + "-cap", "aria-describedby": id + "-hint" }, [captureText]);
+      var capture = UI.el("button", { type: "button", "class": "kc-capture", id: id + "-cap", "aria-describedby": id + "-hint" }, [captureText]);
       var manual = UI.el("input", { type: "text", "class": "field", id: id + "-man", autocomplete: "off", spellcheck: "false", placeholder: "例: Ctrl+Shift+J / F8 / Henkan" });
       var hint = UI.el("p", { "class": "row-desc kc-hint", role: "alert" });
       var captured = UI.el("span", { "class": "sr-only", role: "status", "aria-live": "polite" });
@@ -639,7 +682,7 @@
       function showCapture(held) {
         captureText.textContent = "";
         capture.classList.toggle("active", capturing);
-        capture.classList.toggle("filled", !!state.key && !opts.lockKey);
+        capture.classList.toggle("filled", !!state.key);
         if (capturing && held && held.length) {
           held.forEach(function (h) { captureText.appendChild(UI.el("kbd", { "class": "kc-cap", text: displayParts(h).join("") })); });
           captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: "続けてキーを押してください" }));
@@ -647,45 +690,40 @@
         }
         if (state.key) {
           displayParts(state.key).forEach(function (p) { captureText.appendChild(UI.el("kbd", { "class": "kc-cap", text: p })); });
-          if (!opts.lockKey) captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: capturing ? "取り込みました。別のキーを押すと置き換わります" : "取り込みました（押して、取り込み直す）" }));
+          captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: capturing ? "取り込みました。別のキーを押すと置き換わります" : "取り込みました（押して、取り込み直す）" }));
         } else {
-          captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: capturing ? "割り当てるキーを押してください（Esc で取り消し）" : "ここを押してから、割り当てるキーを押す" }));
+          captureText.appendChild(UI.el("span", { "class": "kc-capture-hint", text: capturing ? "新しいキーを押してください（Esc で取り消し）" : "ここを押してから、新しいキーを押す" }));
         }
       }
-      if (!opts.lockKey) {
-        capture.addEventListener("focus", function () { capturing = true; showCapture(); });
-        capture.addEventListener("blur", function () { capturing = false; showCapture(); });
-        capture.addEventListener("keydown", function (e) {
-          var r = specFromEvent(e);
-          if (r.kind === "pass") return; // Tab はフォーカス移動に使う
-          e.preventDefault();
-          e.stopPropagation();
-          if (e.repeat) return;
-          if (r.kind === "cancel") { close("cancel"); return; }
-          if (r.kind === "pending") { showCapture(r.held); hint.textContent = ""; return; }
-          if (r.kind === "unsupported") { hint.textContent = r.message; showCapture(); return; }
-          hint.textContent = "";
-          state.key = r.spec;
-          manual.value = r.spec;
-          captured.textContent = "";
-          captured.textContent = displayParts(r.spec).join("+") + " を取り込みました";
-          showCapture();
-          changed();
-        });
-        capture.addEventListener("keyup", function (e) { if (capturing && e.key !== "Tab") { e.preventDefault(); showCapture(); } });
-        // ボタンを押したら（フォーカスが既にあっても）取り込み待ちにする
-        capture.addEventListener("click", function () { capture.focus(); capturing = true; showCapture(); });
-        manual.addEventListener("input", function () { state.key = manual.value.trim(); hint.textContent = ""; showCapture(); changed(); });
-      } else {
-        manual.disabled = true;
-      }
-      manual.value = state.key;
+      capture.addEventListener("focus", function () { capturing = true; showCapture(); });
+      capture.addEventListener("blur", function () { capturing = false; showCapture(); });
+      capture.addEventListener("keydown", function (e) {
+        var r = specFromEvent(e);
+        if (r.kind === "pass") return; // Tab はフォーカス移動に使う
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        if (r.kind === "cancel") { close("cancel"); return; }
+        if (r.kind === "pending") { showCapture(r.held); hint.textContent = ""; return; }
+        if (r.kind === "unsupported") { hint.textContent = r.message; showCapture(); return; }
+        hint.textContent = "";
+        state.key = r.spec;
+        manual.value = r.spec;
+        captured.textContent = "";
+        captured.textContent = displayParts(r.spec).join("+") + " を取り込みました";
+        showCapture();
+        changed();
+      });
+      capture.addEventListener("keyup", function (e) { if (capturing && e.key !== "Tab") { e.preventDefault(); showCapture(); } });
+      // ボタンを押したら（フォーカスが既にあっても）取り込み待ちにする
+      capture.addEventListener("click", function () { capture.focus(); capturing = true; showCapture(); });
+      manual.addEventListener("input", function () { state.key = manual.value.trim(); hint.textContent = ""; showCapture(); changed(); });
       showCapture();
 
       var issues = UI.el("div", { "class": "kc-issues", "aria-live": "polite" });
       var same = UI.el("p", { "class": "row-desc kc-existing", hidden: true });
       var next = UI.el("p", { "class": "row-desc kc-next" });
-      var save = UI.button(opts.lockKey ? "操作を変更する" : "割り当てる", "primary kc-save", null, function () { submit(); });
+      var save = UI.button(verb + "する", "primary kc-save", null, function () { submit(); });
       var cancel = UI.button("キャンセル", "kc-cancel", null, function () { close("cancel"); });
 
       ctxSel.addEventListener("change", function () { state.context = ctxSel.value; state.action = ""; fillActions(); updateTitle(); changed(); });
@@ -698,48 +736,41 @@
       if (!opts.action) {
         form.appendChild(field("使う場面", id + "-ctx", ctxSel));
         form.appendChild(field("操作", id + "-act", actSel));
-      } else if (opts.lockKey) {
-        form.appendChild(UI.el("p", { "class": "row-desc", text: "これは「" + SOURCES[(S.data.bindings.filter(function (b) { return b.context === state.context && b.key === opts.key; })[0] || { source: "default" }).source].label + "」の割り当てなので、キーそのものは消せません。操作を別のものに変えるか、無効にできます。別のキーを使いたいときは「別のキーを追加」を押してください。" }));
-        form.appendChild(field("このキーで実行する操作", id + "-act", actSel));
       }
-      if (opts.lockKey) {
-        form.appendChild(field("キー", id + "-cap", capture));
-      } else {
-        form.appendChild(UI.el("ol", { "class": "kc-steps" }, [
-          UI.el("li", { text: "下の枠にキーを押す（開くと自動で待ち受けます）" }),
-          UI.el("li", { text: "「割り当てる」を押して保存する" })
-        ]));
-        form.appendChild(field("キー", id + "-cap", capture, UI.el("div", { id: id + "-hint" }, [hint, captured])));
-        form.appendChild(UI.el("details", { "class": "kc-manual" }, [
-          UI.el("summary", { text: "キーを文字で入力する" }),
-          UI.el("div", { "class": "kc-field" }, [
-            UI.el("label", { "for": id + "-man", text: "キーの書き方" }),
-            manual,
-            UI.el("p", { "class": "row-desc", text: "Win キー・Alt+F4・Ctrl+Alt+Delete など、OS が先に処理するキーは押しても取り込めません。そのようなキーはここに書けますが、アプリに届かないため動作しないことがあります。変換・無変換は Henkan・Muhenkan と書きます。" })
-          ])
-        ]));
+      var oldName = replace ? displayParts(oldKey).join("+") : "";
+      if (replace && opts.disableOld) {
+        form.appendChild(UI.el("p", { "class": "row-desc", text: "元のキー『" + oldName + "』は使えなくなり、新しいキーが有効になります。" }));
+      } else if (replace) {
+        form.appendChild(UI.el("p", { "class": "row-desc", text: "『" + oldName + "』のユーザーの割り当てを、新しいキーに付け替えます。" }));
+      } else if (opts.from) {
+        form.appendChild(UI.el("p", { "class": "row-desc", text: "『" + displayParts(opts.from).join("+") + "』も使えるまま、もう 1 つキーを追加します。" }));
       }
+      form.appendChild(UI.el("ol", { "class": "kc-steps" }, [
+        UI.el("li", { text: "下の枠に、新しいキーを押す（開くと自動で待ち受けます）" }),
+        UI.el("li", { text: "「" + verb + "する」を押して保存する" })
+      ]));
+      form.appendChild(field(replace ? "新しいキー" : "キー", id + "-cap", capture, UI.el("div", { id: id + "-hint" }, [hint, captured])));
+      form.appendChild(UI.el("details", { "class": "kc-manual" }, [
+        UI.el("summary", { text: "キーを文字で入力する" }),
+        UI.el("div", { "class": "kc-field" }, [
+          UI.el("label", { "for": id + "-man", text: "キーの書き方" }),
+          manual,
+          UI.el("p", { "class": "row-desc", text: "Win キー・Alt+F4・Ctrl+Alt+Delete など、OS が先に処理するキーは押しても取り込めません。そのようなキーはここに書けますが、アプリに届かないため動作しないことがあります。変換・無変換は Henkan・Muhenkan と書きます。" })
+        ])
+      ]));
       form.appendChild(same);
       form.appendChild(issues);
       form.appendChild(next);
 
-      // 足もと: 左に解除／無効化など、右にキャンセルと確定
+      // 足もと: 左に削除（ユーザーの割り当てのとき）、右にキャンセルと確定
       var foot = UI.el("div", { "class": "buttons end" });
-      if (opts.oldKey) {
-        var del = UI.button("このキーを解除", "danger", "trash", function () {
+      if (replace && !opts.disableOld) {
+        var del = UI.button("このキーを削除", "danger", "trash", function () {
           state.busy = true;
-          removeBinding(opts.context, { key: opts.oldKey, action: opts.action }).then(function () { close("done"); });
+          removeBinding(opts.context, { key: oldKey, action: opts.action }).then(function () { close("done"); });
         });
-        del.title = "既定・プリセットの割当があれば、このキーはそれに戻ります";
+        del.title = "ユーザーの割り当てを取り消します。既定・プリセットの割当があれば、このキーはそれに戻ります";
         foot.appendChild(del);
-      } else if (opts.lockKey) {
-        foot.appendChild(UI.button("無効にする", "danger", "block", function () {
-          disableBinding(opts.context, { key: opts.key, action: opts.action }).then(function (done) { if (done) close("done"); });
-        }));
-        foot.appendChild(UI.button("別のキーを追加", "", "plus", function () {
-          close("other");
-          openAssign({ context: opts.context, action: opts.action });
-        }));
       }
       foot.appendChild(UI.el("span", { "class": "spacer" }));
       foot.appendChild(cancel);
@@ -766,17 +797,18 @@
         state.seq++;
       });
 
-      // 検証（TOML 断片を作ってコアに検証させる。入力が止まってから）
+      // 検証（TOML 断片を作ってコアに検証させる。入力が止まってから）。新しいキーに対して行う
       function fragment() {
         return "[keymap." + state.context + "]\n" + JSON.stringify(state.key) + " = " + JSON.stringify(state.action) + "\n";
       }
+      function sameAsOld() { return replace && !!state.key && normKey(state.key) === normKey(oldKey); }
       function changed() {
         state.result = null;
         window.clearTimeout(state.timer);
         showExisting();
         paintIssues();
         updateSave();
-        if (!state.key || !state.action) return;
+        if (!state.key || !state.action || sameAsOld()) return;
         var seq = ++state.seq;
         state.timer = window.setTimeout(function () {
           post("validate", { toml: fragment() }).then(function (r) {
@@ -795,15 +827,15 @@
       function showExisting() {
         // 同じ場面の同じキーに、いま別の割当があるか（置き換わることを伝える。拒否ではない）
         var found = null;
-        if (state.key) {
+        if (state.key && !sameAsOld()) {
           var want = normKey(state.key);
           bindings().forEach(function (b) {
             if (b.context === state.context && normKey(b.key) === want && b.action !== state.action) found = b;
           });
         }
-        if (found && !(opts.oldKey && found.key === opts.oldKey && found.action === opts.action)) {
+        if (found) {
           same.hidden = false;
-          same.textContent = "このキーは今「" + actionLabel(found.action) + "」（" + SOURCES[found.source].label + "）に割り当てられています。割り当てると、この操作に置き換わります。";
+          same.textContent = "このキーは今「" + actionLabel(found.action) + "」（" + SOURCES[found.source].label + "）に割り当てられています。" + verb + "すると、この操作に置き換わります。";
         } else {
           same.hidden = true;
           same.textContent = "";
@@ -820,14 +852,16 @@
         return UI.el("div", { "class": "kc-issue " + kind }, [UI.icon(kind === "ng" ? "x" : "alert"), UI.el("p", { text: i.message })]);
       }
       function updateSave() {
-        var ready = !!state.key && !!state.action && !!state.result && state.result.errors.length === 0 && !state.busy;
+        var ready = !!state.key && !!state.action && !!state.result && state.result.errors.length === 0 && !state.busy && !sameAsOld();
         save.disabled = !ready;
         var warn = state.result && state.result.warnings.length > 0;
-        save.querySelector("span").textContent = warn ? "それでも割り当てる" : opts.lockKey ? "操作を変更する" : "割り当てる";
+        var label = (warn ? "それでも" : "") + verb + "する";
+        save.querySelector("span").textContent = label;
         // 押せない理由を書く
         if (ready) next.textContent = "";
-        else if (!state.action) next.textContent = "操作を選ぶと、「" + save.querySelector("span").textContent + "」が押せるようになります。";
-        else if (!state.key) next.textContent = "キーを押す（取り込む）と、「" + save.querySelector("span").textContent + "」が押せるようになります。";
+        else if (sameAsOld()) next.textContent = "元のキーと同じです。別のキーを押してください。";
+        else if (!state.action) next.textContent = "操作を選ぶと、「" + label + "」が押せるようになります。";
+        else if (!state.key) next.textContent = "新しいキーを押す（取り込む）と、「" + label + "」が押せるようになります。";
         else if (!state.result) next.textContent = "確認しています…";
         else next.textContent = "";
       }
@@ -835,13 +869,17 @@
         if (save.disabled) return;
         state.busy = true;
         updateSave();
-        var chain = Promise.resolve(null);
-        // 変更: 古いユーザー割当を先に解除してから新しいキーを保存する（同じキーなら、保存で書き直される）
-        if (opts.oldKey && normKey(opts.oldKey) !== normKey(state.key)) chain = setBinding(opts.context, opts.oldKey, null);
-        chain.then(function () { return setBinding(state.context, state.key, state.action); }).then(function (r) {
+        // 変更: 元のキーの無効化（または削除）と新しいキーの割当を、コアで 1 回の保存として行う（途中の状態は作らない）
+        var req = replace
+          ? post("replace", { context: state.context, old_key: oldKey, new_key: state.key, action: state.action, disable_old: !!opts.disableOld })
+          : setBinding(state.context, state.key, state.action);
+        req.then(function (r) {
           var n = r.warnings.length;
           var shown = displayParts(state.key).join("+");
-          var msg = "保存しました: " + shown + " → " + actionLabel(state.action) + (n > 0 ? "（注意 " + n + " 件）" : "");
+          var msg = replace
+            ? "変更しました: " + oldName + " → " + shown + "（" + actionLabel(state.action) + "）"
+            : "追加しました: " + shown + "（" + actionLabel(state.action) + "）";
+          if (n > 0) msg += "（注意 " + n + " 件）";
           // 保存した行が見えるよう、場面を合わせ、絞り込みは外す
           S.ctx = state.context;
           S.query = "";
@@ -861,10 +899,9 @@
         });
       }
       updateSave();
-      if (state.key && state.action) changed();
 
-      // 開いたら、キーを押す枠（キー固定のときは操作の選択）にフォーカスする
-      return opts.lockKey ? actSel : capture;
+      // 開いたら、キーを押す枠にフォーカスする
+      return capture;
     }).then(function (value) {
       // 閉じたあと: 強調を外し、保存したとき以外は開いたボタンへフォーカスを戻す
       if (S.editor === ed) S.editor = null;

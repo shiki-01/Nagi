@@ -108,6 +108,19 @@ pub enum EditRequest {
         /// Action 名（`None` = 解除）
         action: Option<String>,
     },
+    /// キーの付け替え（元のキーの解除・無効化と新しいキーの割当を 1 回で行う）
+    Replace {
+        /// 文脈
+        context: KeymapContext,
+        /// 元のキー
+        old_key: String,
+        /// 新しいキー
+        new_key: String,
+        /// 新しいキーの Action
+        action: String,
+        /// 元のキーを `NoOp` で無効にするか（`false` は上書きの解除）
+        disable_old: bool,
+    },
     /// 文脈ごと・全体のリセット
     Reset {
         /// 範囲
@@ -212,6 +225,53 @@ pub fn apply_edit(
                     context: ctx,
                     key: key.to_string(),
                     action: action.as_ref().map(|a| a.trim().to_string()),
+                },
+                warnings,
+            )
+        }
+        EditRequest::Replace {
+            context,
+            old_key,
+            new_key,
+            action,
+            disable_old,
+        } => {
+            let ctx = editable_context(*context)?;
+            let (old_key, new_key, action) = (old_key.trim(), new_key.trim(), action.trim());
+            if old_key.is_empty() || new_key.is_empty() || action.is_empty() {
+                return Err(EditError::invalid("キーと操作を指定してください"));
+            }
+            if same_key(old_key, new_key) {
+                return Err(EditError::invalid(
+                    "元のキーと同じキーには変更できません。別のキーを選んでください",
+                ));
+            }
+            // 新しいキーを 1 行の断片にして、一覧の検証と同じ規則で調べる（警告はここだけ）。元のキーを
+            // 無効にするなら、それも解釈できることを確かめる。解釈できなければ何も保存しない
+            let result = validate_fragment(&render_keymap_fragment(
+                None,
+                &[(ctx, new_key.to_string(), action.to_string())],
+            ));
+            if !result.errors.is_empty() {
+                return Err(EditError::invalid(describe_errors(&result.errors)));
+            }
+            if *disable_old {
+                let old = validate_fragment(&render_keymap_fragment(
+                    None,
+                    &[(ctx, old_key.to_string(), "NoOp".to_string())],
+                ));
+                if !old.errors.is_empty() {
+                    return Err(EditError::invalid(describe_errors(&old.errors)));
+                }
+            }
+            let warnings = result.warnings;
+            (
+                KeymapEdit::Swap {
+                    context: ctx,
+                    old_key: old_key.to_string(),
+                    old_action: disable_old.then(|| "NoOp".to_string()),
+                    new_key: new_key.to_string(),
+                    new_action: action.to_string(),
                 },
                 warnings,
             )

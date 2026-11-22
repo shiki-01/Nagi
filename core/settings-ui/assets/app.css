@@ -437,6 +437,9 @@ button.kc-chip:hover .icon { color: var(--accent-text); }
 .kc-chip.preset .kc-src { background: var(--info-bg); color: var(--info-fg); }
 .kc-src.mode { background: var(--warn-bg); color: var(--warn-fg); }
 .kc-ops { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-1); }
+.kc-choices { display: flex; flex-direction: column; gap: var(--space-3); margin: var(--space-3) 0 var(--space-4); }
+.kc-choice { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); }
+.kc-choice .row-desc { margin: 0; }
 @container (max-width: 760px) {
   .kc-row { grid-template-columns: minmax(0, 1fr); }
   .kc-ops { justify-content: flex-start; }
