@@ -236,8 +236,8 @@ pub fn append_log(path: &Path, line: &str) {
 /// `None`（システムの `COLOR_WINDOW` を使う）
 pub fn background_rgb(kind: ThemeKind) -> Option<Rgb> {
     match kind {
-        ThemeKind::Light => Some(Rgb::hex(0xf6_f7_f9)),
-        ThemeKind::Dark => Some(Rgb::hex(0x14_16_1a)),
+        ThemeKind::Light => Some(Rgb::hex(0xf3_f3_f3)),
+        ThemeKind::Dark => Some(Rgb::hex(0x20_20_20)),
         ThemeKind::HighContrast => None,
     }
 }
@@ -447,9 +447,9 @@ mod tests {
         assert_eq!(user_data_dir("windows", &|_| None), None);
         assert_eq!(
             background_rgb(ThemeKind::Light),
-            Some(Rgb(0xf6, 0xf7, 0xf9))
+            Some(Rgb(0xf3, 0xf3, 0xf3))
         );
-        assert_eq!(background_rgb(ThemeKind::Dark), Some(Rgb(0x14, 0x16, 0x1a)));
+        assert_eq!(background_rgb(ThemeKind::Dark), Some(Rgb(0x20, 0x20, 0x20)));
         assert_eq!(background_rgb(ThemeKind::HighContrast), None);
     }
 

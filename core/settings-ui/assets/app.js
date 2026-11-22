@@ -220,13 +220,9 @@
   }
 
   // ---- ページの共通部品 ----
-  var WAVES = ["M8 28q18-12 36 0t36 0t36 0t36 0", "M30 52q16-10 32 0t32 0t32 0t32 0", "M52 76q14-9 28 0t28 0t28 0"];
-  function hero(title, lead, eyebrow) {
-    var waves = svgEl("svg", { "class": "hero-waves", viewBox: "0 0 190 96", "aria-hidden": "true", focusable: "false" });
-    WAVES.forEach(function (d, i) { waves.appendChild(svgEl("path", { d: d, "stroke-opacity": String(1 - i * 0.28) })); });
+  // ページ見出し（題と、必要なら 1 行の説明だけ。飾りは付けない）
+  function hero(title, lead) {
     return el("header", { "class": "hero" }, [
-      waves,
-      el("p", { "class": "eyebrow", text: eyebrow }),
       el("h1", { id: "page-title", text: title }),
       lead ? el("p", { "class": "lead", text: lead }) : null
     ]);
@@ -290,7 +286,7 @@
   // ---- 設定カテゴリ ----
   function pageStatus() {
     return frag([
-      hero("設定", "設定を読み込めませんでした。", "設定"),
+      hero("設定", "設定を読み込めませんでした。"),
       section("状態", "", card([
         el("div", { "class": "card-pad stack" }, [
           el("p", { text: bannerEl.textContent || "設定を読み込んでいます…" }),
@@ -303,13 +299,11 @@
   function pageCategory(name) {
     var group = null;
     screen.groups.forEach(function (g) { if (g.name === name) group = g; });
-    if (!group) return hero(name, "", "設定");
+    if (!group) return hero(name, "");
     var simple = group.items.filter(function (i) { return i.level === "simple"; });
     var deep = detail ? group.items.filter(function (i) { return i.level !== "simple"; }) : [];
-    var total = simple.length + deep.length;
-    var lead = total + " 件の設定項目" + (detail ? "（詳細設定を含む）" : "") + "。変更はすぐ保存されます。";
-    var out = [hero(name, lead, "設定")];
-    if (simple.length) out.push(section(deep.length ? "基本の設定" : "設定項目", "", itemsCard(simple, false)));
+    var out = [hero(name, "変更はすぐに保存されます。")];
+    if (simple.length) out.push(deep.length ? section("基本", "", itemsCard(simple, false)) : itemsCard(simple, false));
     if (deep.length) out.push(section("詳細設定", "", itemsCard(deep, true)));
     return frag(out);
   }
@@ -341,7 +335,8 @@
     if (k.type === "bool") {
       input = el("input", { type: "checkbox", id: id, role: "switch", "class": "switch" });
       input.checked = item.value === true;
-      input.addEventListener("change", function () { commit(item, input.checked); });
+      ref.state = el("span", { "class": "switch-state", "aria-hidden": "true" });
+      input.addEventListener("change", function () { ref.state.textContent = input.checked ? "オン" : "オフ"; commit(item, input.checked); });
     } else if (k.type === "int" || k.type === "float") {
       input = el("input", { type: "number", id: id, "class": "field", min: String(k.min), max: String(k.max), step: String(k.step), inputmode: k.type === "int" ? "numeric" : "decimal" });
       input.value = valueText(item);
@@ -386,13 +381,20 @@
     if (item.requires_restart) label.appendChild(el("span", { "class": "tag restart", text: "再起動が必要" }));
     var main = el("div", { "class": "row-main" }, [label, el("p", { "class": "row-desc", id: descId, text: item.description })]);
     var range = rangeText(item);
-    if (range) main.appendChild(el("p", { "class": "row-range", text: range }));
+    if (range) main.appendChild(el("p", { "class": "row-desc", text: range }));
     if (item.requires_restart) main.appendChild(el("p", { "class": "row-hint", text: RESTART_HINT }));
     ref.err = el("p", { "class": "row-error", role: "alert", hidden: true });
     main.appendChild(ref.err);
     ref.resetSlot = el("div", { "class": "reset-slot" });
-    var ctl = el("div", { "class": "row-ctl" }, [el("div", { "class": "ctl-line" }, [control(item, id, descId, ref)]), ref.resetSlot]);
-    ref.row = el("div", { "class": "row" + (item.kind.type === "bool" ? "" : " wide"), "data-row": item.key }, [main, ctl]);
+    var input = control(item, id, descId, ref);
+    var ctl = el("div", { "class": "row-ctl" }, [ref.resetSlot, el("div", { "class": "ctl-line" }, [ref.state || null, input])]);
+    var isBool = item.kind.type === "bool";
+    ref.row = el("div", { "class": "row" + (isBool ? " clickable" : " wide"), "data-row": item.key }, [main, ctl]);
+    // スイッチの行は、行のどこを押しても切り替わる（Windows の設定と同じ）。ラベルは for= で、ボタンは自分で処理する
+    if (isBool) ref.row.addEventListener("click", function (e) {
+      if (e.target === input || (e.target.closest && e.target.closest("label, button, a"))) return;
+      input.click();
+    });
     syncRow(ref, item, true);
     return ref.row;
   }
@@ -403,6 +405,7 @@
     var input = ref.input;
     if (input.type === "checkbox") {
       input.checked = item.value === true;
+      if (ref.state) ref.state.textContent = input.checked ? "オン" : "オフ";
     } else if (input.tagName === "SELECT") {
       // 値が未指定（自動）のときだけ「（自動）」の選択肢を持つ
       if (item.value === null && !input.querySelector('option[value=""]')) input.insertBefore(el("option", { value: "", text: "（自動）" }), input.firstChild);
@@ -469,7 +472,7 @@
     ui.result = el("div", { "class": "result", role: "status", "aria-live": "polite" });
     var buttons = el("div", { "class": "card-pad" }, [el("div", { "class": "buttons" }, [ui.checkBtn, ui.applyBtn, ui.notes])]);
     var out = frag([
-      hero("更新", "Nagi を最新の状態に保ちます。", "メンテナンス"),
+      hero("更新", "Nagi を最新の状態に保ちます。"),
       section("バージョン", "", card([
         el("div", { "class": "kv" }, [el("span", { "class": "kv-label", text: "現在の版" }), el("span", { "class": "kv-value", text: version ? "v" + version : "" })])
       ])),
@@ -545,7 +548,7 @@
       dialog.showModal();
     });
     return frag([
-      hero("データ・ファイル", "設定ファイルの場所と、変換の学習データを管理します。", "メンテナンス"),
+      hero("データ・ファイル", "設定ファイルの場所と、変換の学習データを管理します。"),
       section("設定ファイル", "", card([
         el("div", { "class": "card-pad stack" }, [
           el("p", { "class": "path", text: path || "（設定ファイルの場所は未定です）" }),
@@ -598,13 +601,12 @@
     ui.note = el("p", { "class": "note-line", role: "status", "aria-live": "polite" });
     var controls = el("div", { "class": "card-pad stack" }, [
       el("p", { "class": "muted", text: DIAG_INTRO }),
-      el("div", { "class": "buttons" }, [ui.runAll, ui.cancel]),
-      el("div", { "class": "buttons" }, [ui.copy, ui.save]),
+      el("div", { "class": "buttons" }, [ui.runAll, ui.cancel, el("span", { "class": "spacer" }), ui.copy, ui.save]),
       ui.chips,
       ui.note
     ]);
     var out = [
-      hero("動作確認", "この PC での入力・変換・更新の動作を、ボタン一つで確認します。", "メンテナンス"),
+      hero("動作確認", "この PC での入力・変換・更新の動作を、ボタン一つで確認します。"),
       section("確認の実行", "", card([controls, ui.progress]))
     ];
     // 項目は ID の接頭辞でまとめる（ID の並びは Rust 側の一覧どおり）
@@ -791,6 +793,7 @@
       if (screen && page === "status") page = loadPref("page") || "";
       renderNav();
       if (!findPage(page)) page = pageList()[0].id;
+      markNav();
       renderPage(true);
     });
   }
