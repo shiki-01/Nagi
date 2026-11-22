@@ -231,6 +231,12 @@ fn is_shadowed_by_common(map: &KeyMap, ctx: KeyContext, spec: &KeySpec) -> bool 
             .any(|(s, filter, _)| s == spec && *filter == ModeFilter::Any)
 }
 
+/// キー仕様文字列を正規の書き方（`Ctrl+Shift+Right` 形式。修飾の順・別名・大文字小文字をそろえたもの）にする。
+/// 解釈できない・名前を持たないキーは `None`。同じキーを別の書き方で書いた行を見つけるのに使う
+pub fn canonical_key(spec: &str) -> Option<String> {
+    KeySpec::parse(spec).ok()?.format()
+}
+
 /// 同梱のプリセットの一覧
 pub fn preset_infos() -> Vec<KeymapPresetInfo> {
     Preset::ALL

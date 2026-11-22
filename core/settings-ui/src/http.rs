@@ -22,6 +22,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub mod diag;
+pub mod keymap;
+pub mod userdict;
 
 /// トークンを運ぶ HTTP ヘッダー（API 呼び出し）
 pub const TOKEN_HEADER: &str = "x-nagi-token";
@@ -277,7 +279,7 @@ impl<B: SettingsBackend> App<B> {
         if !is_json {
             return Response::error(415, "Content-Type は application/json にしてください");
         }
-        if req.body.len() > MAX_BODY {
+        if req.body.len() > userdict::max_body_for(path) {
             return Response::error(413, "リクエストが大きすぎます");
         }
         match path {
@@ -305,6 +307,8 @@ impl<B: SettingsBackend> App<B> {
                 Err(SaveError::NoReport) => Response::error(409, "保存できる結果がありません"),
                 Err(SaveError::Failed(message)) => Response::error(500, &message),
             },
+            p if keymap::is_keymap_path(p) => keymap::handle(&mut self.backend, p, &req.body),
+            p if userdict::is_userdict_path(p) => userdict::handle(&mut self.backend, p, &req.body),
             "/api/clear_learning" => match self.backend.clear_learning() {
                 Ok(()) => Response::json(200, &json!({"ok": true})),
                 Err(e) => backend_error(&e),

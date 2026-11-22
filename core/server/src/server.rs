@@ -12,13 +12,16 @@ use nagi_protocol::jsonrpc::{
 };
 use nagi_protocol::methods::{
     AcceptRetroReviewParams, ConfigError, EmptyResult, FuzzyStatsItem, GetFuzzyStatsResult,
-    GetKeymapParams, GlideInputParams, ImportSkipReason, ImportUserDictParams,
+    GetKeymapParams, GlideInputParams, ImportKeymapParams, ImportSkipReason, ImportUserDictParams,
     ImportUserDictResult, InitializeParams, InitializeResult, InsertReadingTouchParams,
     ListSuppressedResult, NotifyParams, PerformActionParams, ProcessKeyParams, ReconvertParams,
     ReloadConfigResult, RestoreSessionParams, SelectCandidateParams, ServerCapabilities,
     SessionParams, SetContextParams, SetEnvironmentParams, SetLayoutGeometryParams,
     SuppressCandidateParams, SuppressedItem, UpdateCandidatesParams, UpdatePreeditParams,
     UserDictFormat, ValidateKeymapParams, method,
+};
+use nagi_protocol::methods::{
+    EditKeymapResult, ExportKeymapResult, ResetKeymapParams, SetKeymapParams,
 };
 use nagi_protocol::settings::{UpdateSettingsParams, UpdateSettingsResult};
 use nagi_protocol::view::InputMode;
@@ -82,6 +85,15 @@ fn params<T: DeserializeOwned>(req: &Request) -> Result<T, ErrorObject> {
             format!("params が不正です（{:?}）", e.classify()),
         )
     })
+}
+
+fn keymap_edit_error(e: crate::keymap_tools::EditError) -> ErrorObject {
+    let code = if e.invalid {
+        error_code::INVALID_PARAMS
+    } else {
+        error_code::ENGINE_FAILURE
+    };
+    ErrorObject::new(code, e.message)
 }
 
 /// `params` を省略できるメソッド用（省略・`null` は既定値）
@@ -501,6 +513,82 @@ impl Server {
         ReloadConfigResult { ok, errors }
     }
 
+    /// キー割当を `config.toml` に保存し、既存のホットリロード経路で即座に反映して、新しい一覧を返す
+    fn edit_keymap(&mut self, request: crate::keymap_tools::EditRequest) -> RpcResult {
+        let warnings =
+            crate::keymap_tools::apply_edit(self.reload.config_path.as_deref(), &request)
+                .map_err(keymap_edit_error)?;
+        self.reload_all();
+        let keymap = crate::keymap_tools::keymap_result(self.engine_lock().keymap(), None);
+        to_value(EditKeymapResult { keymap, warnings })
+    }
+
+    /// ユーザー辞書の管理・学習の統計（`userdict_tools`）。変更したら辞書を読み直して即座に反映する
+    fn userdict_rpc(&mut self, req: &Request) -> RpcResult {
+        use crate::userdict_tools as tools;
+        use nagi_protocol::userdict::names;
+        let tool_error = |e: tools::ToolError| match e {
+            tools::ToolError::Invalid(m) => ErrorObject::new(error_code::INVALID_PARAMS, m),
+            tools::ToolError::Io(m) => ErrorObject::new(error_code::ENGINE_FAILURE, m),
+        };
+        let dir = self.reload.user_dict_dir.clone();
+        if req.method == names::GET_LEARNING_STATS {
+            let status = self.runtime.status();
+            let suppressed = self
+                .reload
+                .pipeline
+                .as_ref()
+                .map_or(0, |p| p.0.suppressions().len());
+            return to_value(tools::learning_stats(
+                status.learning,
+                status.learned_entries as usize,
+                status.user_dict_entries as usize,
+                suppressed,
+                dir.as_deref().and_then(std::path::Path::parent),
+            ));
+        }
+        let Some(dir) = dir else {
+            return Err(ErrorObject::new(
+                error_code::ENGINE_FAILURE,
+                "ユーザー辞書の保存先がありません",
+            ));
+        };
+        let max = self.runtime.tunables().userdict_max_entries;
+        match req.method.as_str() {
+            names::LIST_USER_DICT => to_value(tools::list(&dir, &params_or_default(req)?, max)),
+            names::EXPORT_USER_DICT => to_value(tools::export(&dir)),
+            names::ADD_USER_DICT_ENTRY => {
+                let r = tools::add(&dir, &params(req)?, max).map_err(tool_error)?;
+                self.reload_all();
+                to_value(r)
+            }
+            names::UPDATE_USER_DICT_ENTRY => {
+                tools::update(&dir, &params(req)?).map_err(tool_error)?;
+                self.reload_all();
+                to_value(EmptyResult {})
+            }
+            names::REMOVE_USER_DICT_ENTRIES => {
+                let r = tools::remove(&dir, &params(req)?).map_err(tool_error)?;
+                self.reload_all();
+                to_value(r)
+            }
+            _ => {
+                use base64::Engine as _;
+                let p: nagi_protocol::userdict::MergeUserDictParams = params(req)?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(p.data_base64.trim())
+                    .map_err(|_| {
+                        ErrorObject::new(error_code::INVALID_PARAMS, "data_base64 が不正です")
+                    })?;
+                let r = tools::merge(&dir, &bytes, &p, max).map_err(tool_error)?;
+                if r.imported > 0 || r.replaced > 0 {
+                    self.reload_all();
+                }
+                to_value(r)
+            }
+        }
+    }
+
     /// 抑制語を編集して即座にファイルへ保存し、パイプラインへ反映する。
     /// `edit` は変更があれば `Ok(true)`、不正な入力なら理由を返す
     fn edit_suppressions(
@@ -809,6 +897,37 @@ impl Server {
                 let p: ValidateKeymapParams = params(req)?;
                 to_value(crate::keymap_tools::validate_fragment(&p.toml))
             }
+            method::SET_KEYMAP => {
+                self.require_initialized()?;
+                let p: SetKeymapParams = params(req)?;
+                self.edit_keymap(crate::keymap_tools::EditRequest::Set {
+                    context: p.context,
+                    key: p.key,
+                    action: p.action,
+                })
+            }
+            method::RESET_KEYMAP => {
+                self.require_initialized()?;
+                let p: ResetKeymapParams = params(req)?;
+                self.edit_keymap(crate::keymap_tools::EditRequest::Reset {
+                    scope: p.scope,
+                    context: p.context,
+                })
+            }
+            method::IMPORT_KEYMAP => {
+                self.require_initialized()?;
+                let p: ImportKeymapParams = params(req)?;
+                self.edit_keymap(crate::keymap_tools::EditRequest::Import {
+                    toml: p.toml,
+                    merge: p.merge,
+                })
+            }
+            method::EXPORT_KEYMAP => {
+                self.require_initialized()?;
+                crate::keymap_tools::export_toml(self.reload.config_path.as_deref())
+                    .map_err(keymap_edit_error)
+                    .and_then(|toml| to_value(ExportKeymapResult { toml }))
+            }
             method::GET_KEY_TABLE => {
                 self.require_initialized()?;
                 to_value({
@@ -909,6 +1028,10 @@ impl Server {
                     errors: outcome.errors,
                     snapshot: crate::settings::snapshot(self.reload.config_path.as_deref()),
                 })
+            }
+            m if crate::userdict_tools::is_userdict_method(m) => {
+                self.require_initialized()?;
+                self.userdict_rpc(req)
             }
             method::IMPORT_USER_DICT => {
                 self.require_initialized()?;

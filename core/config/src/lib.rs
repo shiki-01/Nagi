@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod keymap_edit;
 pub mod keymap_fragment;
 pub mod settings;
 pub mod windows_ui;

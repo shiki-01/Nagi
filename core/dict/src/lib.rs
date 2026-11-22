@@ -32,8 +32,8 @@ pub use convert::{ConvertedSegment, PathInfo, PathWordInfo, SegmentCandidate};
 pub use dictionary::{Dictionary, Entry};
 pub use error::DictError;
 pub use import::{
-    ImportError, ImportFormat, ImportOutcome, ImportSkip, SkipReason, decode_import,
-    import_user_dict,
+    ImportError, ImportFormat, ImportOutcome, ImportSkip, MOZC_POS, SkipReason, decode_import,
+    import_user_dict, valid_reading,
 };
 pub use kanalm::KanaLm;
 pub use nbest::SentenceCandidate;

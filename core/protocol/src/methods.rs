@@ -48,6 +48,14 @@ pub mod method {
     pub const GET_KEYMAP: &str = "get_keymap";
     /// `validate_keymap` メソッド（`[keymap.*]` の TOML 断片の検証。拒否ではなく警告を返す）
     pub const VALIDATE_KEYMAP: &str = "validate_keymap";
+    /// `set_keymap` メソッド（1 キーの割当を `config.toml` の `[keymap.*]` に保存・解除する）
+    pub const SET_KEYMAP: &str = "set_keymap";
+    /// `reset_keymap` メソッド（文脈ごと・全体の利用者の上書きを消す）
+    pub const RESET_KEYMAP: &str = "reset_keymap";
+    /// `export_keymap` メソッド（利用者の上書きを `[keymap.*]` の TOML 断片で返す）
+    pub const EXPORT_KEYMAP: &str = "export_keymap";
+    /// `import_keymap` メソッド（`[keymap.*]` の TOML 断片を検証して `config.toml` に反映する）
+    pub const IMPORT_KEYMAP: &str = "import_keymap";
     /// `unload_model` メソッド（変換モデルだけをメモリから解放し、辞書のみで動く状態にする）
     pub const UNLOAD_MODEL: &str = "unload_model";
     /// `reload_model` メソッド（解放した変換モデルを再び読み込む）
@@ -1140,4 +1148,73 @@ pub struct ValidateKeymapResult {
     /// 有効だが注意が要るもの（二重割当・重要キーの上書き・文字入力との衝突・OS 予約キー）。
     /// 拒否ではなく確認のための情報
     pub warnings: Vec<KeymapIssue>,
+}
+
+// ---- キー割当の編集（`set_keymap` / `reset_keymap` / `export_keymap` / `import_keymap`） ----
+
+/// `set_keymap` メソッドの要求パラメータ
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetKeymapParams {
+    /// 文脈。上書きできるのは `composing` / `converting` だけ（`common` / `direct` は `INVALID_PARAMS`）
+    pub context: KeymapContext,
+    /// キー仕様文字列（`Ctrl+Shift+Right` 形式）
+    pub key: String,
+    /// 割り当てる Action 名。省略（`null`）するとそのキーの利用者の上書きを解除する
+    /// （既定・プリセットの割当があればそれに戻る）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub action: Option<String>,
+}
+
+/// `reset_keymap` の範囲
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeymapResetScope {
+    /// 指定した文脈の利用者の上書きをすべて消す
+    Context,
+    /// すべての文脈の利用者の上書きを消す（`keymap.preset` は変えない）
+    All,
+}
+
+/// `reset_keymap` メソッドの要求パラメータ
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetKeymapParams {
+    /// 範囲
+    pub scope: KeymapResetScope,
+    /// `scope = context` のときの文脈（`composing` / `converting`）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context: Option<KeymapContext>,
+}
+
+/// `import_keymap` メソッドの要求パラメータ
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportKeymapParams {
+    /// `[keymap]`（`preset`）・`[keymap.composing]`・`[keymap.converting]` だけを含む TOML の断片。
+    /// 解釈できない行（`validate_keymap` の `errors`）が 1 つでもあれば、何も反映せず `INVALID_PARAMS`
+    pub toml: String,
+    /// `true` なら既存の上書きを残して足す。省略・`false` は既存の上書きをすべて断片の内容に置き換える
+    #[serde(default)]
+    pub merge: bool,
+}
+
+/// キー割当を編集した結果（`set_keymap` / `reset_keymap` / `import_keymap` の応答）
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditKeymapResult {
+    /// 保存して設定を読み直した後の一覧（`get_keymap` の既定の応答と同じ）
+    pub keymap: GetKeymapResult,
+    /// 保存した内容への注意（二重割当・重要キーの上書き・文字入力との衝突・OS 予約キー。保存は済んでいる）
+    pub warnings: Vec<KeymapIssue>,
+}
+
+/// `export_keymap` メソッドの応答
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportKeymapResult {
+    /// 利用者の上書き（`keymap.preset` が標準以外ならそれも）を `[keymap.*]` の TOML 断片にしたもの。
+    /// 上書きが無ければ空文字列
+    pub toml: String,
 }

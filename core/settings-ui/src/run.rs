@@ -2,7 +2,7 @@
 //! WebView2 版は固定ポートを優先）。
 
 use crate::backend::SettingsBackend;
-use crate::http::{App, MAX_BODY, Request, Response, TOKEN_HEADER};
+use crate::http::{App, Request, Response, TOKEN_HEADER};
 use crate::webview_host::port_candidates;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,7 +57,7 @@ fn to_request(request: &mut tiny_http::Request) -> Request {
     // 上限 + 1 バイトまで読み、超えていれば検査側が 413 にする
     let _ = request
         .as_reader()
-        .take(MAX_BODY as u64 + 1)
+        .take(crate::http::userdict::max_body_for(&path) as u64 + 1)
         .read_to_end(&mut body);
     Request {
         method: request.method().as_str().to_ascii_uppercase(),

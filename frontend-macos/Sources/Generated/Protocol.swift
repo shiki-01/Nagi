@@ -30,6 +30,59 @@ public struct AcceptRetroReviewResult: Codable {
 	}
 }
 
+/// ユーザー辞書の 1 語（Mozc TSV の 1 行）
+public struct UserDictEntry: Codable {
+	/// 読み（ひらがな。カタカナはひらがなに直して保存する）
+	public let reading: String
+	/// 単語（スニペットでは展開後の定型文。改行を含められる）
+	public let surface: String
+	/// 品詞（Mozc の品詞名または `スニペット`。省略すると `名詞`）
+	public let pos: String?
+	/// コメント（省略可）
+	public let comment: String?
+
+	public init(reading: String, surface: String, pos: String?, comment: String?) {
+		self.reading = reading
+		self.surface = surface
+		self.pos = pos
+		self.comment = comment
+	}
+}
+
+/// 重複（同じ読みと単語）の扱い
+public enum UserDictDuplicate: String, Codable {
+	/// 既存を残して新しい方を取り込まない
+	case skip
+	/// 既存の品詞・コメントを新しい内容で上書きする
+	case overwrite
+}
+
+/// `add_user_dict_entry` の要求パラメータ
+public struct AddUserDictEntryParams: Codable {
+	/// 登録する語
+	public let entry: UserDictEntry
+	/// 同じ読みと単語が既にあるときの扱い。省略するとエラー
+	public let on_duplicate: UserDictDuplicate?
+
+	public init(entry: UserDictEntry, on_duplicate: UserDictDuplicate?) {
+		self.entry = entry
+		self.on_duplicate = on_duplicate
+	}
+}
+
+/// `add_user_dict_entry` の応答
+public struct AddUserDictEntryResult: Codable {
+	/// 新しく登録したか
+	public let added: Bool
+	/// 既存を上書きしたか
+	public let replaced: Bool
+
+	public init(added: Bool, replaced: Bool) {
+		self.added = added
+		self.replaced = replaced
+	}
+}
+
 /// 候補の出所（出元のモデル・辞書等）
 public enum CandidateSource: String, Codable {
 	/// 学習キャッシュ
@@ -219,80 +272,6 @@ public struct ConfigError: Codable {
 	}
 }
 
-/// 空の結果（`ping` / `shutdown` / `focus_in`）
-public struct EmptyResult: Codable {
-	public init() {}
-}
-
-/// フリックの詳細（12 キーのかな入力）。方向が閾値に近いときに、隣の方向を低コストで候補にする
-public struct FlickDetail: Codable {
-	/// フリックの角度（度。右 = 0、上 = 90、左 = 180、下 = 270 または -90。反時計回り）
-	public let angle_deg: Double
-	/// 指を動かした距離（キー幅を 1 とする）
-	public let distance: Double
-
-	public init(angle_deg: Double, distance: Double) {
-		self.angle_deg = angle_deg
-		self.distance = distance
-	}
-}
-
-/// 小数項目の範囲
-public struct FloatRange: Codable {
-	/// 最小値
-	public let min: Double
-	/// 最大値
-	public let max: Double
-	/// UI の刻み
-	public let step: Double
-
-	public init(min: Double, max: Double, step: Double) {
-		self.min = min
-		self.max = max
-		self.step = step
-	}
-}
-
-/// 曖昧入力の「もしかして」候補の採用状況（補正の種類ごと）
-public struct FuzzyStatsItem: Codable {
-	/// 補正の種類（`voicing` / `substitute` / `transpose` / `insert` / `delete` / `mixed`）
-	public let kind: String
-	/// 候補として提示された回数
-	public let shown: UInt32
-	/// 選ばれて確定された回数
-	public let adopted: UInt32
-	/// 今の出やすさの倍率（1.0 未満は出やすく、1.0 超は出にくい。データ不足・個人化オフは 1.0）
-	public let margin_scale: Double
-
-	public init(kind: String, shown: UInt32, adopted: UInt32, margin_scale: Double) {
-		self.kind = kind
-		self.shown = shown
-		self.adopted = adopted
-		self.margin_scale = margin_scale
-	}
-}
-
-/// `get_fuzzy_stats` メソッドの応答
-public struct GetFuzzyStatsResult: Codable {
-	/// 種類ごとの採用状況（記録のある種類だけ。種類の名前順）
-	public let items: [FuzzyStatsItem]
-
-	public init(items: [FuzzyStatsItem]) {
-		self.items = items
-	}
-}
-
-/// `get_keymap` メソッドの要求パラメータ
-public struct GetKeymapParams: Codable {
-	/// 一覧を作るプリセット。省略すると現在の設定（`keymap.preset`）。指定すると、そのプリセットに
-	/// 切り替えたときの一覧（現在の利用者の上書きは常にプリセットに優先して残る）
-	public let preset: String?
-
-	public init(preset: String?) {
-		self.preset = preset
-	}
-}
-
 /// 同梱のキーマッププリセット
 public struct KeymapPresetInfo: Codable {
 	/// `keymap.preset` に書く名前
@@ -390,6 +369,181 @@ public struct GetKeymapResult: Codable {
 	}
 }
 
+/// キー割当の検証結果の種別
+public enum KeymapIssueKind: String, Codable {
+	/// TOML の構文・形式の誤り（その行は無視される）
+	case syntax
+	/// 解釈できないキー（その行は無視される）
+	case invalidKey = "invalid_key"
+	/// 解釈できない Action（その行は無視される）
+	case invalidAction = "invalid_action"
+	/// 未知のプリセット名（標準が使われる）
+	case unknownPreset = "unknown_preset"
+	/// 同じ文脈で同じキーを 2 回以上割り当てている（後のものが有効）
+	case duplicateBinding = "duplicate_binding"
+	/// 重要なキー（Enter / Esc / Space / 矢印 / Backspace）の割当を変えている
+	case overridesEssentialKey = "overrides_essential_key"
+	/// 文字入力のキー（修飾なしの印字文字・候補選択の数字）を奪う
+	case shadowsTextInput = "shadows_text_input"
+	/// OS が先に処理するキー（Alt+F4・Win/Cmd 系など）なので届かないことがある
+	case osReserved = "os_reserved"
+}
+
+/// キー割当の検証で見つかった問題 1 件。`errors` は無視される行、`warnings` は有効だが注意が要るもの
+public struct KeymapIssue: Codable {
+	/// 種別
+	public let kind: KeymapIssueKind
+	/// 断片内の行番号（1 始まり。特定できなければ 0）
+	public let line: UInt32
+	/// 文脈（キー・Action に関する問題のとき）
+	public let context: KeymapContext?
+	/// キー仕様文字列（書かれたまま）
+	public let key: String?
+	/// 日本語の説明
+	public let message: String
+
+	public init(kind: KeymapIssueKind, line: UInt32, context: KeymapContext?, key: String?, message: String) {
+		self.kind = kind
+		self.line = line
+		self.context = context
+		self.key = key
+		self.message = message
+	}
+}
+
+/// キー割当を編集した結果（`set_keymap` / `reset_keymap` / `import_keymap` の応答）
+public struct EditKeymapResult: Codable {
+	/// 保存して設定を読み直した後の一覧（`get_keymap` の既定の応答と同じ）
+	public let keymap: GetKeymapResult
+	/// 保存した内容への注意（二重割当・重要キーの上書き・文字入力との衝突・OS 予約キー。保存は済んでいる）
+	public let warnings: [KeymapIssue]
+
+	public init(keymap: GetKeymapResult, warnings: [KeymapIssue]) {
+		self.keymap = keymap
+		self.warnings = warnings
+	}
+}
+
+/// 空の結果（`ping` / `shutdown` / `focus_in`）
+public struct EmptyResult: Codable {
+	public init() {}
+}
+
+/// `export_keymap` メソッドの応答
+public struct ExportKeymapResult: Codable {
+	/// 利用者の上書き（`keymap.preset` が標準以外ならそれも）を `[keymap.*]` の TOML 断片にしたもの。
+	/// 上書きが無ければ空文字列
+	public let toml: String
+
+	public init(toml: String) {
+		self.toml = toml
+	}
+}
+
+/// `export_user_dict` の応答
+public struct ExportUserDictResult: Codable {
+	/// Mozc TSV（UTF-8。1 行 `読み<TAB>単語<TAB>品詞<TAB>コメント`）
+	public let text: String
+	/// 書き出した語数
+	public let count: UInt32
+
+	public init(text: String, count: UInt32) {
+		self.text = text
+		self.count = count
+	}
+}
+
+/// フリックの詳細（12 キーのかな入力）。方向が閾値に近いときに、隣の方向を低コストで候補にする
+public struct FlickDetail: Codable {
+	/// フリックの角度（度。右 = 0、上 = 90、左 = 180、下 = 270 または -90。反時計回り）
+	public let angle_deg: Double
+	/// 指を動かした距離（キー幅を 1 とする）
+	public let distance: Double
+
+	public init(angle_deg: Double, distance: Double) {
+		self.angle_deg = angle_deg
+		self.distance = distance
+	}
+}
+
+/// 小数項目の範囲
+public struct FloatRange: Codable {
+	/// 最小値
+	public let min: Double
+	/// 最大値
+	public let max: Double
+	/// UI の刻み
+	public let step: Double
+
+	public init(min: Double, max: Double, step: Double) {
+		self.min = min
+		self.max = max
+		self.step = step
+	}
+}
+
+/// 曖昧入力の「もしかして」候補の採用状況（補正の種類ごと）
+public struct FuzzyStatsItem: Codable {
+	/// 補正の種類（`voicing` / `substitute` / `transpose` / `insert` / `delete` / `mixed`）
+	public let kind: String
+	/// 候補として提示された回数
+	public let shown: UInt32
+	/// 選ばれて確定された回数
+	public let adopted: UInt32
+	/// 今の出やすさの倍率（1.0 未満は出やすく、1.0 超は出にくい。データ不足・個人化オフは 1.0）
+	public let margin_scale: Double
+
+	public init(kind: String, shown: UInt32, adopted: UInt32, margin_scale: Double) {
+		self.kind = kind
+		self.shown = shown
+		self.adopted = adopted
+		self.margin_scale = margin_scale
+	}
+}
+
+/// `get_fuzzy_stats` メソッドの応答
+public struct GetFuzzyStatsResult: Codable {
+	/// 種類ごとの採用状況（記録のある種類だけ。種類の名前順）
+	public let items: [FuzzyStatsItem]
+
+	public init(items: [FuzzyStatsItem]) {
+		self.items = items
+	}
+}
+
+/// `get_keymap` メソッドの要求パラメータ
+public struct GetKeymapParams: Codable {
+	/// 一覧を作るプリセット。省略すると現在の設定（`keymap.preset`）。指定すると、そのプリセットに
+	/// 切り替えたときの一覧（現在の利用者の上書きは常にプリセットに優先して残る）
+	public let preset: String?
+
+	public init(preset: String?) {
+		self.preset = preset
+	}
+}
+
+/// `get_learning_stats` の応答。学習した語・入力の内容は含めない（件数と時刻だけ）
+public struct GetLearningStatsResult: Codable {
+	/// 学習が有効か（設定として。secure input 中などの一時停止は含まない）
+	public let enabled: Bool
+	/// 学習した語（読みと表記の組）の件数
+	public let learned_entries: UInt32
+	/// ユーザー辞書の登録数（語 + スニペット）
+	public let user_dict_entries: UInt32
+	/// 抑制語の件数
+	public let suppressed_entries: UInt32
+	/// 学習ファイルを最後に保存した時刻（UNIX 秒。まだ保存されていなければ省略）
+	public let last_saved_unix: UInt32?
+
+	public init(enabled: Bool, learned_entries: UInt32, user_dict_entries: UInt32, suppressed_entries: UInt32, last_saved_unix: UInt32?) {
+		self.enabled = enabled
+		self.learned_entries = learned_entries
+		self.user_dict_entries = user_dict_entries
+		self.suppressed_entries = suppressed_entries
+		self.last_saved_unix = last_saved_unix
+	}
+}
+
 /// グライド入力の軌跡の点 1 つ。座標は `set_layout_geometry` の `keys` と同じ座標系
 /// （キーボード view のローカル座標。左上が原点、単位は問わない）
 public struct GlidePoint: Codable {
@@ -428,6 +582,20 @@ public struct GlideInputParams: Codable {
 		self.session_id = session_id
 		self.points = points
 		self.layout_id = layout_id
+	}
+}
+
+/// `import_keymap` メソッドの要求パラメータ
+public struct ImportKeymapParams: Codable {
+	/// `[keymap]`（`preset`）・`[keymap.composing]`・`[keymap.converting]` だけを含む TOML の断片。
+	/// 解釈できない行（`validate_keymap` の `errors`）が 1 つでもあれば、何も反映せず `INVALID_PARAMS`
+	public let toml: String
+	/// `true` なら既存の上書きを残して足す。省略・`false` は既存の上書きをすべて断片の内容に置き換える
+	public let merge: Bool?
+
+	public init(toml: String, merge: Bool?) {
+		self.toml = toml
+		self.merge = merge
 	}
 }
 
@@ -858,48 +1026,6 @@ public struct KeyTableResult: Codable {
 	}
 }
 
-/// キー割当の検証結果の種別
-public enum KeymapIssueKind: String, Codable {
-	/// TOML の構文・形式の誤り（その行は無視される）
-	case syntax
-	/// 解釈できないキー（その行は無視される）
-	case invalidKey = "invalid_key"
-	/// 解釈できない Action（その行は無視される）
-	case invalidAction = "invalid_action"
-	/// 未知のプリセット名（標準が使われる）
-	case unknownPreset = "unknown_preset"
-	/// 同じ文脈で同じキーを 2 回以上割り当てている（後のものが有効）
-	case duplicateBinding = "duplicate_binding"
-	/// 重要なキー（Enter / Esc / Space / 矢印 / Backspace）の割当を変えている
-	case overridesEssentialKey = "overrides_essential_key"
-	/// 文字入力のキー（修飾なしの印字文字・候補選択の数字）を奪う
-	case shadowsTextInput = "shadows_text_input"
-	/// OS が先に処理するキー（Alt+F4・Win/Cmd 系など）なので届かないことがある
-	case osReserved = "os_reserved"
-}
-
-/// キー割当の検証で見つかった問題 1 件。`errors` は無視される行、`warnings` は有効だが注意が要るもの
-public struct KeymapIssue: Codable {
-	/// 種別
-	public let kind: KeymapIssueKind
-	/// 断片内の行番号（1 始まり。特定できなければ 0）
-	public let line: UInt32
-	/// 文脈（キー・Action に関する問題のとき）
-	public let context: KeymapContext?
-	/// キー仕様文字列（書かれたまま）
-	public let key: String?
-	/// 日本語の説明
-	public let message: String
-
-	public init(kind: KeymapIssueKind, line: UInt32, context: KeymapContext?, key: String?, message: String) {
-		self.kind = kind
-		self.line = line
-		self.context = context
-		self.key = key
-		self.message = message
-	}
-}
-
 /// キー矩形 1 つ（`set_layout_geometry`）
 public struct LayoutKey: Codable {
 	/// フロントのキー ID（識別用。補正には使わない）
@@ -946,6 +1072,147 @@ public struct ListSuppressedResult: Codable {
 
 	public init(items: [SuppressedItem]) {
 		self.items = items
+	}
+}
+
+/// 一覧の並べ替えの基準
+public enum UserDictSort: String, Codable {
+	/// 登録順（ファイル名順・ファイル内の行順）
+	case registered
+	/// 読み
+	case reading
+	/// 単語
+	case surface
+	/// 品詞
+	case pos
+}
+
+/// `list_user_dict` の要求パラメータ（すべて省略可）
+public struct ListUserDictParams: Codable {
+	/// 検索語（読み・単語・コメント・品詞に部分一致。大文字小文字・カタカナ/ひらがなを区別しない）
+	public let query: String?
+	/// 並べ替え（既定: 登録順）
+	public let sort: UserDictSort?
+	/// 降順にするか（既定: 昇順）
+	public let descending: Bool?
+	/// 何件目から返すか（既定 0）
+	public let offset: UInt32?
+	/// 最大件数（既定 100、上限 500）
+	public let limit: UInt32?
+
+	public init(query: String?, sort: UserDictSort?, descending: Bool?, offset: UInt32?, limit: UInt32?) {
+		self.query = query
+		self.sort = sort
+		self.descending = descending
+		self.offset = offset
+		self.limit = limit
+	}
+}
+
+/// 一覧の 1 行（登録語 + どのファイルにあるか）
+public struct UserDictListItem: Codable {
+	/// 読み
+	public let reading: String
+	/// 単語
+	public let surface: String
+	/// 品詞
+	public let pos: String
+	/// コメント
+	public let comment: String
+	/// 登録されているファイル名（ユーザー辞書フォルダ内）
+	public let file: String
+
+	public init(reading: String, surface: String, pos: String, comment: String, file: String) {
+		self.reading = reading
+		self.surface = surface
+		self.pos = pos
+		self.comment = comment
+		self.file = file
+	}
+}
+
+/// `list_user_dict` の応答
+public struct ListUserDictResult: Codable {
+	/// 該当した語（`offset` から `limit` 件）
+	public let items: [UserDictListItem]
+	/// 登録語の総数
+	public let total: UInt32
+	/// 検索に一致した件数（検索語が無ければ `total` と同じ）
+	public let matched: UInt32
+	/// 返した先頭の位置
+	public let offset: UInt32
+	/// 登録できる上限（`userdict.max_entries`）
+	public let max_entries: UInt32
+	/// 選べる品詞（Mozc の品詞名 + `スニペット`）
+	public let pos_options: [String]
+
+	public init(items: [UserDictListItem], total: UInt32, matched: UInt32, offset: UInt32, max_entries: UInt32, pos_options: [String]) {
+		self.items = items
+		self.total = total
+		self.matched = matched
+		self.offset = offset
+		self.max_entries = max_entries
+		self.pos_options = pos_options
+	}
+}
+
+/// 取り込みをスキップした行（行番号つき）
+public struct MergeSkippedLine: Codable {
+	/// 行番号（1 始まり。plist では辞書の通し番号）
+	public let line: UInt32
+	/// 理由の識別子（`ImportSkipReason::reason` と同じ）
+	public let reason: String
+	/// 表示用の説明（日本語）
+	public let message: String
+
+	public init(line: UInt32, reason: String, message: String) {
+		self.line = line
+		self.reason = reason
+		self.message = message
+	}
+}
+
+/// `merge_user_dict` の要求パラメータ（`import_user_dict` + 重複の扱い）
+public struct MergeUserDictParams: Codable {
+	/// ファイルの中身（バイト列そのものを base64 で。文字コードの判定はコアが行う）
+	public let data_base64: String
+	/// 形式のヒント（省略すると自動判定）
+	public let format: UserDictFormat?
+	/// 既存と同じ読み・単語の扱い（省略すると `skip`）
+	public let on_duplicate: UserDictDuplicate?
+
+	public init(data_base64: String, format: UserDictFormat?, on_duplicate: UserDictDuplicate?) {
+		self.data_base64 = data_base64
+		self.format = format
+		self.on_duplicate = on_duplicate
+	}
+}
+
+/// `merge_user_dict` の応答
+public struct MergeUserDictResult: Codable {
+	/// 判定（または指定）された形式
+	public let format: UserDictFormat
+	/// 読み取った項目の総数
+	public let total: UInt32
+	/// 新たに取り込んだ件数
+	public let imported: UInt32
+	/// 既存を上書きした件数
+	public let replaced: UInt32
+	/// スキップした件数
+	public let skipped: UInt32
+	/// スキップの理由ごとの内訳
+	public let skipped_reasons: [ImportSkipReason]
+	/// スキップした行（先頭から最大 50 件。行番号つき）
+	public let skipped_lines: [MergeSkippedLine]
+
+	public init(format: UserDictFormat, total: UInt32, imported: UInt32, replaced: UInt32, skipped: UInt32, skipped_reasons: [ImportSkipReason], skipped_lines: [MergeSkippedLine]) {
+		self.format = format
+		self.total = total
+		self.imported = imported
+		self.replaced = replaced
+		self.skipped = skipped
+		self.skipped_reasons = skipped_reasons
+		self.skipped_lines = skipped_lines
 	}
 }
 
@@ -1378,6 +1645,63 @@ public struct ReloadConfigResult: Codable {
 	}
 }
 
+/// 語を指す（編集・削除の対象）。同じ読み・表記が複数のファイルにあるときは `file` で区別する
+public struct UserDictKey: Codable {
+	/// 読み
+	public let reading: String
+	/// 単語
+	public let surface: String
+	/// ファイル名。省略すると、同じ読み・表記のすべて
+	public let file: String?
+
+	public init(reading: String, surface: String, file: String?) {
+		self.reading = reading
+		self.surface = surface
+		self.file = file
+	}
+}
+
+/// `remove_user_dict_entries` の要求パラメータ
+public struct RemoveUserDictEntriesParams: Codable {
+	/// 削除する語
+	public let items: [UserDictKey]
+
+	public init(items: [UserDictKey]) {
+		self.items = items
+	}
+}
+
+/// `remove_user_dict_entries` の応答
+public struct RemoveUserDictEntriesResult: Codable {
+	/// 削除した件数
+	public let removed: UInt32
+
+	public init(removed: UInt32) {
+		self.removed = removed
+	}
+}
+
+/// `reset_keymap` の範囲
+public enum KeymapResetScope: String, Codable {
+	/// 指定した文脈の利用者の上書きをすべて消す
+	case context
+	/// すべての文脈の利用者の上書きを消す（`keymap.preset` は変えない）
+	case all
+}
+
+/// `reset_keymap` メソッドの要求パラメータ
+public struct ResetKeymapParams: Codable {
+	/// 範囲
+	public let scope: KeymapResetScope
+	/// `scope = context` のときの文脈（`composing` / `converting`）
+	public let context: KeymapContext?
+
+	public init(scope: KeymapResetScope, context: KeymapContext?) {
+		self.scope = scope
+		self.context = context
+	}
+}
+
 /// エンジン再起動時の復元セグメント
 public struct RestoreSegment: Codable {
 	/// ひらがな読み
@@ -1505,6 +1829,23 @@ public struct SetContextParams: Codable {
 		self.surrounding_text = surrounding_text
 		self.app_id = app_id
 		self.secure_input = secure_input
+	}
+}
+
+/// `set_keymap` メソッドの要求パラメータ
+public struct SetKeymapParams: Codable {
+	/// 文脈。上書きできるのは `composing` / `converting` だけ（`common` / `direct` は `INVALID_PARAMS`）
+	public let context: KeymapContext
+	/// キー仕様文字列（`Ctrl+Shift+Right` 形式）
+	public let key: String
+	/// 割り当てる Action 名。省略（`null`）するとそのキーの利用者の上書きを解除する
+	/// （既定・プリセットの割当があればそれに戻る）
+	public let action: String?
+
+	public init(context: KeymapContext, key: String, action: String?) {
+		self.context = context
+		self.key = key
+		self.action = action
 	}
 }
 
@@ -1884,6 +2225,19 @@ public struct UpdateSettingsResult: Codable {
 		self.applied = applied
 		self.errors = errors
 		self.snapshot = snapshot
+	}
+}
+
+/// `update_user_dict_entry` の要求パラメータ
+public struct UpdateUserDictEntryParams: Codable {
+	/// 編集する語
+	public let target: UserDictKey
+	/// 新しい内容（読み・単語も変えられる）
+	public let entry: UserDictEntry
+
+	public init(target: UserDictKey, entry: UserDictEntry) {
+		self.target = target
+		self.entry = entry
 	}
 }
 

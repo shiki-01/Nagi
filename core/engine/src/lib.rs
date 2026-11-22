@@ -27,6 +27,8 @@ pub use engine::{
 };
 pub use ir::{Candidate, CandidateSet, CursorPos, Preedit, Segment};
 pub use keymap::{KeyContext, KeyMap, Preset, action_spec, parse_action};
-pub use keymap_info::{BindingInput, assignable_actions, preset_infos, validate_bindings};
+pub use keymap_info::{
+    BindingInput, assignable_actions, canonical_key, preset_infos, validate_bindings,
+};
 pub use keys::{KeyParseError, key_from_text, parse_key};
 pub use observer::{CommitContext, CommitObserver, CommittedSegment};

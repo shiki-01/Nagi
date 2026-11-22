@@ -9,6 +9,7 @@
 //! - [`view`]: 表示型（PreeditView、CandidatesView、InputMode など）
 //! - [`methods`]: メソッドの params/result 型と method 名定数
 //! - [`settings`]: 設定 RPC（`get_settings` / `update_settings`）の型
+//! - [`userdict`]: ユーザー辞書・学習の管理 RPC の型
 //! - [`utf16`]: UTF-16 ユーティリティ（offset 変換）
 //! - [`jsonrpc`]: JSON-RPC エンベロープ・エラーコード（typeshare 対象外）
 
@@ -19,6 +20,7 @@ pub mod jsonrpc;
 pub mod key;
 pub mod methods;
 pub mod settings;
+pub mod userdict;
 pub mod utf16;
 pub mod view;
 

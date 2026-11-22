@@ -8,6 +8,9 @@
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const APP_CSS: &str = include_str!("../assets/app.css");
 const APP_JS: &str = include_str!("../assets/app.js");
+const KEYMAP_JS: &str = include_str!("../assets/keymap.js");
+const USERDICT_JS: &str = include_str!("../assets/userdict.js");
+const USERDICT_CSS: &str = include_str!("../assets/userdict.css");
 const ICON_SVG: &str = include_str!("../assets/icon.svg");
 
 /// 配る静的ファイル 1 つ
@@ -22,7 +25,7 @@ pub struct StaticAsset {
 }
 
 /// 配る静的ファイルの一覧（HTML が参照するものだけ）
-pub const STATIC_ASSETS: [StaticAsset; 3] = [
+pub const STATIC_ASSETS: [StaticAsset; 6] = [
     StaticAsset {
         path: "/app.css",
         content_type: "text/css; charset=utf-8",
@@ -32,6 +35,21 @@ pub const STATIC_ASSETS: [StaticAsset; 3] = [
         path: "/app.js",
         content_type: "text/javascript; charset=utf-8",
         body: APP_JS,
+    },
+    StaticAsset {
+        path: "/keymap.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: KEYMAP_JS,
+    },
+    StaticAsset {
+        path: "/userdict.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: USERDICT_JS,
+    },
+    StaticAsset {
+        path: "/userdict.css",
+        content_type: "text/css; charset=utf-8",
+        body: USERDICT_CSS,
     },
     StaticAsset {
         path: "/icon.svg",

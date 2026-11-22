@@ -162,6 +162,7 @@
     var list = [];
     if (screen) visibleGroups().forEach(function (g) { list.push({ id: "cat:" + g.name, title: g.name, icon: categoryIcon(g.name), section: "settings" }); });
     else list.push({ id: "status", title: "設定", icon: "sliders", section: "settings" });
+    if (screen) extraPages().forEach(function (x) { list.push({ id: x.id, title: x.title, icon: x.icon, section: "settings" }); });
     FIXED.forEach(function (f) { list.push({ id: f.id, title: f.title, icon: f.icon, section: "maint" }); });
     return list;
   }
@@ -273,6 +274,7 @@
     else if (page === "update") body.appendChild(pageUpdate());
     else if (page === "data") body.appendChild(pageData());
     else if (page === "diag") body.appendChild(pageDiag());
+    else if (extraPage(page)) body.appendChild(extraPage(page).render(pageApi));
     else body.appendChild(pageCategory(page.slice(4)));
     document.title = p.title + " - Nagi 設定";
     mainEl.scrollTop = keepScroll;
@@ -281,6 +283,17 @@
     var f = document.createDocumentFragment();
     nodes.forEach(function (n) { if (n) f.appendChild(n); });
     return f;
+  }
+
+  // ---- 追加ページ（別ファイルの JS が window.NagiPages に {id, title, icon, render(ui)} を登録する） ----
+  var pageApi = {
+    el: el, icon: icon, icons: ICONS, api: api, button: button, card: card, section: section, hero: hero, badge: badge,
+    frag: frag, toast: toast, announce: announce, loadPref: loadPref, savePref: savePref, setScreen: setScreen, itemByKey: function (k) { return itemByKey[k]; }
+  };
+  function extraPages() { return window.NagiPages || []; }
+  function extraPage(id) {
+    for (var i = 0; i < extraPages().length; i++) if (extraPages()[i].id === id) return extraPages()[i];
+    return null;
   }
 
   // ---- 設定カテゴリ ----

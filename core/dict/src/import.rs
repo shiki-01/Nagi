@@ -196,7 +196,7 @@ fn data_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
 }
 
 /// 読みとして使える文字か（ひらがな・長音・中黒・ASCII の英数字とハイフン）
-fn valid_reading(reading: &str) -> bool {
+pub fn valid_reading(reading: &str) -> bool {
     !reading.is_empty()
         && reading.chars().all(|c| {
             matches!(c, '\u{3041}'..='\u{3096}' | '\u{309b}'..='\u{309f}')
@@ -208,7 +208,7 @@ fn valid_reading(reading: &str) -> bool {
 }
 
 /// Mozc のユーザー辞書の品詞名（`dict/src/overlay.rs` が対応づけるもの）
-const MOZC_POS: &[&str] = &[
+pub const MOZC_POS: &[&str] = &[
     "名詞",
     "固有名詞",
     "人名",

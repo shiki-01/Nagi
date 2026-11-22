@@ -1,0 +1,68 @@
+/* ユーザー辞書・学習と抑制語ページ（userdict.js）。色・形は app.css の変数と部品（.card .btn .field .badge）を使う */
+
+/* ---- ツールバー ---- */
+.ud-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; }
+.ud-tools .ud-search { flex: 1 1 200px; min-width: 160px; }
+.ud-tools select.field { width: 170px; }
+.ud-tools .spacer { flex: 1 1 0; }
+
+/* ---- 一覧（カードの直下に 1 行ずつ。行の間の線は .card が引く） ---- */
+.ud-head { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 6px 16px; background: var(--bg); color: var(--muted); font-size: 12px; }
+.ud-head .ud-count { flex: 1; min-width: 0; }
+.ud-row { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 16px; }
+.ud-check { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; }
+.ud-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.ud-main { flex: 1 1 auto; min-width: 0; }
+.ud-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.ud-word { font-size: 14px; font-weight: 600; line-height: 1.4; white-space: pre-line; overflow-wrap: anywhere; }
+.ud-reading { font-size: 13px; color: var(--muted); }
+.ud-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.ud-sub .tag { background: var(--neutral-bg); color: var(--neutral-fg); }
+.ud-sub .tag.snippet { background: var(--info-bg); color: var(--info-fg); }
+.ud-file { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.ud-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+.ud-empty { padding: 28px 16px; text-align: center; color: var(--muted); font-size: 13px; }
+.ud-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; color: var(--muted); font-size: 12px; }
+
+/* ---- ダイアログ（app.css の dialog を土台に、幅と高さだけ調整する） ---- */
+dialog.ud-dialog { width: min(480px, calc(100vw - 48px)); max-height: calc(100vh - 32px); overflow: auto; }
+dialog.ud-dialog.ud-wide { width: min(680px, calc(100vw - 48px)); }
+dialog.ud-dialog .dialog-body { padding: 20px 24px; }
+dialog.ud-dialog .dialog-body .buttons.end { margin: 20px -24px -20px; }
+.ud-actions .btn.danger { color: var(--danger); }
+.dialog-body p.ud-help { margin: 0; font-size: 12px; }
+
+/* ---- ダイアログの中の入力 ---- */
+.ud-form { display: flex; flex-direction: column; gap: 12px; }
+.ud-field { display: flex; flex-direction: column; gap: 4px; }
+.ud-field > label { font-size: 13px; }
+.ud-field .field { width: 100%; min-width: 0; }
+.ud-field textarea.field { height: auto; min-height: 84px; padding: 6px 10px; line-height: 1.5; resize: vertical; }
+.ud-help { font-size: 12px; color: var(--muted); }
+.dialog-body p.ud-error { margin: 0; font-size: 13px; color: var(--ng-fg); }
+.ud-error:empty { display: none; }
+.ud-file-line { display: flex; align-items: center; gap: 12px; }
+.ud-file-name { min-width: 0; flex: 1; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.ud-result { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-ctl); background: var(--bg); }
+.ud-result .chips { gap: 6px; }
+.ud-result ul { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+.ud-skips { max-height: 180px; overflow: auto; font-size: 12px; }
+.ud-skips li { display: flex; gap: 12px; }
+.ud-skips .ud-ln { flex: none; width: 5em; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+.ud-preview { width: 100%; resize: none; padding: 8px 10px; border: 1px solid var(--ctl-line); border-radius: var(--radius-ctl); background: var(--ctl); font: 12px/1.6 var(--mono); }
+
+/* ---- 学習と抑制語 ---- */
+.ud-addline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.ud-addline .ud-field { flex: 1 1 160px; }
+.ud-stat { display: flex; flex-wrap: wrap; gap: 0; }
+.ud-stat > div { flex: 1 1 140px; padding: 12px 16px; }
+.ud-stat dt { font-size: 12px; color: var(--muted); }
+.ud-stat dd { margin: 0; font: 600 20px/1.4 var(--font-display); font-variant-numeric: tabular-nums; }
+.ud-stat dd.small { font: 400 14px/1.6 var(--font); }
+.ud-stat > div + div { border-left: 1px solid var(--divider); }
+
+@media (forced-colors: active) {
+  .ud-head { background: Canvas; border-bottom: 1px solid GrayText; }
+  .ud-result, .ud-preview { border: 1px solid CanvasText; background: Canvas; color: CanvasText; }
+  .ud-check input { accent-color: Highlight; }
+}

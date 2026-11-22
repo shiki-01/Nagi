@@ -95,6 +95,13 @@ pub trait SettingsBackend {
     /// 取得済みの更新を適用する（`apply-update.ps1` を新しいコンソールで起動する固定の動作。
     /// 引数・パスは呼び出し側から受け取らない。昇格（UAC）はスクリプトが行う）
     fn apply_update(&mut self) -> Result<(), BackendError>;
+    /// コアの JSON-RPC を名前で呼ぶ（キー割当など、画面が型を持たない呼び出し用。呼べるメソッドは
+    /// HTTP 層（`http::keymap`）が固定の一覧に絞る）。対応しないバックエンドは既定のエラー
+    fn call_rpc(&mut self, _method: &str, _params: Value) -> Result<Value, BackendError> {
+        Err(BackendError::transport(
+            "この設定エンジンは対応していません",
+        ))
+    }
 }
 
 impl SettingsBackend for Box<dyn SettingsBackend> {
@@ -123,6 +130,10 @@ impl SettingsBackend for Box<dyn SettingsBackend> {
 
     fn apply_update(&mut self) -> Result<(), BackendError> {
         (**self).apply_update()
+    }
+
+    fn call_rpc(&mut self, method: &str, params: Value) -> Result<Value, BackendError> {
+        (**self).call_rpc(method, params)
     }
 }
 
@@ -509,6 +520,10 @@ impl SettingsBackend for ImserverBackend {
             .ok_or_else(|| BackendError::transport("apply-update.ps1 の場所が分かりません"))?;
         launch_apply_script(script)
     }
+
+    fn call_rpc(&mut self, method: &str, params: Value) -> Result<Value, BackendError> {
+        self.client.request(method, params, REQUEST_TIMEOUT)
+    }
 }
 
 /// 起動に失敗したときのバックエンド。画面は開き、失敗の理由を表示する
@@ -542,6 +557,10 @@ impl SettingsBackend for FailedBackend {
     }
 
     fn apply_update(&mut self) -> Result<(), BackendError> {
+        Err(self.error.clone())
+    }
+
+    fn call_rpc(&mut self, _method: &str, _params: Value) -> Result<Value, BackendError> {
         Err(self.error.clone())
     }
 }
