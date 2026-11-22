@@ -2218,7 +2218,7 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 
 ### H-104. Windows: 設定画面をネイティブの Win32 ウィンドウにする（2026-11-21、ユーザー決定「ブラウザではなく普通のウィンドウにしたい。最低限の UI が整っていればよい」。Linux での単体テストと windows-gnu の型検査のみ・Windows 実機未確認）
 
-- **理由**: ブラウザのタブでは設定画面として扱いにくく（他のタブに埋もれる・閉じても裏のプロセスが数秒残る・15 分の自動終了など）、普通のアプリのウィンドウにしたい。**WebView2 案は不採用**（ランタイム依存・埋め込みの複雑さに見合わない）でネイティブ（Win32）を選んだ。Web 版（H-97・H-100）は削除せず `--web` で残す（Windows 以外では常に Web 版。統合テストも `--web`）。
+- **理由**: ブラウザのタブでは設定画面として扱いにくく（他のタブに埋もれる・閉じても裏のプロセスが数秒残る・15 分の自動終了など）、普通のアプリのウィンドウにしたい。**WebView2 案は不採用**（ランタイム依存・埋め込みの複雑さに見合わない）でネイティブ（Win32）を選んだ。（**2026-11-22 に H-130 で覆した**: ネイティブ描画の限界を理由に、既定を WebView2 + Web UI にし、ネイティブは `--native`・フォールバックに回した。）Web 版（H-97・H-100）は削除せず `--web` で残す（Windows 以外では常に Web 版。統合テストも `--web`）。
 - **構成**（`core/settings-ui/`）: OS 非依存の 3 モジュール + Windows 専用の Win32 層。
   - `native_model.rs`（画面モデル）: `SettingsView`（カテゴリ・項目。`view::desktop_groups` を Web 版と共有しており、カテゴリ順・iOS 専用項目の除外は同一）、レベル（シンプル / 詳細）での絞り込み、入力文字列 → 型つきの値への変換と検証（全角数字・符号・小数点を半角にする、空欄 = 既定に戻す、整数の小数・非数・範囲外を拒否、小数の NaN/inf を拒否）、表示整形（範囲の案内・「（再起動後に反映）」・コンボボックスの行〈未指定のときだけ「（自動）」〉）、更新結果の文言（Web 版と同じ）、`WM_APP` 系メッセージとコントロール ID の番号（衝突しないことをテスト）。`step` は UI の刻みであり、**入力の検証には使わない**（既定値が step の倍数でない項目があるため。範囲だけ検証し、最終判断はコア）。
   - `native_layout.rs`（レイアウト）: 96 DPI 基準の dp から px への換算、ウィンドウ全体の配置、パネルの列、行の縦積み（折り返しの高さは Win32 層が実測して渡す）、スクロール範囲・位置の丸め・フォーカスした項目が見える位置への移動。DPI 96/120/144/192/240 で単調性・重なりなしをテスト。
@@ -2368,3 +2368,142 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **メモリ計測ログ**: imserver の常駐メモリを `tsf.log` に `[mem] imserver ...` で 10 分に 1 回（ホストプロセスごと。`process_memory::LOG_INTERVAL`）記録する。ワーキングセット・ピーク・プライベートの数値のみで入力内容は含まない。目的はメモリ逼迫の閾値（H-99）を実測で見直す材料集めで、**閾値は変えていない**。`GetProcessMemoryInfo` の unsafe は `frontend-windows-tsf/src/proc_mem.rs` に隔離（`nagi-windows` は `forbid(unsafe_code)` のまま）。
 - **設定を開く導線**: 既存のもの（右クリックメニュー・スタートメニュー）のみで追加なし。
 - **未確認**: 実機での位置補正の効き・フォールバック時の位置・`[mem]` の出力（`docs/real-hardware-checklist.md` §8.9）。
+
+> 以下の H-118〜H-131 は 0.1.19〜0.1.24（2026-11-21〜22）の Windows 作業の記録。根拠はコミットとコードのコメント（コミットは 0.1.19 = `dfa64a5`〜`1da667e`、0.1.20 = `42bff18`、0.1.21 = `ce89a63`・`6648bd4`、0.1.22 = `6aef5f6`、0.1.23 = `f9dd9d8`、0.1.24 = `97f8762`）。実機の結果は H-114〜H-117 の続きとして各項の「結果」に書く（ユーザー報告。ログ・計測値は未取得のものが多い）。
+
+### H-118. Windows: ネイティブ設定画面 v2（2026-11-21、0.1.19〜0.1.21。コミット `dfa64a5`・`42bff18`・`ce89a63`。H-130 で既定ではなくなり、ネイティブはフォールバック）
+
+- **描画**: GDI+ で角丸・円・影をアンチエイリアス描画し（`native/gfx.rs`。GDI+ を開始できなければ GDI の `RoundRect` / `Ellipse` に落とす）、部品はすべてメモリ上のバッファに描いてから 1 回の転送で出す（`widgets.rs` の `buffered`）。標準の `STATIC` / `LISTBOX` も `WM_ERASEBKGND` を止めてサブクラスで描く（背景 → 文字の 2 段階が見えるのがちらつきの原因だった）。チェックボックス（トグルスイッチ）とボタンは**標準の `BUTTON` クラスのまま** `WM_PAINT` だけ自前にし、役割・名前・状態・Space/Tab の挙動（読み上げ・自動操作）を変えない。フォントは ClearType を明示（`CLEARTYPE_QUALITY`）。
+- **見た目**: サイドバーのブランド、ページ見出しの上のアクセントの線（`RowStyle::Hero`。先頭の行だけ）、カード（`CARD_RADIUS`）、トグル、バッジ。色・形は OS 非依存の `native_theme.rs`（ライト・ダークの固定パレット。ハイコントラストは `GetSysColor` の参照だけで装飾を無効にする）。文字と背景のコントラスト比（本文 4.5:1・非文字 3:1）は `Palette::contrast_pairs` のテストで担保。本文の基準は **10.5pt**（`BODY_HALF_POINTS` = 21。0.1.21 `ce89a63`。システムのメッセージフォント 9pt より大きくする）。書体は Segoe UI Variable Text があればそれ、無ければ Segoe UI（`realized_face_is` で実際に選ばれたかを確かめる）。
+- **UI 状態の永続化**: `%LOCALAPPDATA%\Nagi\settings-ui-state.json`（`native_ui_state.rs`。スキーマ版 1、一時ファイル → 置き換えの原子的書き込み）。保存するのは「詳細設定を表示」・最後に開いたページ・ウィンドウの位置/クライアント領域の大きさ（dp。DPI が変わっても同じ見た目の大きさで復元）/最大化。読めない・壊れている・知らない版・範囲外の値は項目ごとに無視して既定で起動し、復元位置はモニターの範囲に収める（`clamp_to_monitors`）。`config.toml` とは別で、設定項目ではない。入力内容は含まない。WebView2 版もウィンドウの位置・大きさに同じファイルを使う（H-130）。
+- **ページ切替の「整えてから表示」**: ページを作り直すとき `WM_SETREDRAW` で再描画を止め、新しい部品は非表示で作ってフォント・位置・サイズを決め、ページ単位で一度だけ表示してから古い部品を壊す（`native/page.rs` の rebuild。壊してから作る途中の姿を見せない）。所要時間は `NAGI_SETTINGS_DEBUG` があるときだけ stderr に出す。
+- **レイアウト**: H-114 の構成（サイドバー全高・フッター・4dp グリッド）を土台に、見出しの下に 1 行の説明を足し、`layout_rows` に Hero 行の領域を足した（`native_layout.rs`）。
+- **結果**: 0.1.20〜0.1.22 の配布で見た目・ちらつきを順に改善（スクロールの描画は H-121）。0.1.24 で既定を WebView2 に切り替えた（H-130）ため、ネイティブ版は `--native` またはフォールバックのときだけ使われる。0.1.24 の実機確認は WebView2 側のみ（ネイティブ版の v2 を個別に確認した記録は無い）。
+
+### H-119. Windows: 変換 UI のテンプレート 5 種と詳細設定 20 項目（2026-11-21、0.1.19、`dfa64a5`。Linux では単体テストのみ、実機は 0.1.24 時点で個別未確認）
+
+- **テンプレート `[windows] candidate_theme`**: `standard`（標準。従来の見た目）/ `compact`（コンパクト）/ `spacious`（ゆったり。大きめの文字・広い余白・角丸・影・読みも表示）/ `minimal`（ミニマル。番号と候補のみ・注釈とページ表示なし）/ `contrast`（くっきり。太い枠・高コントラスト・大きめの文字）。**テンプレートが詳細項目の既定値を決め、項目を明示指定した部分だけがテンプレートを上書きする**（明示指定が常に優先。CLAUDE.md の設定方針と同じ）。
+- **詳細設定 20 項目**（`config/default.toml`。通常表示はテンプレート、詳細は「詳細設定を表示」）: 候補ウィンドウ 14（`candidate_font_scale` 60〜200% / `candidate_row_height` 16〜64dp / `candidate_padding` 0〜32dp / `candidate_corner_radius` 0〜16dp / `candidate_shadow` on・off / `candidate_number` left・right・hidden / `candidate_annotation` full・source・none / `candidate_selection` fill・bar・outline / `candidate_opacity` 30〜100% / `candidate_color` system・light・dark・template / `candidate_max_width` 120〜1200dp / `candidate_page_indicator` footer・none / `candidate_gap` 0〜40dp）、入力中の下線 `preedit_underline`（solid・dot・dash）、通知 `toast_duration_sec`（1〜30、既定 4）・`toast_position`（隅 6 種）、モード表示 `mode_popup`（既定 true）・`mode_popup_duration_ms`（200〜5000、既定 1000）・`mode_popup_position`（`caret` または隅 6 種）。範囲外・不明な値は他の設定と同じく読み込みエラー（行番号付き通知、以前の設定で動き続ける）。ライト/ダークとハイコントラスト（システム色を最優先）にはどのテンプレートでも従う（H-106）。影は背景を半透明にする（`candidate_opacity` < 100）と付かない。
+- **責務の分け方**: コアは値の保持・検証・`get_settings` の記述子だけ（`core/config/src/windows_ui.rs`。選択肢と範囲の正）。見た目への解釈（テンプレート + 明示値 → 範囲に丸めた実効値）は `frontend-windows/src/candidate_style.rs`（OS 非依存の純粋関数。DPI 換算・フォントの大きさ・配色を含む）。TSF 層の描画は `candidate_window.rs`・`toast_window.rs`。両側に同じ値の表があるので、`nagi-windows` のテストが食い違いを検出する。
+- **1 ページの候補数は `conversion.num_candidates`（1〜50、既定 9）を使う**: Windows 専用の項目は作らない（コアのページ送り・数字キー選択と同じ値でなければ、表示と選択がずれるため）。`config/default.toml` の説明にその旨を書いてある。
+- **`candidate_gap` と補正の関係**: アプリごとの位置補正（`window-offsets.tsv`、H-117）とは足し合わされる。
+
+### H-120. コア: キー割当の拡充（F6〜F10・表記の循環・全角スペース・無変換/カタカナ・ページ送り・ToggleLive・プリセット 4 種・get_keymap / validate_keymap・入力モード拡張）（2026-11-21、0.1.19。`docs/feature-gap.md` §1・§4 の第 1 波。ゴールデンテスト `140`〜`180` と単体テストで確認。コアの変更なので macOS / iOS にも影響する）
+
+- **表記の切替キー（入力中・変換中）**: F6 = `ToHiragana` / F7 = `ToKatakana` / F8 = `ToHankakuKana`（半角カナ）/ F9 = `ToZenkakuAlnum`（全角英数）/ F10 = `ToHankakuAlnum`（半角英数）、Ctrl+K = `ToKatakana`（従来どおり）、無変換 = `CycleForm`（ひらがな → カタカナ → 半角カナ → 全角英数 → 半角英数。使えない形は飛ばす）。F9・F10 は連打で小文字 → 大文字 → 先頭大文字。Shift 付きの F キーは同じ動作。**Ctrl / Alt / Meta 付きの F6〜F10 は表記の切替にならない**（`form_key`）。変換中は注目文節（`CycleForm` は範囲選択中なら選択範囲）に作用する。`nagi_rewriter` に `to_fullwidth_alnum` / `to_halfwidth_alnum` / `to_halfwidth_katakana` / `is_halfwidth_text` を追加（スペースと混在文字列も扱う。往復可能）。
+- **新しい Action**: `ToHankakuKana` / `ToZenkakuAlnum` / `ToHankakuAlnum` / `CycleForm` / `NextPage` / `PrevPage` / `ToggleLive`（ライブ変換のオン・オフ。実行中のエンジンの間だけで、設定の再読み込みでは変わらない）/ `ConvertSelection`（選択した文節だけを再変換）/ `CommitFocused`（別名 `CommitPartial`）。キーマップの値として書ける。`SetMode` / `Insert` は引き続き上書き不可。
+- **ページ送り**: 入力中・変換中の PageUp / PageDown = `PrevPage` / `NextPage`（候補を 1 ページ（`num_candidates`）単位で動かし、ページの先頭を選ぶ。端では折り返す。入力中はサジェストが対象）。未入力では割当なし（素通し）。
+- **全角スペース（`[input] space_width`）**: `half`（既定）/ `full` / `follow_mode`。未入力（確定直後など）で Space を押したときの幅で、Shift+Space は常に反対の幅。`half` の既定では Space は従来どおり素通しで、Shift+Space が全角スペースを確定する。`follow_mode` はひらがな・カタカナ・全角英数が全角、半角カナが半角。入力中・変換中の Space は変換のまま。英数（半角英数）モードの Space は常に素通し。
+- **無変換・カタカナキー**: 未入力の無変換 = `ToggleMode`（英数 ⇄ かな。英数モードからも）、入力中・変換中は `CycleForm`。カタカナキー（`keysym::KATAKANA`）= `SetMode(Katakana)`（全文脈）。ひらがなキーはひらがなモードの未入力のときだけ再変換、それ以外はひらがなモードへ。
+- **プリセット `[keymap] preset`**: `standard`（既定。旧名 `default` も同じ）/ `function_keys`（標準 + Ctrl+K / Ctrl+N / Ctrl+P を確定してアプリへ渡す）/ `ctrl_letters`（Ctrl+U = ひらがな、Ctrl+I = カタカナ、Ctrl+O = 半角カナ、Ctrl+P = 全角英数、Ctrl+T = 半角英数、Ctrl+G = 取消。Ctrl+P を使うので変換中の前候補は ↑ と Shift+Space、Ctrl+N は次候補のまま）/ `henkan_keys`（無変換 = 英数モード〈入力中なら確定して切り替え〉、変換 = 入力中は変換・変換中は次候補・未入力は再変換、英数モードの変換 = ひらがなモード）。解決の優先順位は `core/engine/src/keymap.rs` 冒頭: プリセットの共通割当 → 内蔵の共通割当 → 英数系は素通し → **利用者の上書き** → プリセットの文脈別 → 既定表。利用者の `[keymap.composing]` / `[keymap.converting]` はプリセットに常に優先する。**プリセットだけが `SetMode` と `Direct` 文脈の割当を持てる**（利用者の上書きは従来どおり不可）。未知のプリセット名は行番号付きの警告を出して標準を使う。
+- **RPC**: `get_keymap`（任意の `preset`。有効な割当の一覧〈文脈・キー・Action 名・出所・`when_mode`〉、プリセット一覧、割り当てられる Action の一覧）と `validate_keymap`（`[keymap.*]` の TOML 断片を検証し、解釈できない行を `errors`、二重割当・重要キー〈Enter / Esc / Space / 矢印 / Backspace〉の上書き・文字入力との衝突・OS 予約キー・未知のプリセットを `warnings` に出す。拒否ではなく確認用）。`initialize` の応答の `capabilities.keymap = true`。実体は `core/server/src/keymap_tools.rs`、検証は `core/engine/src/keymap_info.rs`、TOML 断片の構文は `core/config/src/keymap_fragment.rs`。**これは feature-gap §4.6 の設計案のうちコア側（検証 RPC・現在値の一覧）。キーコンフィグ編集の UI は未実装**（第 2 波）。
+- **入力モードの拡張（`extended_input_modes`）**: `InputMode` に `Katakana` / `HankakuKatakana`（ローマ字入力 → カタカナ / 半角カナ）/ `ZenkakuAlnum`（打った文字を全角で直接確定）/ `HankakuAlnum`（半角英数。現状 `Alphanumeric` と同じ動作で、表示・OS のモード同期の区別用）を加算。`initialize` の `capabilities.extended_input_modes` で対応を宣言したクライアントにだけ応答の `mode` に現れ、宣言しないクライアントには `Hiragana` / `Alphanumeric` に読み替えて返す（`InputMode::basic`）。リクエスト側（`perform_action` の `set_mode`）はどのモードも受ける。ライブ変換はひらがなモードのときだけ働く（カタカナ・半角カナなどのモードではかなのまま表示する）。Swift の型（`frontend-macos/Sources/Generated/Protocol.swift`）は再生成済み。**現状、どのフロントも `extended_input_modes` を宣言していない**（iOS は `nil` と明記〈`SessionCapabilities.swift`〉、Windows の `initialize` は `capabilities: None`、macOS も未宣言と推定〈未確認〉）ので、拡張モードは応答では `Hiragana` / `Alphanumeric` に読み替えられ、タスクバーの「あ / A」・OS のモード同期には現れない。つまり新しいモード自体はコアで動くが、**フロントのモード表示・同期の対応は未実装**（`frontend-windows/src/mode.rs`・`indicator.rs`・`status.rs` の変更は 0.1.19 に含まれるが、宣言までは入っていない）。
+- **前方一致予測の secure input 対応**: `ConversionBackend::predict` に `CommitContext` を渡し、学習キャッシュ由来の候補は学習を止める状況（設定・secure input・停止アプリ）では出さない（`core/server/src/pipeline.rs`。テスト `core/server/tests/predict_secure.rs`）。ユーザー辞書の前方一致は利用者が登録したものなので影響しない。設計書 §4.11 の「前方一致予測が secure input と停止アプリを見ていない」はこれで解消。
+- **既定動作の変更点（0.1.18 からの差。利用者が気づく変化）**: (1) 未入力の Shift+Space が全角スペースを確定する（それまで素通し）。(2) 入力中・変換中の F8〜F10 が効く（それまでは消費されて何も起きなかった）。(3) 入力中・変換中の無変換が表記の循環、未入力の無変換が英数 ⇄ かなの切替（それまで割当なし）。(4) 入力中・変換中の PageUp / PageDown が候補のページ送り（それまで `NoOp`）。(5) Ctrl / Alt 付きの F6〜F10 は表記の切替にならない。(6) カタカナキーがカタカナモードにする。**macOS にも同じ変更が入る**（コアの既定）。
+- **実機**: 0.1.24 時点でキー操作の実機確認は個別には未記録（Windows の `docs/real-hardware-checklist.md` §8.4 を参照）。
+
+### H-121. Windows: ネイティブ設定画面のスクロール描画（2026-11-22、0.1.22、`6aef5f6`。H-130 でネイティブが既定でなくなったため効果はフォールバック時のみ）
+
+- **背景キャッシュ**: ページ全体の背景（地・カード・影・区切り線・印）を 1 枚のビットマップに描いて持ち、スクロールは転送だけにする（`native/state.rs` の `Backdrop`・`BackdropKey` = 幅・高さ・DPI）。レイアウトの作り直し・テーマ変更・鍵の不一致で捨てる（`native_scroll::needs_rebuild`）。ビットマップが大きすぎるとき（`MAX_BACKDROP_PIXELS` = 12,000,000 画素 ≒ 48MB 超）はキャッシュせず毎回描く（`backdrop_fits`）。
+- **ホイールの補間**: `SmoothScroll`（`native_scroll.rs`。OS 非依存でテスト済み）。1 ノッチ（`WHEEL_NOTCH` = 120）を目標位置に積み、タイマー（`FRAME_MS` = 16ms）で時定数 `TAU_MS` = 55ms の指数的な追従で動かす。精密タッチパッドの小さな量（ノッチ未満）は即座に反映。つまみのドラッグ・キー・ページ切替での位置変更は補間をやめてそこに合わせる（`jump`）。
+- **子の移動**: スクロール中は `BeginDeferWindowPos` / `DeferWindowPos` で子をまとめて動かし、`SWP_NOREDRAW | SWP_NOCOPYBITS` で子ごとの「ビットコピー + 個別の再描画」をやめ、最後にパネルと子をまとめて無効化する（子の `WM_PAINT` がばらばらに走るのが「ガサガサ」の原因）。
+- **ページ切替の「整えてから表示」**はこの版で `WM_SETREDRAW` による再描画抑止と組み合わせて仕上げた（H-118）。
+- **結果**: 0.1.22 で配布。実機では 0.1.24 で WebView2 に切り替えたため、ネイティブ版のスクロールを個別に確認した記録は無い。
+
+### H-122. Windows: モード表示アイコンを実フォントのグリフで描く（2026-11-21、0.1.20、`42bff18`。直前の `e881c81` で水平線と波を除いた。ロゴ自体は H-115 のまま）
+
+- **字形の供給元**: GDI でシステムの日本語 UI フォントの字形をカバレッジマスク（0〜255）に描き、`nagi_windows::icon::fit_coverage` が字形の外接の四角（`BBOX_THRESHOLD` = 16 以上の画素）で位置と大きさを決めて `size` px に縮める（面積平均）。フォントの優先順は **Yu Gothic UI → Meiryo UI → MS UI Gothic**（`langbar.rs` の `FACES`）。GDI は無い名前を黙って別のフォントに置き換えるので、選択後に `GetTextFaceW` で実際にその名前か確かめる。描画は `HIRES_SCALE` = 8 倍の大きさで行って縮める。フォントが無い・GDI が失敗したときだけ、従来の手描きストローク（`icon::stroke_mask`）にフォールバックする（Linux のテストもこちら）。
+- **合成**: `icon::compose_status`。カラーは藍のグラデーションの角丸の背景に生成り色の文字、モノクロは背景なしで単色（濃淡はアルファだけ）。文字の外接が占める割合の上限はカラーが小さめ（余白を残す）、モノクロは背景がないので少し大きく使う。0.1.18 の `e881c81` でモード表示アイコンから水平線と波（ロゴの要素）を除き、文字のみにした。
+- **ロゴ（`nagi.ico`・タスクバーでないアイコン）は変えない**（H-115。フォントに依存しないコード描画のまま）。
+- **未確認**: Yu Gothic UI が無い環境のフォールバック、16px での判別（H-115 の未確認と同じ。`docs/real-hardware-checklist.md` §8.9）。
+
+### H-123. Windows TSF: 1 文字目の候補位置（2026-11-21、0.1.20、`42bff18`。H-117 の保留 150ms と「最後の既知位置 → マウス位置」を置き換える）
+
+- **マウス位置フォールバックを廃止**: `GetCursorPos` による位置は使わない（`win::cursor_position` を削除）。1 文字目はキャレットが測れず、マウスがあるモニター・位置に候補が出る不具合の原因だった。
+- **位置の優先順位**（`frontend-windows/src/anchor_wait.rs`。OS 非依存のステートマシン。取得元は `tsf.log` の `[cand] anchor=<取得元>` の値）: (1) 測れた位置 = `composition`（composition の先頭・全体）/ `selection`（composition 開始**前**の挿入点、または現在の選択範囲。どちらも `ITfContextView::GetTextExt`）、(2) `last-known`（直近 `LAST_KNOWN_TTL` = **10 秒**以内に測れた位置。フォーカス移動で捨てる）、(3) `gui-caret`（`GetGUIThreadInfo` の `rcCaret`。クラシックなアプリ）、(4) `focus-window`（フォーカスウィンドウの左上付近。タイトルバーを避けて x+16・y+48dp、高さ 20dp の基準矩形。最終手段）、それも無ければ `screen`（プライマリモニターの左上付近）。
+- **保留の時間**: 測れた位置が無い間は表示を保留する。(2)(3)（暫定位置）は再測定の完了を `PROVISIONAL_AFTER` = **100ms** 待ってから使う（再測定の予定が無ければ待たずに使う）。どれも無ければ `MAX_DEFER` = **400ms** で (4) を使う。暫定位置で出したあとに測れた位置が取れたら、差が `MOVE_TOLERANCE_DP` = **4dp**（96 DPI 基準。DPI で換算）以内なら動かさず、超えるときだけ 1 回動かす（ちらつき・ジッターの防止）。測れていた位置が一瞬取れなくなっても、出している候補は飛ばない。
+- **composition 開始前の挿入点（`pre_caret`）**: 1 文字目は composition がまだ無く位置が測れないので、開始直前の挿入点（選択範囲を畳んだ点）を測っておいて使う（`edit::Env::pre_caret`）。
+- **ログ**: `[cand] anchor=<取得元> …` は 1 行 1 事象で、最初の表示と取得元が変わったときだけ出し、同じ内容は `LOG_REPEAT` = 10 秒以内に繰り返さない（矩形の値は出さない）。
+- **補正**: アプリごとの位置補正 `window-offsets.tsv`（H-117）はそのまま有効。
+- **結果**: 0.1.20 で配布。実機での個別の確認記録は無い。定数（100ms / 400ms / 10 秒 / 4dp）は実機での調整対象。
+
+### H-124. Windows: 言語のオプションの「オプション」（`ITfFnConfigure`）— ThreadingModel=Both と `GetFunction`（2026-11-21、0.1.20。**仮説は外れた**）
+
+- **仮説と変更**: 設定アプリ（SystemSettings）が「言語のオプション」で `ITfFnConfigure` を取りに来る経路が、MTA のスレッドから `CoCreateInstance` する呼び出しなら、`ThreadingModel=Apartment` では別アパートメントのプロキシを受け取り、標準のプロキシ・スタブを持たない `ITfFnConfigure` の `QueryInterface` が失敗して「オプション」が出ない、と考えた。対策として (1) `InprocServer32` の `ThreadingModel` を **`Both`** にし（`frontend-windows/src/registration.rs` が値を組み立て、`register.rs` が書く。STA のスレッド = TSF のアプリ側では従来と同じ挙動）、(2) TIP の CLSID 直接の QueryInterface（`TextService` 本体が実装）に加え、`ITfFunctionProvider::GetFunction` 経由でも `ITfFnConfigure`（`configure.rs` の `ConfigureFunction`）を返すようにした。どちらも設定 GUI の起動は `configure::show` が共有し、未アクティブ（`Activate` 前）でも動く。ログは `[menu] configure requested` / `configure failed (no settings exe)`。
+- **結果（0.1.20、ユーザー報告）**: 言語のオプションの Nagi に「オプション」ボタンは**出なかった**。上の仮説では原因を説明できない。`ThreadingModel=Both` と `GetFunction` の実装は害が無いので残している。原因の切り分けは H-126（プローブ）、登録の見直しは H-129。0.1.24 時点でも「オプション」「削除」は未解決（下の H-129 の追記）。
+
+### H-125. Windows: imserver を起動できないホスト — 再試行の打ち切りと `[host] exe=` ログ（2026-11-21、0.1.21、`ce89a63`。実機の `tsf.log` で `os error 15623` を確認）
+
+- **事実**: 一部のホストプロセス（制限された・保護されたプロセス。AppContainer・コード整合性・プロセス緩和策などの制約）では、TSF DLL から `imserver.exe` を `CreateProcess` できず `ERROR_SYSTEM_NEEDS_REMEDIATION`（os error **15623**）などで失敗する。**そのホストでは変換エンジンが一切動かず、入力は素通しになる**（変換・候補・ライブ変換とも出ない）。
+- **再試行の打ち切り**: 「再試行しても直らない起動失敗」の OS エラー番号を **5**（`ERROR_ACCESS_DENIED`）、**577**（`ERROR_INVALID_IMAGE_HASH`）、**1260**（`ERROR_ACCESS_DISABLED_BY_POLICY`）、**1261**、**1314**（`ERROR_PRIVILEGE_NOT_HELD`）、**15623** とし（`supervisor.rs` の `is_unrecoverable_spawn_code`。2・3 のファイルなし、32 の共有違反、225 のウイルス検出は一時的・個別の事情もありうるので含めない）、**同じエラーが 3 回**（`BackoffPolicy::blocked_after_same_error`）続いたらそのプロセスでは起動不可と判断して再試行をやめる（`EngineEvent::SpawnBlocked`）。**5 分後に 1 回だけ**再確認し（`blocked_recheck` = 300 秒。それも失敗したら予約もしない）、スリープ復帰のたびの再試行もしない。違う失敗が挟まれば数え直し、起動不可の判断も解く。この種類の失敗は `Crashed`（停止）ではなく `SpawnRetry` / `SpawnBlocked` として通知し、`minimal` への自動切替にも数えない。
+- **利用者への通知**: 直らない種類の起動失敗は**トーストを出さない**（利用者にできることが無く、入力しないアプリでも出うるため。`status.rs` の `toast_for`）。ログのみ。番号が直る種類でなければ従来どおり「変換エンジンを起動できません。再試行しています」。
+- **ホスト名ログ**: ホストの実行ファイル名を 1 プロセスにつき 1 回だけ `tsf.log` に `[host] exe=<ファイル名>` で残す（パスは含めない。空白は `_`、取れなければ `unknown`。`nagi_windows::diag::describe_host`）。起動不可のホストの切り分け用。
+- **診断との関係**: 診断の `tsf.log` 判定は起動不可のホストを別集計にする（H-129）。
+- **ブローカー（名前付きパイプ + 常駐ブローカー、H-43 §4）は「今はやらない」**: 15623 のホストを救う手段としてブローカーを評価したが、見送った。(1) 工数は **2〜3 週間**の見積もり（2026-11-22 の評価。内訳は記録していない）。(2) H-43 §4 の設計では、AppContainer・保護されたアプリから名前付きパイプへ接続させるには `ALL APPLICATION PACKAGES` の許可が別途要り、許可すると任意の UWP アプリが入力内容を受け取れる経路になるため「保護されたアプリには許可しない」としていた。つまり**救いたいホストこそ設計上ブローカーに繋げない**。(3) 寿命・ACL・移行の障害点が増える。(4) 入力が必要なアプリでの発生は把握していない（ホスト名は `[host] exe=` で集める）。**再検討の条件**: 入力が必要なアプリで 15623 等が実際に出るという報告が出たとき。
+- **未確認**: 実機で打ち切りが働くこと（`tsf.log` に `spawn blocked (os error 15623); giving up in this process` が 1 回だけ出て、再試行の連続が止まること）。
+
+### H-126. Windows: 診断 `tsf.language_options`（言語のオプションのプローブ）と DLL フォルダの ACL 付与（2026-11-21、0.1.21、`ce89a63`・`6648bd4`。H-124 の仮説が外れたあとの切り分け用）
+
+- **プローブ**（`core/settings-ui/src/diag/langopts.rs`。診断項目 `tsf.language_options`。0.1.21 で 30 項目 = 自動 24 + 手動 6 になった）: 「設定 → 時刻と言語 → 言語と地域 → 日本語 → 言語のオプション → キーボード」で Nagi に Microsoft IME のような「オプション」「削除」が出ない原因を、OK / NG にせず、**事実を並べて見立て（a）〜（e）それぞれに「該当しそうか」を付けて**出す。材料: TIP の登録値（`HKLM\SOFTWARE\Microsoft\CTF\TIP\{CLSID}\LanguageProfile\0x00000411\{プロファイル}` 配下の値の有無）、DLL とインストール先の ACL（`ALL APPLICATION PACKAGES` = `S-1-15-2-1`、`ALL RESTRICTED APPLICATION PACKAGES` = `S-1-15-2-2`、`BUILTIN\Users` = `S-1-5-32-545`）、設定アプリ（`SystemSettings`・`ApplicationFrameHost`）が DLL を読み込んでいるか、Microsoft IME（CLSID `{03B5835F-F03C-411B-9CE2-AA23E1171E36}`・プロファイル `{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}`）との差分、登録カテゴリ。事実の収集は H-116 と同じく PowerShell（ASCII のみ・`unsafe` なし）、解釈・整形は OS 非依存の純関数（Linux で単体テスト）。結果に入力内容は含めない。
+- **ACL の付与**（`frontend-windows/dist/install.ps1` の `Grant-AppContainerRead`）: インストール先に `icacls … /grant '*S-1-15-2-1:(OI)(CI)(RX)' '*S-1-15-2-2:(OI)(CI)(RX)'` を付ける。設定アプリ（言語のオプション）や UWP / AppContainer のアプリが TIP の DLL・アイコンを読めるようにするため（`%ProgramFiles%` 配下では通常は継承で付いているので冪等。失敗しても導入は失敗にしない）。
+- **ACL の主体名の扱い**: 日本語の Windows では ACL の主体が `APPLICATION PACKAGE AUTHORITY\ALL APPLICATION PACKAGES` / `…\制限されたすべてのアプリケーション パッケージ` のように名前で返り、SID への変換に失敗すると名前のまま入る。`principal_is` は SID でも既知の名前（英語・日本語。`ドメイン\` は無視）でも一致とする（0.1.23 で修正。H-129）。
+- **結果**: 0.1.22 の実機のレポート（`langopts.rs` のテストに登録の一覧を写してある）で、登録カテゴリに **INPUTMODECOMPARTMENT が無い**ことが分かった（H-129）。「オプション」「削除」の表示そのものは 0.1.24 時点でも未解決。
+
+### H-127. Windows: インジケーター（タスクバーのアイコン）の初回の色（2026-11-22、0.1.22、`6aef5f6`）
+
+- **原因**: `[windows] indicator_icon`（H-115）はエンジンの `get_settings` から読むため、エンジンがつながる前の最初のアイコンは既定（カラー）になる（コードの注記「最初のアイコンの描画までに配色が決まるよう」）。
+- **対策**（`frontend-windows/src/indicator.rs`。TSF 層の `langbar.rs` が使う）: 採用する値の優先順位は **エンジンが返した値 > `config.toml` > 直近のキャッシュ > 既定（カラー）**。起動時（最初のアイコンの描画の前）に `config.toml`（`NAGI_CONFIG_DIR` が最優先、無ければ `%APPDATA%\Nagi`）から `[windows] indicator_icon` だけを同期で軽く読む（全体は解釈しない。`[windows]` 表の中の `indicator_icon = "mono"` と、表の外の `windows.indicator_icon = "mono"`。行末コメント可、壊れた行の後ろの表があっても前の行は読める。ファイルは大きさに上限）。エンジンが答えたら値をキャッシュ `%LOCALAPPDATA%\Nagi\indicator-style`（1 行）に書き、読めないときの 2 番目の根拠にする。エンジンの値と食い違えばエンジンが正で、変わったときだけアイコンを描き直す。エンジンの取得の失敗も最後に試した時刻を記録して間引く（`REFRESH_INTERVAL` 5 秒、H-115）。エンジンが（再）起動してつながったときは次の機会にすぐ読み直させる。
+- **結果**: 0.1.22 で配布。個別の確認記録は無い（0.1.24 まで再報告なし）。
+
+### H-128. Windows: エンジン停止の理由ログ `[engine] exit code=… reason=…` と停止トーストの廃止（2026-11-22、0.1.22、`6aef5f6`）
+
+- **理由ログ**: 子プロセスが自発的に終了したとき、`tsf.log` に停止の行（`stopped (crash or start failure) …`）の直後に 1 行 `[engine] exit code=0x… reason=<分類> uptime_ms=… phase=… last_method=… last_recv=… [stderr=[…]]` を出す（`frontend-windows/src/diag.rs` の `describe_exit_line`・`classify_exit`。終了コードと生存時間、最後に送受信した JSON-RPC のメソッド名〈定数のみ〉、stderr のうち panic の位置・メモリ不足・親の終了・入出力エラーなど**既知の目印に一致した行だけ**〈panic のメッセージ本体は入力内容を含みうるので出さない〉）。**入力内容は含まない**。`reason`: `update`（起動後に `imserver.exe` が置き換わった・消えた）> `parent-exited`（コード 0 かつ stderr に親の終了の行）> `shutdown`（コード 0）/ `crash`（NTSTATUS の例外コード `0xC0000000` 以上、または panic の 101）/ `error`（それ以外の 0 以外）/ `unknown`（終了コードが取れない）。実行ファイルの置き換えは起動時と終了時の最終更新時刻・大きさで判定（`process.rs`）。診断の `tsf.log` 判定がこの行を使う（H-129）。
+- **トースト廃止**: 停止（更新による差し替えを含む）は自動で再起動・復元されるので利用者に知らせない（ログのみ。`status.rs`）。続けて落ちて `minimal` に切り替わったときだけ `EnteredMinimalMode` で知らせる。
+- **結果**: 0.1.22 で配布。診断の `tsf.log` 判定がこの行を使う（H-129）。0.1.24 の診断は NG 0（ユーザー報告）。
+
+### H-129. Windows: カテゴリ登録の最終 6 種・Display Description・診断の `tsf.log` 判定（2026-11-22、0.1.23。H-126 のプローブの結果を受けた登録の見直し）
+
+- **カテゴリの取り違え**: H-126 のプローブの GUID の名前表で、`{49D2F9CE-1F5E-11D7-A6D3-00065B84435C}` と `{49D2F9CF-…}` を逆に表示していた（0.1.21: CE を `UIELEMENTENABLED`、CF を `SECUREMODE`）。**正しくは UIELEMENTENABLED = `{49D2F9CF-…}`、SECUREMODE = `{49D2F9CE-…}`**（msctf.h。`windows` クレート 0.62 の `GUID_TFCAT_TIPCAP_UIELEMENTENABLED` も CF）。Nagi の登録は正しく CF で入っていた（0.1.22 の実機のレポートで確認）。プローブの表は UILess 用の CF を SECUREMODE と表示していたことになり、誤登録に見えた可能性がある（推測。コミットメッセージに経緯の記録は無い）。プローブの表と期待値を直した（`langopts.rs`・`checks.rs`。実機のレポートの登録を使った単体テスト）。
+- **登録するカテゴリは 6 種**（`frontend-windows-tsf/src/register.rs` の `registered_categories`）: `GUID_TFCAT_TIP_KEYBOARD` / `GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT` / `GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT` / UIELEMENTENABLED（`{49D2F9CF-…}`。UILess、H-108）/ **INPUTMODECOMPARTMENT**（`{CCF05DD7-4A87-11D7-A6E2-00065B84435C}`。今回追加。入力モードのコンパートメント `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION` に対応する宣言。Microsoft IME・Mozc も登録）/ `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`。診断の `EXPECTED_CATEGORIES` も同じ 6 種。
+- **SECUREMODE は宣言しない + 掃除**: セキュアデスクトップ（ログオン画面等）対応の宣言で、Nagi は満たさない。CE と CF は 1 桁違いで取り違えやすく、過去に誤って登録された可能性があるため、登録・解除のたびに `UnregisterCategory(SECUREMODE)` を呼んで取り除く（登録されていなければ失敗するだけなので無視）。診断は SECUREMODE が入っていたら誤登録として報告する。
+- **COMLESS は追加しない**: DLL のロード方式が変わるため（H-108 の判断を維持）。
+- **Display Description**（言語プロファイルの `Display Description`）: **REG_EXPAND_SZ**、値は `@<DLL の絶対パス>,-101`（Microsoft IME は `@%SystemRoot%\system32\input.dll,-5183`）。設定アプリが MUI 形式の参照を解決して表示名にする。DLL に STRINGTABLE（ID 101 = 表示名、102 = 説明。ASCII のみ。`frontend-windows-tsf/build.rs` が `embed-resource` で埋め込む。MSVC は `rc.exe`、GNU は `windres`。CI の MSVC ではリソースコンパイラが無ければビルド失敗、手元では警告のみ）を埋め込み、登録時に **実際に `LoadStringW` で読めたときだけ**書く（壊れた参照を残さない。書けなくても `Description` で表示される）。
+- **`ProfileFlags` は書かない**: `TF_RP_HIDDENINSETTINGUI`（= 2）のような「設定画面から隠す」指定が入っている可能性があるため、Nagi は意図して書かない（プローブが、値があれば「隠す指定の可能性」と注記する）。
+- **診断の `tsf.log` 判定の修正**（`checks.rs`・`tsflog.rs`）: (1) インストール・更新の時刻は、zip 展開で更新時刻が 1980 年のままになるので、**作成時刻**（`VERSION`・`nagi_windows_tsf.dll`・`imserver.exe`・`nagi-settings.exe` の CreationTime）と、`.old` のファイル名の時刻（ローカル時刻。OS のタイムゾーンが取れたときだけ）から妥当な最大値を採り、その影響期間は過去の更新の時刻にも広げ、前後 ±N 秒を数えない。時刻の根拠をレポートに出す。(2) 起動不可のホスト（H-125）は**別集計**にし、ホストが分かるときは半数以下なら要確認・半数超なら NG、ホスト数が不明なら 1〜2 個は要確認（NG にしない）。(3) 同時刻の複数 pid と同一 pid の再試行の列は **1 事象**に束ねる。起動不可の pid・更新の影響期間は数えない。3 回以上かつ最新が直近 24 時間以内なら NG。(4) `[engine] exit … reason=crash / error`（H-128）を件数と直近の行で報告し、`update` / `shutdown` は数えない。助言に「IME が再起動したときの行（reason と code）を報告してください」を足した。
+- **結果（0.1.24、ユーザー報告）**: 診断は **NG 0・要確認 0・OK 23**。登録（カテゴリ 6 種・Display Description）は反映済み。**言語のオプションの「オプション」「削除」は未解決**で、**再起動後の確認待ち**。
+
+### H-130. Windows: 設定画面を WebView2 + Web UI に切り替え、ネイティブ版はフォールバックにする（2026-11-22、0.1.24、`97f8762`。ユーザー決定。**H-104 の「WebView2 案は不採用」を置き換える**）
+
+- **決定の経緯**: H-104 は「ランタイム依存・埋め込みの複雑さに見合わない」として WebView2 を退け、ネイティブ（Win32）にした。そのネイティブ版を H-114・H-118・H-121 で磨いたが、**ネイティブ描画ではスクロールの滑らかさ・見た目の作り込みに限界がある**（GDI のダブルバッファ・背景キャッシュ・補間を足しても、Web の描画・レイアウトの水準に届かない）と判断し、ユーザーが WebView2 への切替を決めた。画面の中身は H-97 の Web 画面（`--web`）をそのまま育てる（H-131）ので、2 系統の画面を作り分けるコストも増えない。
+- **構成**: 既定（Windows）は WebView2 のウィンドウ。画面は `--web` と同じ**ローカル HTTP サーバー**（127.0.0.1・トークンつき。`http.rs`・`run.rs`）が返す Web 画面で、`webview.rs` は**ウィンドウと WebView2 のホストだけ**を持つ。`webview2-com` 0.39 を**直接使い**、`wry` / `tao` は使わない（`windows` 0.62 と版が揃う。MSVC は静的ローダー〈`WebView2LoaderStatic.lib` をリンクするので `WebView2Loader.dll` は同梱しない〉、GNU は動的ローダーで型検査だけ）。判断（起動方式・ポート・メッセージ・ナビゲーションの許可）は OS 非依存の `webview_host.rs` に置いて Linux でテストし、unsafe は `webview.rs` に隔離する。
+- **起動の流れ**: COM（STA）→ WebView2 ランタイムの有無 → 多重起動の抑止（名前付きミューテックス。ネイティブ版と同じ名前なので、どちらで開いていても 2 つ目は既存のウィンドウを前面に出す）→ 非表示のウィンドウ → 環境・コントローラー（ここまでで失敗したら `Err`。呼び出し側がネイティブ版へフォールバックする。ウィンドウはまだ見えていない）→ 設定・ハンドラー → 表示 → サーバースレッド（imserver の起動を待って URL を `WM_APP` で受け取り `Navigate`）。ウィンドウを閉じるとすぐ隠し、サーバースレッド（imserver の終了を含む）を最大 6 秒待つ。位置・大きさ・最大化は `settings-ui-state.json`（H-118）に保存・復元。ライト/ダーク・ハイコントラストは WebView2 がシステムに追従し、ページは `prefers-color-scheme` / `forced-colors` を使う。
+- **フォールバックの優先順位**（`webview_host::choose_mode`）: Windows 以外は常にブラウザ → `--web`（ブラウザ）→ `--native`（ネイティブに固定）→ `--webview`（WebView2 に固定。使えなければ**フォールバックせずエラー終了**）→ 既定（WebView2。使えない・初期化に失敗したらネイティブ）。フォールバックの理由は標準エラーと `%LOCALAPPDATA%\Nagi\logs\settings-ui.log` に 1 行。WebView2 ランタイムは Windows 11 に標準で入っている。入っていない環境（一部の Windows 10 など）ではネイティブ版で開く（ランタイムの同梱・導入はしない）。
+- **ポート**: 固定ポート **47831〜47846**（16 個。`PREFERRED_PORT_BASE`・`PREFERRED_PORT_COUNT`）を順に試し、すべて塞がっていれば OS 任せ（0）。オリジンが同じなら WebView2 の localStorage（詳細設定のオン/オフ・最後のページ）が次回の起動にも残るため。ブラウザ版（`--web`）は従来どおりランダムポート。WebView2 版はウィンドウの寿命が終了を決めるので、`--web` の 15 分の自動終了・`/bye` による終了は使わない（`serve_until`。ページの再読み込みで落ちない）。
+- **ホスト ⇄ ページのメッセージ**（`webview_host.rs` 冒頭の表が正）: ページ → ホストは `window.chrome.webview.postMessage({type, …})`。`type` は `close-request`（ウィンドウを閉じる。Esc は**ページが**モーダルを見て送る）/ `open-external`（`url` は `http:` / `https:` のみ、2048 文字まで、制御文字・空白・`user@host` 形式は不可。既定のブラウザで開く）/ `set-title`（`title` を 40 文字まで・制御文字を除いて `<title> - Nagi 設定` に。空・省略で既定）/ `save-window-state`（位置・大きさを今すぐ保存）。それ以外・8192 文字超・形の違うものは無視する。ホスト → ページは送らない。
+- **セキュリティ**: ナビゲーションは自サーバーのオリジン（`http://127.0.0.1:<port>`）と初期の `about:blank` だけ許可し、それ以外はキャンセルし、利用者の操作による外部の http(s) だけ既定のブラウザで開く（`is_allowed_navigation`・`is_external_url`）。新しいウィンドウは作らない（外部の http(s) は既定のブラウザへ）。権限要求（カメラ等）は拒否。DevTools は無効（環境変数 `NAGI_SETTINGS_DEVTOOLS=1` のときだけ有効。検証用）。右クリックメニューは編集系（切り取り・コピー・貼り付け・プレーンテキストで貼り付け・すべて選択・元に戻す・やり直し）だけ残す（`keep_context_menu_item`）。ユーザーデータは `%LOCALAPPDATA%\Nagi\webview2`（標準ユーザーで書ける場所）。API はトークン（ヘッダー）・Host/Origin 検証・CSP（H-131）で守る。
+- **依存の影響**: `webview2-com` の追加で `Cargo.lock` が増え（`THIRD_PARTY_LICENSES_WINDOWS.md` の再生成が要る可能性がある。**今回は更新していない**）、`nagi-settings.exe` に WebView2 の COM 呼び出しの unsafe が入る（`webview.rs` に隔離）。
+- **結果（0.1.24、ユーザー報告）**: WebView2 の設定画面は**問題なし**。ネイティブ版（フォールバック）の v2 は 0.1.24 では確認していない。WebView2 ランタイムが無い環境でのフォールバックの実機確認は未実施。
+- **更新した文書**: `docs/windows-install.md`（設定画面の説明）、`docs/real-hardware-checklist.md` §8.5c・§8.9、`CLAUDE.md`（現状）。
+
+### H-131. Windows: Web UI の全面刷新と、診断の HTTP API（2026-11-22、0.1.24、`97f8762`）
+
+- **Web UI の刷新**（`core/settings-ui/assets/{index.html,app.css,app.js,icon.svg}`。バイナリに埋め込む。外部の CDN・リソースは使わない）: ネイティブ v2（H-118）の画面構成（ブランド・ページ見出し・カード・トグル・バッジ）を Web で作り直し、ライト/ダーク（`prefers-color-scheme`）・ハイコントラスト（`forced-colors`、`prefers-contrast`）・動きを減らす設定（`prefers-reduced-motion`）に対応。項目はこれまでどおりコアの記述子（`/api/settings`）から組み立て、文字列は `textContent` / DOM API だけで入れる（HTML 文字列の組み立ては使わない）。詳細設定のオン/オフと最後のページは localStorage（接頭辞 `nagi.settings.ui.`。使えなくても動く）。トースト・読み上げ用の `aria-live`・進捗バーは WAI-ARIA の属性つき。
+- **静的ファイル配信**（`assets.rs`・`http.rs`）: `/app.css` / `/app.js` / `/icon.svg` を同一オリジンで配る。`<script src>` などはヘッダーを付けられないので、静的ファイルの取得は URL の `?t=<token>` で検証する。API は `x-nagi-token` ヘッダーのトークン（`<meta name="nagi-token">` を JS が読む）。
+- **CSP**: HTML は `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`（**インラインの script / style は不可**）。HTML 以外は何も読み込ませない既定の値。`Cross-Origin-Resource-Policy: same-origin` も付ける。
+- **診断の HTTP API**（`core/settings-ui/src/http/diag.rs`。ネイティブ版の `native_worker` と同じ流れ）: `POST /api/diag/start`（全項目または 1 項目。実行中なら 409）/ `/api/diag/status`（進捗・各項目の結果）/ `/api/diag/cancel` / `/api/diag/report`（レポートのテキスト）/ `/api/diag/save`（`%LOCALAPPDATA%\Nagi\logs` へ保存）。実行はワーカースレッド（HTTP のループを止めない）、状態は `DiagModel`、実行・保存は `DiagService`（本番は `ArgsDiagService`）。画面（JS）は実行中だけ `status` を **0.5 秒間隔でポーリング**して進捗・結果を描き、完了後に「レポートをコピー」「レポートを保存」を出す。診断の項目・判定ロジックは H-116 のまま（30 項目）。
+- **テスト**: `http/tests.rs`（API・認可・CSP・診断の流れ）、`tests/assets.rs`（アセットの整合・インラインが無いこと）、`tests/integration.rs`（実 imserver との統合）。いずれも Linux。画面の見た目は実機（WebView2）で確認する。
+- **結果（0.1.24、ユーザー報告）**: 設定画面は問題なし。診断（画面から実行）は NG 0・要確認 0・OK 23。
+
+#### 0.1.19〜0.1.24 の配布と実機確認の記録（H-118〜H-131 のまとめ）
+
+| 版 | 日付 | コミット | 内容 | 実機の結果（ユーザー報告。ログ・計測値は未取得） |
+| --- | --- | --- | --- | --- |
+| 0.1.18 | 2026-11-21 | `3aebfbe` | H-114〜H-117（設定画面の刷新・アイコン統一・診断・候補位置補正）の配布 | 公開版への切替（`windows-promote.yml`）は**未実施**（別途） |
+| 0.1.19 | 2026-11-21 | `dfa64a5`・`1da667e` | 設定画面の刷新（H-118 の土台）、変換 UI のテンプレート（H-119）、コアのキー割当（H-120）、入力モード拡充 | 個別の記録なし |
+| 0.1.20 | 2026-11-21 | `42bff18` | 設定画面 v2（H-118）、モード表示のグリフ（H-122）、1 文字目の候補位置（H-123）、`ITfFnConfigure`（H-124） | 言語のオプションに「オプション」が出ない（H-124 の仮説は外れた） |
+| 0.1.21 | 2026-11-21 | `ce89a63`・`6648bd4` | 診断の判定補正、起動不可ホストの打ち切りとホスト名ログ（H-125）、言語オプションのプローブ（H-126）、設定画面の本文 10.5pt | 個別の記録なし（15623 のログはこの前後の実機から） |
+| 0.1.22 | 2026-11-22 | `6aef5f6` | スクロール描画（H-121）、インジケーターの初回の色（H-127）、エンジン停止の理由ログ（H-128） | 実機のレポート（診断）で登録カテゴリの不足を確認 |
+| 0.1.23 | 2026-11-22 | `f9dd9d8` | カテゴリ登録・Display Description・診断の `tsf.log` 判定（H-129） | 個別の記録なし |
+| 0.1.24 | 2026-11-22 | `97f8762` | WebView2 + Web UI、診断の HTTP API（H-130・H-131） | **診断は NG 0・要確認 0・OK 23。WebView2 の設定画面は問題なし**。言語のオプションの「オプション」「削除」は**未解決**（再起動後の確認待ち。H-126・H-129 の登録は反映済み） |
+
+配布は `windows-release.yml`（手動実行）で行った版。ワークフローの run 番号は記録していない（このまとめはバージョンを上げたコミットが根拠）。
