@@ -234,7 +234,7 @@ pub fn run_reconvert(
 }
 
 /// 範囲の文字列を読む（長すぎる範囲は先頭の `RECONVERT_READ_LIMIT` UTF-16 まで。判定は呼び出し側）
-fn range_text(range: &ITfRange, ec: u32) -> Result<String> {
+pub(crate) fn range_text(range: &ITfRange, ec: u32) -> Result<String> {
     let mut buf = [0u16; RECONVERT_READ_LIMIT];
     let mut fetched = 0u32;
     unsafe { range.GetText(ec, 0, &mut buf, &mut fetched) }?;
@@ -339,7 +339,7 @@ fn collapsed_selection_rect(context: &ITfContext, ec: u32) -> Option<Rect> {
 /// （先頭の点範囲 → composition 全体）、測れなければ composition を始める直前の挿入点、
 /// 現在の選択範囲（キャレット）、同じ composition で直前に測れた矩形の順。
 /// どれも無ければ `Mouse`（測れていない。位置は呼び出し側が `anchor_wait` で決める）
-fn measure_caret(context: &ITfContext, ec: u32, env: &Env) -> AnchorSource {
+pub(crate) fn measure_caret(context: &ITfContext, ec: u32, env: &Env) -> AnchorSource {
     let current = env.composition.borrow().clone();
     let composing = current.is_some();
     let (mut start, mut range) = (None, None);

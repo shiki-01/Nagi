@@ -5,7 +5,7 @@
 //! 非同期通知（`update_preedit` 等）は別スレッドから届くため、セッションごとのキューに積み、
 //! 購読時に渡された waker（Win32 層では隠しウィンドウへの `PostMessage`）で UI スレッドを起こす。
 //! 取り出し（TSF のオブジェクトを触る処理）は UI スレッドで行う。
-//! セッション宛てのイベント（`update_preedit` / `update_candidates` / `Restored` / `RestoreFailed`）は
+//! セッション宛てのイベント（`update_preedit` / `update_candidates` / `retro_review` / `Restored` / `RestoreFailed`）は
 //! そのセッションだけに、プロセス全体のイベント（`Started` / `Crashed` / `Notify` 等）は購読中の全セッションに配る。
 
 use std::collections::{HashMap, VecDeque};
@@ -88,6 +88,7 @@ pub fn route(event: &EngineEvent) -> Route<'_> {
     match event {
         EngineEvent::UpdatePreedit(p) => Route::Session(&p.session_id),
         EngineEvent::UpdateCandidates(c) => Route::Session(&c.session_id),
+        EngineEvent::RetroReview(r) => Route::Session(&r.session_id),
         EngineEvent::Restored { session_id, .. }
         | EngineEvent::RestoreFailed { session_id, .. } => Route::Session(session_id),
         EngineEvent::Started { .. }
@@ -401,6 +402,20 @@ impl EngineHost {
         let result = self.supervisor.reconvert(&params, Some(timeout))?;
         self.track(session_id, &result);
         Ok(result)
+    }
+
+    /// 遡及再評価の修正候補（`retro_review` 通知）の `index` 番目を採用する。
+    /// 応答の `text` が空なら有効な候補が無い（何もしない）。置換は呼び出し側が行う
+    pub fn accept_retro_review(
+        &self,
+        session_id: &str,
+        index: u32,
+    ) -> Result<nagi_protocol::methods::AcceptRetroReviewResult, ClientError> {
+        self.supervisor
+            .accept_retro_review(&nagi_protocol::methods::AcceptRetroReviewParams {
+                session_id: session_id.to_string(),
+                index,
+            })
     }
 
     /// 設定項目の一覧と現在値（言語バーのアイコンの配色など、フロントが読む設定の取得用）

@@ -1,6 +1,7 @@
 //! 通知パネル（トースト）。フォーカスを奪わない最前面の小さなポップアップを、作業領域の右下に
 //! 数秒だけ出す。文言は `nagi_windows::status`、配置・表示時間は `nagi_windows::toast` が決める。
 //! モード切替ポップアップ（既定はキャレット付近に 1 秒）も同じウィンドウで出す（`show_near` / `show_corner`）。
+//! 確定後の見直しの提案（`retro_review`）も、入力中の文字列の上に出す（`show_above`。H-139 候補）。
 //! 表示時間・位置・余白・角丸・文字の大きさ・配色は `CandidateStyle`（設定。H-119）に従う。
 
 #![allow(unsafe_code)]
@@ -45,6 +46,8 @@ enum Place {
     Corner(ToastPosition),
     /// 基準の矩形の近く（モード切替ポップアップ）
     Near(Rect),
+    /// 基準の矩形の上（収まらなければ下。確定後の見直しの提案。候補ウィンドウは下に出るので重ねない）
+    Above(Rect),
 }
 
 struct Paint {
@@ -153,6 +156,12 @@ impl ToastWindow {
         );
     }
 
+    /// `text` を `anchor`（入力中の文字列の矩形）の上に `duration` だけ表示する（確定後の見直しの提案）。
+    /// 表示中なら置き換えて、表示時間をやり直す
+    pub fn show_above(&self, text: &str, anchor: Rect, duration: Duration) {
+        self.present(text, Place::Above(anchor), duration);
+    }
+
     /// `text` を作業領域の隅に、設定のモード表示の時間だけ表示する（モード表示の位置が隅のとき）
     pub fn show_corner(&self, text: &str, position: ToastPosition) {
         self.present(
@@ -174,6 +183,7 @@ impl ToastWindow {
         let (probe_x, probe_y) = match place {
             Place::Corner(_) => (work.right - 1, work.bottom - 1),
             Place::Near(anchor) => (anchor.left, anchor.bottom),
+            Place::Above(anchor) => (anchor.left, anchor.top),
         };
         let _ = unsafe {
             SetWindowPos(
@@ -234,6 +244,12 @@ impl ToastWindow {
                 nagi_windows::placement::shift_rect(anchor, self.offset.get(), dpi),
                 size,
                 &areas,
+            ),
+            Place::Above(anchor) => nagi_windows::retro::place_above(
+                nagi_windows::placement::shift_rect(anchor, self.offset.get(), dpi),
+                size,
+                &areas,
+                scale_px(4, dpi),
             ),
         };
         *cell.borrow_mut() = Some(Paint {

@@ -8,11 +8,15 @@
 
 use nagi_protocol::InputMode;
 
+/// `TF_CONVERSIONMODE_ALPHANUMERIC`（英数。ビットではなく 0）
+pub const CONVERSION_ALPHANUMERIC: u32 = 0x0000;
 /// `TF_CONVERSIONMODE_NATIVE`（日本語入力）
 pub const CONVERSION_NATIVE: u32 = 0x0001;
+/// `TF_CONVERSIONMODE_KATAKANA`（カタカナ。`NATIVE` と組み合わせる）
+pub const CONVERSION_KATAKANA: u32 = 0x0002;
 /// `TF_CONVERSIONMODE_FULLSHAPE`（全角）
 pub const CONVERSION_FULLSHAPE: u32 = 0x0008;
-/// `TF_CONVERSIONMODE_ROMAN`（ローマ字入力）
+/// `TF_CONVERSIONMODE_ROMAN`（ローマ字入力。モードとは直交するので常に立てる）
 pub const CONVERSION_ROMAN: u32 = 0x0010;
 
 /// コンパートメントに書く値
@@ -24,34 +28,150 @@ pub struct CompartmentValues {
     pub conversion: u32,
 }
 
-/// モード → コンパートメントの値。ひらがなは MS-IME と同じ「開・日本語・全角・ローマ字」。
-/// 英数は「閉・ローマ字」（アプリからは IME オフに見える。MS-IME の半角英数と同様）
+/// コアのモード 1 つ分の対応（表示・コンパートメント。decisions.md H-140）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeRow {
+    /// コアのモード
+    pub mode: InputMode,
+    /// 言語バー・ポップアップに出す 1 文字
+    pub indicator: &'static str,
+    /// ツールチップ・メニューの名前
+    pub name: &'static str,
+    /// `KEYBOARD_OPENCLOSE`
+    pub open: bool,
+    /// `TF_CONVERSIONMODE_*` のうちモードを表すビット（`ROMAN` は別に足す）
+    pub bits: u32,
+}
+
+/// 全モードの対応表（メニューの並び順）。コア ↔ 表示 ↔ コンパートメントの正。
+///
+/// | モード | 表示 | 開閉 | 変換モード |
+/// | --- | --- | --- | --- |
+/// | ひらがな | あ | 開 | NATIVE \| FULLSHAPE |
+/// | 全角カタカナ | カ | 開 | NATIVE \| KATAKANA \| FULLSHAPE |
+/// | 半角カタカナ | ｶ | 開 | NATIVE \| KATAKANA |
+/// | 全角英数 | Ａ | 開 | ALPHANUMERIC \| FULLSHAPE |
+/// | 半角英数（`HankakuAlnum`） | A | 開 | ALPHANUMERIC |
+/// | 英数（`Alphanumeric`。IME オフ相当） | A | 閉 | ALPHANUMERIC |
+///
+/// `Alphanumeric` と `HankakuAlnum` は表示が同じで、コアでは同じ動作（素通し）。OS 側で区別するために
+/// 前者は閉、後者は開で表す（MS-IME の半角英数は「開・英数」）。
+pub const MODE_TABLE: [ModeRow; 6] = [
+    ModeRow {
+        mode: InputMode::Hiragana,
+        indicator: "あ",
+        name: "ひらがな",
+        open: true,
+        bits: CONVERSION_NATIVE | CONVERSION_FULLSHAPE,
+    },
+    ModeRow {
+        mode: InputMode::Katakana,
+        indicator: "カ",
+        name: "全角カタカナ",
+        open: true,
+        bits: CONVERSION_NATIVE | CONVERSION_KATAKANA | CONVERSION_FULLSHAPE,
+    },
+    ModeRow {
+        mode: InputMode::HankakuKatakana,
+        indicator: "ｶ",
+        name: "半角カタカナ",
+        open: true,
+        bits: CONVERSION_NATIVE | CONVERSION_KATAKANA,
+    },
+    ModeRow {
+        mode: InputMode::ZenkakuAlnum,
+        indicator: "Ａ",
+        name: "全角英数",
+        open: true,
+        bits: CONVERSION_ALPHANUMERIC | CONVERSION_FULLSHAPE,
+    },
+    ModeRow {
+        mode: InputMode::HankakuAlnum,
+        indicator: "A",
+        name: "半角英数",
+        open: true,
+        bits: CONVERSION_ALPHANUMERIC,
+    },
+    ModeRow {
+        mode: InputMode::Alphanumeric,
+        indicator: "A",
+        name: "半角英数",
+        open: false,
+        bits: CONVERSION_ALPHANUMERIC,
+    },
+];
+
+/// モードの対応表の行
+pub fn row(mode: InputMode) -> &'static ModeRow {
+    MODE_TABLE
+        .iter()
+        .find(|r| r.mode == mode)
+        .unwrap_or(&MODE_TABLE[0])
+}
+
+/// モード → コンパートメントの値（[`MODE_TABLE`]。ローマ字入力のビットは常に足す）
 pub fn compartment_values(mode: InputMode) -> CompartmentValues {
-    match mode {
-        // カタカナ・半角カナはひらがな、全角英数・半角英数は英数として OS に伝える（拡張モードの同期は後続）
-        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => {
-            CompartmentValues {
-                open: true,
-                conversion: CONVERSION_NATIVE | CONVERSION_FULLSHAPE | CONVERSION_ROMAN,
-            }
-        }
-        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => {
-            CompartmentValues {
-                open: false,
-                conversion: CONVERSION_ROMAN,
-            }
-        }
+    let r = row(mode);
+    CompartmentValues {
+        open: r.open,
+        conversion: r.bits | CONVERSION_ROMAN,
     }
 }
 
-/// コンパートメントの値 → モード。閉じていれば英数、開いていて日本語入力ビットがあればひらがな、
-/// 開いていてビットが無ければ英数（カタカナ等はコアのモードではないのでひらがな扱い）
+/// コンパートメントの値 → モード。閉じていれば英数。開いていて日本語入力（`NATIVE` または `KATAKANA`）なら
+/// カタカナ（全角なら全角カタカナ、半角なら半角カタカナ）かひらがな。日本語入力でなければ全角英数（全角）か
+/// 半角英数。対応表にない組み合わせは最も近いモード（半角のひらがな = ひらがな、`KATAKANA` だけ = カタカナ扱い）
 pub fn mode_from_compartments(open: bool, conversion: u32) -> InputMode {
-    if open && conversion & CONVERSION_NATIVE != 0 {
-        InputMode::Hiragana
-    } else {
-        InputMode::Alphanumeric
+    if !open {
+        return InputMode::Alphanumeric;
     }
+    let full = conversion & CONVERSION_FULLSHAPE != 0;
+    let katakana = conversion & CONVERSION_KATAKANA != 0;
+    let native = conversion & CONVERSION_NATIVE != 0;
+    match (native || katakana, katakana, full) {
+        (true, true, true) => InputMode::Katakana,
+        (true, true, false) => InputMode::HankakuKatakana,
+        (true, false, _) => InputMode::Hiragana,
+        (false, _, true) => InputMode::ZenkakuAlnum,
+        (false, _, false) => InputMode::HankakuAlnum,
+    }
+}
+
+/// モードが変わった原因（`tsf.log` の `[mode] … (source=…)`）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeSource {
+    /// キー操作（コアの応答の `mode`。無変換・カタカナ・F6〜F10 など）
+    Key,
+    /// 言語バーのメニュー・ボタン
+    Menu,
+    /// OS のコンパートメントの変更（アプリ・言語バー以外のモード切替 UI・他の IME との往復）
+    Compartment,
+}
+
+/// モードのログ用の名前（入力内容は含まない）
+pub fn log_name(mode: InputMode) -> &'static str {
+    match mode {
+        InputMode::Hiragana => "hiragana",
+        InputMode::Katakana => "katakana",
+        InputMode::HankakuKatakana => "hankaku_katakana",
+        InputMode::ZenkakuAlnum => "zenkaku_alnum",
+        InputMode::HankakuAlnum => "hankaku_alnum",
+        InputMode::Alphanumeric => "alphanumeric",
+    }
+}
+
+/// `[mode]` の 1 行（`<from> -> <to> (source=key|menu|compartment)`。`from` が未確定なら `none`）
+pub fn describe_change(from: Option<InputMode>, to: InputMode, source: ModeSource) -> String {
+    let source = match source {
+        ModeSource::Key => "key",
+        ModeSource::Menu => "menu",
+        ModeSource::Compartment => "compartment",
+    };
+    format!(
+        "{} -> {} (source={source})",
+        from.map_or("none", log_name),
+        log_name(to)
+    )
 }
 
 /// OS とコアが合意している現在のモード
@@ -101,28 +221,138 @@ impl ModeSync {
 mod tests {
     use super::*;
 
+    const ALL: [InputMode; 6] = [
+        InputMode::Hiragana,
+        InputMode::Katakana,
+        InputMode::HankakuKatakana,
+        InputMode::ZenkakuAlnum,
+        InputMode::HankakuAlnum,
+        InputMode::Alphanumeric,
+    ];
+
     #[test]
-    fn values_round_trip() {
-        for mode in [InputMode::Hiragana, InputMode::Alphanumeric] {
+    fn values_round_trip_for_every_mode() {
+        for mode in ALL {
             let v = compartment_values(mode);
-            assert_eq!(mode_from_compartments(v.open, v.conversion), mode);
+            assert_eq!(
+                mode_from_compartments(v.open, v.conversion),
+                mode,
+                "{mode:?}"
+            );
+        }
+        // 表は全モードを 1 回ずつ持つ
+        for mode in ALL {
+            assert_eq!(MODE_TABLE.iter().filter(|r| r.mode == mode).count(), 1);
         }
     }
 
     #[test]
-    fn open_without_native_is_alphanumeric_and_closed_is_alphanumeric() {
+    fn table_bits_match_the_spec() {
+        let bits = |m| compartment_values(m).conversion & !CONVERSION_ROMAN;
+        assert_eq!(bits(InputMode::Hiragana), 0x1 | 0x8);
+        assert_eq!(bits(InputMode::Katakana), 0x1 | 0x2 | 0x8);
+        assert_eq!(bits(InputMode::HankakuKatakana), 0x1 | 0x2);
+        assert_eq!(bits(InputMode::ZenkakuAlnum), 0x8);
+        assert_eq!(bits(InputMode::HankakuAlnum), 0);
+        assert_eq!(bits(InputMode::Alphanumeric), 0);
+        assert!(!compartment_values(InputMode::Alphanumeric).open);
+        for mode in ALL.iter().filter(|m| **m != InputMode::Alphanumeric) {
+            assert!(compartment_values(*mode).open, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn every_bit_combination_maps_to_a_mode() {
+        // NATIVE / KATAKANA / FULLSHAPE / ROMAN の全 16 通り × 開閉。逆写像は常に決まり、
+        // 開いている日本語入力なら必ずかな系、そうでなければ英数系
+        for open in [false, true] {
+            for conv in 0..16u32 {
+                let mode = mode_from_compartments(open, conv);
+                let japanese = conv & (CONVERSION_NATIVE | CONVERSION_KATAKANA) != 0;
+                assert_eq!(
+                    mode.is_kana(),
+                    open && japanese,
+                    "open={open} conv={conv:#x}"
+                );
+                // 書き戻すと同じモードに戻る（往復で揺れない）
+                let v = compartment_values(mode);
+                assert_eq!(mode_from_compartments(v.open, v.conversion), mode);
+            }
+        }
+    }
+
+    #[test]
+    fn nearest_mode_for_odd_combinations() {
+        // 半角のひらがな（NATIVE のみ）はひらがな
+        assert_eq!(
+            mode_from_compartments(true, CONVERSION_NATIVE | CONVERSION_ROMAN),
+            InputMode::Hiragana
+        );
+        // KATAKANA だけ・全角なし NATIVE|KATAKANA は半角カタカナ、全角あり KATAKANA は全角カタカナ
+        assert_eq!(
+            mode_from_compartments(true, CONVERSION_KATAKANA),
+            InputMode::HankakuKatakana
+        );
+        assert_eq!(
+            mode_from_compartments(true, CONVERSION_KATAKANA | CONVERSION_FULLSHAPE),
+            InputMode::Katakana
+        );
+        // 閉じていれば、他のビットが何でも英数
+        assert_eq!(
+            mode_from_compartments(false, CONVERSION_NATIVE | CONVERSION_KATAKANA),
+            InputMode::Alphanumeric
+        );
+        // 開いて NATIVE 無しは英数系（全角ビットで分かれる）
         assert_eq!(
             mode_from_compartments(true, CONVERSION_ROMAN),
-            InputMode::Alphanumeric
+            InputMode::HankakuAlnum
         );
         assert_eq!(
-            mode_from_compartments(false, CONVERSION_NATIVE),
-            InputMode::Alphanumeric
+            mode_from_compartments(true, CONVERSION_FULLSHAPE | CONVERSION_ROMAN),
+            InputMode::ZenkakuAlnum
         );
-        // カタカナ入力（NATIVE | KATAKANA）はコアのモードではひらがな
+    }
+
+    #[test]
+    fn change_log_line_has_no_input_text() {
         assert_eq!(
-            mode_from_compartments(true, CONVERSION_NATIVE | 0x2),
-            InputMode::Hiragana
+            describe_change(
+                Some(InputMode::Hiragana),
+                InputMode::HankakuKatakana,
+                ModeSource::Key
+            ),
+            "hiragana -> hankaku_katakana (source=key)"
+        );
+        assert_eq!(
+            describe_change(None, InputMode::ZenkakuAlnum, ModeSource::Compartment),
+            "none -> zenkaku_alnum (source=compartment)"
+        );
+        assert_eq!(
+            describe_change(
+                Some(InputMode::Katakana),
+                InputMode::Alphanumeric,
+                ModeSource::Menu
+            ),
+            "katakana -> alphanumeric (source=menu)"
+        );
+    }
+
+    #[test]
+    fn indicator_and_name_come_from_the_table() {
+        let got: Vec<_> = ALL
+            .iter()
+            .map(|m| (row(*m).indicator, row(*m).name))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("あ", "ひらがな"),
+                ("カ", "全角カタカナ"),
+                ("ｶ", "半角カタカナ"),
+                ("Ａ", "全角英数"),
+                ("A", "半角英数"),
+                ("A", "半角英数"),
+            ]
         );
     }
 
@@ -143,6 +373,23 @@ mod tests {
             Some(InputMode::Hiragana)
         );
         assert_eq!(s.known(), Some(InputMode::Hiragana));
+    }
+
+    #[test]
+    fn extended_modes_do_not_echo_and_switch_between_each_other() {
+        let mut s = ModeSync::new();
+        for mode in ALL {
+            assert!(s.core_changed(mode).is_some() || s.known() == Some(mode));
+            let v = compartment_values(mode);
+            // 自分で書いた値の通知は送り返さない
+            assert_eq!(s.os_changed(v.open, v.conversion), None, "{mode:?}");
+        }
+        // OS（言語バーなど）が全角カタカナへ変えたらコアへ送る
+        let v = compartment_values(InputMode::Katakana);
+        assert_eq!(
+            s.os_changed(v.open, v.conversion),
+            Some(InputMode::Katakana)
+        );
     }
 
     #[test]

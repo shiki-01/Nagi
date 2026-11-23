@@ -432,7 +432,9 @@ pub fn describe_event(event: &EngineEvent) -> Option<(&'static str, String)> {
                 "dropped non-JSON line from engine stdout len={len} first={first} total={count}"
             ),
         ),
-        EngineEvent::UpdatePreedit(_) | EngineEvent::UpdateCandidates(_) => return None,
+        EngineEvent::UpdatePreedit(_)
+        | EngineEvent::UpdateCandidates(_)
+        | EngineEvent::RetroReview(_) => return None,
     })
 }
 

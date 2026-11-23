@@ -89,7 +89,7 @@ pub fn should_report_before_key(
     preedit_is_empty: bool,
     is_flags_changed: bool,
 ) -> bool {
-    !is_flags_changed && mode == InputMode::Hiragana && preedit_is_empty
+    !is_flags_changed && mode.is_kana() && preedit_is_empty
 }
 
 #[cfg(test)]
@@ -179,5 +179,17 @@ mod tests {
             false
         ));
         assert!(!should_report_before_key(InputMode::Hiragana, true, true));
+        // カタカナ・半角カナもひらがなと同じく入力を始める
+        assert!(should_report_before_key(InputMode::Katakana, true, false));
+        assert!(should_report_before_key(
+            InputMode::HankakuKatakana,
+            true,
+            false
+        ));
+        assert!(!should_report_before_key(
+            InputMode::ZenkakuAlnum,
+            true,
+            false
+        ));
     }
 }

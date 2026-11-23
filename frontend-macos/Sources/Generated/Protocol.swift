@@ -83,6 +83,198 @@ public struct AddUserDictEntryResult: Codable {
 	}
 }
 
+/// バックアップファイルの 1 つのファイル分の内容
+public struct BackupEntry: Codable {
+	/// 項目（`settings` / `user_dict` / `suppressed` / `learning`。未知の値は無視される）
+	public let kind: String
+	/// ファイル名（`config.toml`・`registered.tsv` など。保存先の決定には使わない）
+	public let name: String
+	/// ファイルの中身（UTF-8 のテキスト）
+	public let text: String
+
+	public init(kind: String, name: String, text: String) {
+		self.kind = kind
+		self.name = name
+		self.text = text
+	}
+}
+
+/// バックアップファイル（`nagi-backup-<日時>.json` の中身）
+public struct BackupFile: Codable {
+	/// スキーマの版（現在 1）
+	public let version: UInt32
+	/// 作成日時（UTC。`2026-11-22T10:20:30Z`）
+	public let created_at: String?
+	/// 作成した Nagi の版
+	public let app_version: String?
+	/// 作成した OS（`windows` / `macos` / `linux` / `ios` など）
+	public let platform: String?
+	/// 含めた項目（中身が空の項目も示す。復元で「空にする」ために必要）。古いファイルでは省略される
+	public let included: [String]?
+	/// ファイルごとの内容
+	public let entries: [BackupEntry]
+
+	public init(version: UInt32, created_at: String?, app_version: String?, platform: String?, included: [String]?, entries: [BackupEntry]) {
+		self.version = version
+		self.created_at = created_at
+		self.app_version = app_version
+		self.platform = platform
+		self.included = included
+		self.entries = entries
+	}
+}
+
+/// バックアップに含められる項目
+public enum BackupItem: String, Codable {
+	/// 設定（`config.toml`。キー割当 `[keymap.*]` を含む）
+	case settings
+	/// ユーザー辞書（`user_dict/` の `*.txt` / `*.tsv`）
+	case userDict = "user_dict"
+	/// 抑制語（`suppressed.tsv`）
+	case suppressed
+	/// 学習データ（`learning.tsv`・`learning-next.tsv`。入力した内容の履歴を含む）
+	case learning
+}
+
+/// `apply_backup` の要求パラメータ
+public struct ApplyBackupParams: Codable {
+	/// バックアップの本体
+	public let backup: BackupFile
+	/// 適用する項目
+	public let apply: [BackupItem]
+
+	public init(backup: BackupFile, apply: [BackupItem]) {
+		self.backup = backup
+		self.apply = apply
+	}
+}
+
+/// 適用した項目の結果
+public struct BackupApplied: Codable {
+	/// 項目
+	public let kind: BackupItem
+	/// 適用した件数（設定は明示指定のキー数、辞書・抑制語は新しく加わった件数、学習は行数）
+	public let count: UInt32
+
+	public init(kind: BackupItem, count: UInt32) {
+		self.kind = kind
+		self.count = count
+	}
+}
+
+/// `apply_backup` / `restore_backup` の応答
+public struct ApplyBackupResult: Codable {
+	/// 適用した項目
+	public let applied: [BackupApplied]
+	/// 適用前に保存した自動バックアップのファイル名（`<user-dir>/backups/` 内）
+	public let auto_backup: String
+	/// 注意
+	public let warnings: [String]
+
+	public init(applied: [BackupApplied], auto_backup: String, warnings: [String]) {
+		self.applied = applied
+		self.auto_backup = auto_backup
+		self.warnings = warnings
+	}
+}
+
+/// 問題の 1 件（検証エラー）
+public struct BackupIssue: Codable {
+	/// 行番号（1 始まり。行に結び付かないなら 0）
+	public let line: UInt32
+	/// 内容（日本語。入力内容の語は含まない）
+	public let message: String
+
+	public init(line: UInt32, message: String) {
+		self.line = line
+		self.message = message
+	}
+}
+
+/// 設定の差分の 1 件（`config.toml` の 1 キー）
+public struct BackupSettingDiff: Codable {
+	/// ドット区切りのキー（`conversion.live_conversion`）
+	public let key: String
+	/// 表示名（設定画面に項目があれば。無ければキーと同じ）
+	public let label: String
+	/// 現在の値（明示指定が無ければ `None`）
+	public let before: String?
+	/// 適用後の値（明示指定が無くなるなら `None`）
+	public let after: String?
+
+	public init(key: String, label: String, before: String?, after: String?) {
+		self.key = key
+		self.label = label
+		self.before = before
+		self.after = after
+	}
+}
+
+/// `preview_backup` の項目ごとの要約
+public struct BackupItemPreview: Codable {
+	/// 項目
+	public let kind: BackupItem
+	/// バックアップに含まれているか
+	public let present: Bool
+	/// 適用できるか（`present` で、検証エラーが無い）
+	public let applicable: Bool
+	/// バックアップ内の件数（設定は明示指定のキー数、辞書は語数、抑制語は件数、学習は行数）
+	public let count: UInt32
+	/// 現在の件数（同じ数え方）
+	public let current: UInt32
+	/// 適用で増える件数（辞書・抑制語は新規。設定・学習は使わない）
+	public let added: UInt32
+	/// すでにある件数（辞書・抑制語の重複。設定は同じ値のキー数）
+	public let same: UInt32
+	/// 値が変わるキー数（設定のみ）
+	public let changed: UInt32
+	/// 適用で明示指定がなくなるキー数（設定のみ。バックアップに無い現在の指定）
+	public let removed: UInt32
+	/// 設定の差分（最大 100 件）
+	public let changes: [BackupSettingDiff]
+	/// 検証エラー（これがあると適用できない）
+	public let errors: [BackupIssue]
+	/// 注意（適用はできる）
+	public let warnings: [String]
+
+	public init(kind: BackupItem, present: Bool, applicable: Bool, count: UInt32, current: UInt32, added: UInt32, same: UInt32, changed: UInt32, removed: UInt32, changes: [BackupSettingDiff], errors: [BackupIssue], warnings: [String]) {
+		self.kind = kind
+		self.present = present
+		self.applicable = applicable
+		self.count = count
+		self.current = current
+		self.added = added
+		self.same = same
+		self.changed = changed
+		self.removed = removed
+		self.changes = changes
+		self.errors = errors
+		self.warnings = warnings
+	}
+}
+
+/// 自動バックアップの 1 件
+public struct BackupListItem: Codable {
+	/// ファイル名
+	public let name: String
+	/// 作成日時
+	public let created_at: String
+	/// 作成した Nagi の版
+	public let app_version: String
+	/// 含まれる項目
+	public let kinds: [BackupItem]
+	/// ファイルの大きさ（バイト）
+	public let size: UInt32
+
+	public init(name: String, created_at: String, app_version: String, kinds: [BackupItem], size: UInt32) {
+		self.name = name
+		self.created_at = created_at
+		self.app_version = app_version
+		self.kinds = kinds
+		self.size = size
+	}
+}
+
 /// 候補の出所（出元のモデル・辞書等）
 public enum CandidateSource: String, Codable {
 	/// 学習キャッシュ
@@ -427,6 +619,32 @@ public struct EditKeymapResult: Codable {
 /// 空の結果（`ping` / `shutdown` / `focus_in`）
 public struct EmptyResult: Codable {
 	public init() {}
+}
+
+/// `export_backup` の要求パラメータ
+public struct ExportBackupParams: Codable {
+	/// 含める項目
+	public let include: [BackupItem]
+
+	public init(include: [BackupItem]) {
+		self.include = include
+	}
+}
+
+/// `export_backup` の応答
+public struct ExportBackupResult: Codable {
+	/// バックアップの本体
+	public let backup: BackupFile
+	/// 保存するときの既定のファイル名（`nagi-backup-<日時>.json`）
+	public let file_name: String
+	/// 書き出しの注意（書き出しから除いた設定など）。入力内容は含まない
+	public let warnings: [String]
+
+	public init(backup: BackupFile, file_name: String, warnings: [String]) {
+		self.backup = backup
+		self.file_name = file_name
+		self.warnings = warnings
+	}
 }
 
 /// `export_keymap` メソッドの応答
@@ -1052,6 +1270,22 @@ public struct LayoutKey: Codable {
 	}
 }
 
+/// `list_backups` の応答
+public struct ListBackupsResult: Codable {
+	/// 新しい順
+	public let backups: [BackupListItem]
+	/// 保存先のフォルダ（表示用）
+	public let dir: String?
+	/// 残す世代数
+	public let keep: UInt32
+
+	public init(backups: [BackupListItem], dir: String?, keep: UInt32) {
+		self.backups = backups
+		self.dir = dir
+		self.keep = keep
+	}
+}
+
 /// 抑制語 1 件
 public struct SuppressedItem: Codable {
 	/// 読み（ひらがな）
@@ -1559,6 +1793,44 @@ public struct PreeditView: Codable {
 	}
 }
 
+/// `preview_backup` の要求パラメータ
+public struct PreviewBackupParams: Codable {
+	/// バックアップの本体
+	public let backup: BackupFile
+
+	public init(backup: BackupFile) {
+		self.backup = backup
+	}
+}
+
+/// `preview_backup` の応答
+public struct PreviewBackupResult: Codable {
+	/// スキーマの版
+	public let version: UInt32
+	/// 作成日時
+	public let created_at: String
+	/// 作成した Nagi の版
+	public let app_version: String
+	/// 作成した OS
+	public let platform: String
+	/// この OS と同じか
+	public let same_platform: Bool
+	/// 項目ごとの要約（4 項目すべて）
+	public let items: [BackupItemPreview]
+	/// 全体の注意（版・OS の違い、未知の項目の無視など）
+	public let warnings: [String]
+
+	public init(version: UInt32, created_at: String, app_version: String, platform: String, same_platform: Bool, items: [BackupItemPreview], warnings: [String]) {
+		self.version = version
+		self.created_at = created_at
+		self.app_version = app_version
+		self.platform = platform
+		self.same_platform = same_platform
+		self.items = items
+		self.warnings = warnings
+	}
+}
+
 /// `process_key` メソッドの要求パラメータ
 public struct ProcessKeyParams: Codable {
 	/// セッション ID
@@ -1723,6 +1995,16 @@ public struct ResetKeymapParams: Codable {
 	public init(scope: KeymapResetScope, context: KeymapContext?) {
 		self.scope = scope
 		self.context = context
+	}
+}
+
+/// `restore_backup` の要求パラメータ
+public struct RestoreBackupParams: Codable {
+	/// 復元する自動バックアップのファイル名（省略は最新）
+	public let name: String?
+
+	public init(name: String?) {
+		self.name = name
 	}
 }
 

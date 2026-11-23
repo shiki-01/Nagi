@@ -267,6 +267,14 @@ pub trait ConversionBackend: Send + Sync {
         Vec::new()
     }
 
+    /// これから処理するセッションの状況（secure input・アプリ）を伝える。エンジンはセッションを触る
+    /// たびに、変換・候補生成・予測の前にこれを呼ぶ。学習を止める状況（設定・secure input・停止アプリ）
+    /// では、学習による順位の押し上げと学習キャッシュ由来の候補を使わないこと（ユーザー辞書・システム辞書・
+    /// スニペットは対象外）。既定実装は何もしない（学習を持たないバックエンド向け）
+    fn set_session_context(&self, ctx: &CommitContext<'_>) {
+        let _ = ctx;
+    }
+
     /// 溜まった完了通知を取り出す（取り出すと空になる）
     fn take_completions(&self) -> Vec<Completion> {
         Vec::new()

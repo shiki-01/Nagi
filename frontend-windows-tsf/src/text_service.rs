@@ -33,8 +33,9 @@ use nagi_windows::environment::{
 };
 use nagi_windows::focus::{FocusPlan, FocusTracker, selection_outside_composition};
 use nagi_windows::keynorm;
-use nagi_windows::mode::{ModeSync, compartment_values};
+use nagi_windows::mode::{ModeSource, ModeSync, compartment_values, describe_change};
 use nagi_windows::process::SpawnHook;
+use nagi_windows::retro::{KeyDecision, OfferEnv, RETRO_TTL, RetroReview, popup_anchor};
 use nagi_windows::status::{
     MenuCommand, MenuEntry, MenuTargets, PathEnv, ToastThrottle, toast_for,
 };
@@ -67,6 +68,7 @@ use crate::mode_comp::{self, ModeCompartments};
 use crate::probe::Win32Probe;
 use crate::reconversion::FunctionProvider;
 use crate::render::{self, EditPlan, HandoffCache};
+use crate::retro_popup::{self, ReplaceOutcome};
 use crate::toast_window::ToastWindow;
 use crate::ui_element::{CandidateListElement, ElementState};
 use crate::win;
@@ -268,6 +270,8 @@ struct KeyOutcome {
     plan: EditPlan,
     /// 反映後の UI 更新
     followup: Followup,
+    /// 確定後の見直しの提案に対する判断（採用・無視。`OnKeyDown` で実行する）
+    retro: KeyDecision,
 }
 
 /// UI スレッド上の共有状態（TSF のオブジェクトは単一スレッド・アパートメントで使う）
@@ -301,6 +305,10 @@ pub(crate) struct Core {
     toast: ToastWindow,
     /// モード切替ポップアップ（既定はキャレット付近に 1 秒。通知とは別のウィンドウ）
     mode_popup: ToastWindow,
+    /// 確定後の見直し（`retro_review`）の提案ポップアップ（入力中の文字列の上に数秒）
+    retro_popup: ToastWindow,
+    /// 提案の状態（Idle → Offered → Accepted / Dismissed / Expired）
+    retro: RefCell<RetroReview>,
     /// 変換 UI の見た目（設定 `windows.candidate_*` などの実効値。H-119）
     ui_style: Cell<CandidateStyle>,
     /// 設定を一度でも読めたか（読めるまでは候補の表示のたびに再試行する）
@@ -384,6 +392,8 @@ impl Core {
             candidate_window: CandidateWindow::new(),
             toast: ToastWindow::new(),
             mode_popup: ToastWindow::new(),
+            retro_popup: ToastWindow::new(),
+            retro: RefCell::new(RetroReview::default()),
             ui_style: Cell::new(CandidateStyle::default()),
             ui_style_loaded: Cell::new(false),
             ui_style_gate: RefCell::new(RefreshGate::new()),
@@ -551,6 +561,7 @@ impl Core {
         self.candidate_window.destroy();
         self.toast.destroy();
         self.mode_popup.destroy();
+        self.retro_popup.destroy();
         *self.message_window.borrow_mut() = None;
         *self.lang_bar.borrow_mut() = None;
         *self.compartments.borrow_mut() = None;
@@ -569,6 +580,10 @@ impl Core {
             }
             MessageEvent::Tick => {
                 self.poll_environment();
+                if self.retro.borrow_mut().tick(monotonic_now()) {
+                    self.retro_popup.hide();
+                    crate::tsf_log::log("retro", "expired reason=ttl");
+                }
                 // imserver の常駐メモリを診断ログへ（H-99 の閾値の実測用。10 分に 1 回まで）
                 crate::proc_mem::log_engine_memory_throttled();
                 if self.resume.borrow_mut().tick(SystemTime::now()) {
@@ -606,6 +621,9 @@ impl Core {
 
     /// エンジンが（再）起動した。新しいエンジンは前回値もモードも知らない
     fn on_engine_started(&self) {
+        // 新しいエンジンの revision は 0 から始まる。古い提案は無効
+        self.retro_popup.hide();
+        self.retro.borrow_mut().reset_revision();
         // アイコンの配色は、つながったエンジンの設定を正として読み直す（間引きを待たない）
         if let Some(bar) = self.lang_bar.borrow().as_ref() {
             bar.invalidate_style();
@@ -655,6 +673,12 @@ impl Core {
         let Some(mode) = requested else {
             return;
         };
+        let source = if cause == ModeChangeCause::User {
+            ModeSource::Menu
+        } else {
+            ModeSource::Compartment
+        };
+        crate::tsf_log::log("mode", &describe_change(previous, mode, source));
         self.refresh_lang_bar();
         if let Ok(result) = self.engine.set_mode(&self.session_id, mode) {
             // SetMode は入力中の文字列を確定する
@@ -699,6 +723,7 @@ impl Core {
         }
         self.refresh_lang_bar();
         if values.is_some() {
+            crate::tsf_log::log("mode", &describe_change(previous, mode, ModeSource::Key));
             self.notify_mode_changed(previous, mode, cause);
         }
     }
@@ -806,6 +831,7 @@ impl Core {
         self.candidate_window.set_style(style);
         self.toast.set_style(style);
         self.mode_popup.set_style(style);
+        self.retro_popup.set_style(style);
         render::set_normal_underline(style.underline);
     }
 
@@ -1223,6 +1249,108 @@ impl Core {
         // 入力中でなくなったら候補は出さない
         if !self.is_composing() {
             self.hide_candidates();
+            // 入力が終わった（確定・取消）。コアも次の確定で提案を無効にする
+            self.retro_expire("composition-ended");
+        }
+    }
+
+    // ---- 確定後の見直し（retro_review） ----
+
+    /// 提案を引っ込める（表示も消す）。出ていたときだけ記録する
+    fn retro_expire(&self, reason: &str) {
+        if self.retro.borrow_mut().expire() {
+            self.retro_popup.hide();
+            crate::tsf_log::log("retro", &format!("expired reason={reason}"));
+        }
+    }
+
+    /// 提案を無視する（Esc・次のキー入力）
+    fn retro_dismiss(&self) {
+        if self.retro.borrow_mut().dismiss() {
+            self.retro_popup.hide();
+            crate::tsf_log::log("retro", "dismissed");
+        }
+    }
+
+    /// `retro_review` 通知: 入力中でフォーカスがあるときだけ、提案をポップアップで出す。
+    /// 位置は候補ウィンドウと同じ優先順位（H-123。マウス位置は使わない）
+    fn on_retro_review(&self, params: &nagi_protocol::methods::RetroReviewParams) {
+        let env = OfferEnv {
+            focused: self.focused.get(),
+            composing: self.is_composing(),
+            ui_less: self.ui_less.get(),
+        };
+        if self
+            .retro
+            .borrow_mut()
+            .offer(params, env, monotonic_now())
+            .is_err()
+        {
+            return;
+        }
+        let Some(text) = self.retro.borrow().prompt() else {
+            return;
+        };
+        let Some((source, anchor)) = popup_anchor(&self.anchors()) else {
+            self.retro_expire("no-anchor");
+            return;
+        };
+        self.retro_popup.show_above(&text, anchor, RETRO_TTL);
+        crate::tsf_log::log("retro", &format!("offered anchor={}", source.as_str()));
+    }
+
+    /// 提案に対するキーの判断を実行する（`OnKeyDown`）。採用なら確定済みテキストを置き換える
+    fn retro_after_key(&self, context: Option<&ITfContext>, decision: KeyDecision) {
+        match decision {
+            KeyDecision::PassThrough => {}
+            KeyDecision::Dismiss { .. } => self.retro_dismiss(),
+            KeyDecision::Accept => self.retro_accept(context),
+        }
+    }
+
+    /// 採用: コアの `accept_retro_review` が返す文字列で、入力中の文字列の直前の確定済みテキストを置き換える。
+    /// 失敗したら何も変えない（入力中の文字列は触らない）
+    fn retro_accept(&self, context: Option<&ITfContext>) {
+        let offer = self.retro.borrow_mut().accept(monotonic_now());
+        self.retro_popup.hide();
+        let Some(offer) = offer else {
+            crate::tsf_log::log("retro", "expired reason=ttl");
+            return;
+        };
+        let (Some(context), Some(env)) = (context, self.env()) else {
+            crate::tsf_log::log("retro", "replace-failed reason=no-context");
+            return;
+        };
+        let engine = Arc::clone(&self.engine);
+        let session = self.session_id.clone();
+        let outcome = retro_popup::run_replace(
+            context,
+            self.client_id.get(),
+            &env,
+            offer.original,
+            offer.replace_len,
+            move || {
+                engine
+                    .accept_retro_review(&session, 0)
+                    .ok()
+                    .filter(|r| !r.text.is_empty())
+                    .map(|r| (r.replace_len_utf16, r.text))
+            },
+        );
+        match outcome.failure_reason() {
+            None => crate::tsf_log::log("retro", "accepted"),
+            Some(reason) => {
+                crate::tsf_log::log("retro", &format!("replace-failed reason={reason}"));
+            }
+        }
+        match outcome {
+            ReplaceOutcome::Replaced => self.on_remeasured(),
+            ReplaceOutcome::ReplacedAndFlushed => {
+                // 入力中の文字列は文書に残したまま composition を終えた。エンジン側も入力中の状態を捨てる
+                let _ = self.engine.reset(&self.session_id);
+                self.hide_candidates();
+            }
+            _ => {}
         }
     }
 
@@ -1355,10 +1483,28 @@ impl Core {
             eaten: false,
             plan: render::plan_from_result(&ProcessKeyResult::default()),
             followup: Followup::default(),
+            retro: KeyDecision::PassThrough,
         };
         let raw = crate::keys::raw_key_input(wparam, lparam, is_up);
         let Some(key) = keynorm::normalize(&raw) else {
             return passthrough;
+        };
+        // 確定後の見直しの提案が出ている間: 採用キーと Esc はエンジンへ送らずに食う。
+        // それ以外のキーは通常どおり処理し、提案は無視として引っ込める（`key_down`）
+        let retro = self.retro.borrow().peek_key(&key, monotonic_now());
+        if matches!(
+            retro,
+            KeyDecision::Accept | KeyDecision::Dismiss { consume: true }
+        ) {
+            return KeyOutcome {
+                eaten: true,
+                retro,
+                ..passthrough
+            };
+        }
+        let passthrough = KeyOutcome {
+            retro,
+            ..passthrough
         };
         // フォーカスの通知を取りこぼした場合の保険（起動済みなら何もしない）。起動が済むまでのキーは素通しになる
         self.engine.ensure_started();
@@ -1389,7 +1535,11 @@ impl Core {
                         result.commit.is_some()
                     ),
                 );
-                self.outcome_from(&result)
+                self.retro.borrow_mut().note_revision(result.revision);
+                KeyOutcome {
+                    retro,
+                    ..self.outcome_from(&result)
+                }
             }
             Err(e) => {
                 crate::e2e_probe::record_event("engine_error", &format!("{e:?}"));
@@ -1410,6 +1560,7 @@ impl Core {
             eaten,
             plan,
             followup: Followup::from_result(result),
+            retro: KeyDecision::PassThrough,
         }
     }
 
@@ -1444,6 +1595,7 @@ impl Core {
                     }
                 }
                 EngineEvent::UpdateCandidates(c) => self.show_candidates(Some(&c.candidates)),
+                EngineEvent::RetroReview(p) => self.on_retro_review(&p),
                 EngineEvent::Restored { result, .. } => {
                     if let Some(ctx) = context {
                         let _ = self.apply(ctx, render::plan_from_result(&result), timing);
@@ -1507,6 +1659,7 @@ impl Core {
                 outcome.eaten
             ),
         );
+        self.retro_after_key(context, outcome.retro);
         self.finish(&outcome.followup, ModeChangeCause::User);
         if outcome.followup.reconvert
             && let Some(ctx) = context
@@ -1570,6 +1723,7 @@ impl Core {
         let offset = load_window_offset();
         self.candidate_window.set_offset(offset);
         self.mode_popup.set_offset(offset);
+        self.retro_popup.set_offset(offset);
         self.ui_less.set(false);
         crate::e2e_probe::record_event("set_focus", "foreground=true");
         // 入力する可能性のあるホストになったので、ここでエンジンを起動する（先読み。H-96）
@@ -1587,6 +1741,7 @@ impl Core {
         self.last_known.borrow_mut().clear();
         self.ui_less.set(false);
         self.mode_popup.hide();
+        self.retro_expire("focus");
         crate::e2e_probe::record_event("set_focus", "foreground=false");
         let context = self
             .text_edit

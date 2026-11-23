@@ -18,6 +18,7 @@
 //! - [`mode`] — 入力モードの OS（コンパートメント）との同期（同じモードなら送らない）
 //! - [`focus`] — focus_in / focus_out の冪等な判定と、キャレットの composition 範囲外判定
 //! - [`reconvert`] — 再変換の対象テキストの判定
+//! - [`retro`] — 確定後の遡及再評価（`retro_review`）の提案の状態機械・文言・配置
 //! - [`toast`] — 通知パネルの配置、モード切替ポップアップの判定・配置
 //! - [`ui_element`] — UILess モード（`ITfCandidateListUIElement`）の候補リストのモデル
 //! - [`icon`] — Nagi のロゴ・モード表示つきアイコンの描画と .ico の生成
@@ -52,6 +53,7 @@ pub mod process;
 pub mod process_memory;
 pub mod reconvert;
 pub mod registration;
+pub mod retro;
 pub mod revision;
 pub mod session;
 pub mod status;

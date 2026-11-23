@@ -45,6 +45,7 @@ serde_json.workspace = true
 ureq = { version = "2.11", features = ["json"], optional = true }
 ed25519-dalek = "2"
 base64 = "0.22"
+toml_edit = "0.22"
 sha2 = "0.10"
 
 [features]

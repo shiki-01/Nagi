@@ -589,6 +589,72 @@ impl Server {
         }
     }
 
+    /// バックアップの書き出し・プレビュー・適用・復元（`backup_tools`）。適用したら全体を読み直して即座に反映する
+    fn backup_rpc(&mut self, req: &Request) -> RpcResult {
+        use crate::backup_tools as tools;
+        use nagi_protocol::backup::{
+            ApplyBackupParams, ExportBackupParams, PreviewBackupParams, RestoreBackupParams, names,
+        };
+        let config_path = self.reload.config_path.clone();
+        let user_dict_dir = self.reload.user_dict_dir.clone();
+        let suppressed_path = self.reload.suppressed_path.clone();
+        let user_dir = user_dict_dir
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .or_else(|| suppressed_path.as_deref().and_then(std::path::Path::parent))
+            .map(std::path::Path::to_path_buf);
+        let runtime = self.runtime.clone();
+        let env = tools::Env {
+            config_path: config_path.as_deref(),
+            user_dict_dir: user_dict_dir.as_deref(),
+            suppressed_path: suppressed_path.as_deref(),
+            user_dir: user_dir.as_deref(),
+            runtime: Some(&runtime),
+            userdict_max_entries: runtime.tunables().userdict_max_entries,
+            app_version: env!("CARGO_PKG_VERSION"),
+            platform: std::env::consts::OS,
+            now_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        };
+        let tool_error = |e: crate::userdict_tools::ToolError| match e {
+            crate::userdict_tools::ToolError::Invalid(m) => {
+                ErrorObject::new(error_code::INVALID_PARAMS, m)
+            }
+            crate::userdict_tools::ToolError::Io(m) => {
+                ErrorObject::new(error_code::ENGINE_FAILURE, m)
+            }
+        };
+        match req.method.as_str() {
+            names::EXPORT_BACKUP => {
+                let p: ExportBackupParams = params(req)?;
+                to_value(tools::export(&env, &p).map_err(tool_error)?)
+            }
+            names::PREVIEW_BACKUP => {
+                let p: PreviewBackupParams = params(req)?;
+                to_value(tools::preview(&env, &p.backup).map_err(tool_error)?)
+            }
+            names::LIST_BACKUPS => to_value(tools::list(&env)),
+            names::APPLY_BACKUP | names::RESTORE_BACKUP => {
+                let result = if req.method == names::APPLY_BACKUP {
+                    let p: ApplyBackupParams = params(req)?;
+                    tools::apply(&env, &p.backup, &p.apply, tools::Mode::Merge)
+                } else {
+                    let p: RestoreBackupParams = params_or_default(req)?;
+                    tools::restore(&env, p.name.as_deref())
+                };
+                // 失敗しても、元に戻した結果をメモリ（辞書・設定）に反映し直しておく
+                let result = result.map_err(tool_error);
+                self.reload_all();
+                to_value(result?)
+            }
+            _ => Err(ErrorObject::new(
+                error_code::METHOD_NOT_FOUND,
+                "未知のメソッド",
+            )),
+        }
+    }
+
     /// 抑制語を編集して即座にファイルへ保存し、パイプラインへ反映する。
     /// `edit` は変更があれば `Ok(true)`、不正な入力なら理由を返す
     fn edit_suppressions(
@@ -1039,6 +1105,10 @@ impl Server {
                     errors: outcome.errors,
                     snapshot: crate::settings::snapshot(self.reload.config_path.as_deref()),
                 })
+            }
+            m if crate::backup_tools::is_backup_method(m) => {
+                self.require_initialized()?;
+                self.backup_rpc(req)
             }
             m if crate::userdict_tools::is_userdict_method(m) => {
                 self.require_initialized()?;

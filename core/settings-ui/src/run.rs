@@ -57,7 +57,7 @@ fn to_request(request: &mut tiny_http::Request) -> Request {
     // 上限 + 1 バイトまで読み、超えていれば検査側が 413 にする
     let _ = request
         .as_reader()
-        .take(crate::http::userdict::max_body_for(&path) as u64 + 1)
+        .take(crate::http::max_body_for(&path) as u64 + 1)
         .read_to_end(&mut body);
     Request {
         method: request.method().as_str().to_ascii_uppercase(),

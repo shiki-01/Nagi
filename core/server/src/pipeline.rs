@@ -228,6 +228,9 @@ pub struct Pipeline {
     loanword: Option<nagi_loanword::LoanwordRewriter>,
     /// 利用者が登録した抑制語（`<user-dir>/suppressed.tsv`）。候補の統合直後に該当を除く
     suppressions: RwLock<Arc<crate::suppress::Suppressions>>,
+    /// 処理中のセッションで学習を使ってよいか（`set_session_context` で engine が毎回伝える。
+    /// secure input・停止アプリ・設定で無効なら `false`）。既定は `true`（engine を介さない利用向け）
+    learning_scope: AtomicBool,
 }
 
 /// dict・LLM の有無からバックエンド名を決める（`Pipeline::new` と `name()` の重複を1箇所にまとめる）
@@ -306,7 +309,27 @@ impl Pipeline {
             english: nagi_english::Judge::standard(None),
             loanword: None,
             suppressions: RwLock::new(Arc::new(crate::suppress::Suppressions::empty())),
+            learning_scope: AtomicBool::new(true),
         }
+    }
+
+    /// 学習の参照・記録を許す状況かの判定の入口（`Runtime::learning_allowed` に委ねる）。
+    /// 候補生成・順位付け・予測のすべてがこれを通る
+    fn learning_ok(&self, ctx: &CommitContext<'_>) -> bool {
+        self.runtime.learning_allowed(ctx.secure_input, ctx.app_id)
+    }
+
+    /// 処理中のセッションで学習を使ってよいか（`set_session_context` で記録した結果）
+    fn learning_in_scope(&self) -> bool {
+        self.learning_scope.load(Ordering::Relaxed)
+    }
+
+    /// 学習済みの候補（スコア降順）。学習を止める状況では空（順位の押し上げ・学習キャッシュ候補に使わない）
+    fn learn_lookup(&self, reading: &str, context_hash: u64) -> Vec<(String, f64)> {
+        if !self.learning_in_scope() {
+            return Vec::new();
+        }
+        self.runtime.learn_lookup(reading, context_hash)
     }
 
     /// 抑制語を差し替える（起動時・ファイルの再読み込み時・登録/解除のあと）
@@ -397,7 +420,6 @@ impl Pipeline {
         !overlay.lookup(reading).is_empty()
             || !overlay.snippets(reading).is_empty()
             || self
-                .runtime
                 .learn_lookup(reading, context_hash(""))
                 .iter()
                 .any(|(_, score)| *score > 0.0)
@@ -851,8 +873,7 @@ impl Pipeline {
     /// 学習（文脈つき）・ユーザー辞書・スニペットに読みがあるか（意図した入力とみなして補正しない）
     fn fuzzy_reading_is_known(&self, reading: &str, left_context: &str, overlay: &Overlay) -> bool {
         let hash = context_hash(&tail(left_context, HASH_CONTEXT_CHARS));
-        self.runtime
-            .learn_lookup(reading, hash)
+        self.learn_lookup(reading, hash)
             .iter()
             .any(|(_, score)| *score > 0.0)
             || !overlay.lookup(reading).is_empty()
@@ -927,7 +948,6 @@ impl Pipeline {
             for source in &eff.ranking {
                 let chosen = match source {
                     CandidateSource::Learned => self
-                        .runtime
                         .learn_lookup(&seg.reading, hash)
                         .into_iter()
                         .find(|(_, score)| *score >= LEARN_OVERRIDE_MIN_SCORE)
@@ -1117,7 +1137,6 @@ impl Pipeline {
         // 学習
         let hash = context_hash(&tail(left_context, HASH_CONTEXT_CHARS));
         let learned: Vec<String> = self
-            .runtime
             .learn_lookup(reading, hash)
             .into_iter()
             .filter(|(_, score)| *score > 0.0)
@@ -1254,6 +1273,11 @@ impl Pipeline {
 impl ConversionBackend for Pipeline {
     fn name(&self) -> &str {
         backend_name(self.dict.is_some(), self.llm.get().is_some())
+    }
+
+    fn set_session_context(&self, ctx: &CommitContext<'_>) {
+        self.learning_scope
+            .store(self.learning_ok(ctx), Ordering::Relaxed);
     }
 
     fn take_completions(&self) -> Vec<Completion> {
@@ -1442,17 +1466,18 @@ impl ConversionBackend for Pipeline {
         // （別の表記で学習済み、または同じ表記を過去にも確定している、またはユーザー辞書・スニペット）
         let known = !overlay.lookup(prev_reading).is_empty()
             || !overlay.snippets(prev_reading).is_empty()
-            || self
-                .runtime
-                .learn_counts(prev_reading)
-                .iter()
-                .any(|(surface, count)| {
-                    if surface == prev_surface {
-                        *count >= 2
-                    } else {
-                        *count >= 1
-                    }
-                });
+            || (self.learning_in_scope()
+                && self
+                    .runtime
+                    .learn_counts(prev_reading)
+                    .iter()
+                    .any(|(surface, count)| {
+                        if surface == prev_surface {
+                            *count >= 2
+                        } else {
+                            *count >= 1
+                        }
+                    }));
         self.fuzzy_engine()
             .retro_review(
                 dict,
@@ -1504,7 +1529,7 @@ impl ConversionBackend for Pipeline {
         limit: usize,
     ) -> Vec<BackendCandidate> {
         // 学習を止める状況（設定・secure input・停止アプリ）では出さない
-        if prev.is_empty() || !self.runtime.learning_allowed(ctx.secure_input, ctx.app_id) {
+        if prev.is_empty() || !self.learning_ok(ctx) {
             return Vec::new();
         }
         // 次の語の読みは分からないので、抑制語は表記だけで照合する
@@ -1532,7 +1557,7 @@ impl ConversionBackend for Pipeline {
             return Vec::new();
         }
         // 学習キャッシュ由来の候補は、学習を止める状況（設定・secure input・停止アプリ）では出さない
-        let learning_allowed = self.runtime.learning_allowed(ctx.secure_input, ctx.app_id);
+        let learning_allowed = self.learning_ok(ctx);
         let overlay = self.runtime.overlay();
         let hash = context_hash(&tail(left_context, HASH_CONTEXT_CHARS));
         let mut out: Vec<BackendCandidate> = Vec::new();

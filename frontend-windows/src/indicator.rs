@@ -74,13 +74,11 @@ pub fn tone(style: IndicatorStyle, system_uses_light_theme: Option<bool>) -> Ton
 /// モードに対応する文字（接続前などモード不明のときは既定のひらがな。`status::button_text` と同じ）
 pub fn glyph(mode: Option<InputMode>) -> ModeGlyph {
     match mode.unwrap_or(InputMode::Hiragana) {
-        // カタカナ・半角カナはひらがな、全角英数・半角英数は英数の表示にする（拡張モードの表示は後続）
-        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => {
-            ModeGlyph::Hiragana
-        }
-        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => {
-            ModeGlyph::Alphanumeric
-        }
+        InputMode::Hiragana => ModeGlyph::Hiragana,
+        InputMode::Katakana => ModeGlyph::Katakana,
+        InputMode::HankakuKatakana => ModeGlyph::HankakuKatakana,
+        InputMode::ZenkakuAlnum => ModeGlyph::ZenkakuAlnum,
+        InputMode::Alphanumeric | InputMode::HankakuAlnum => ModeGlyph::Alphanumeric,
     }
 }
 
@@ -323,6 +321,19 @@ mod tests {
         assert_eq!(
             glyph(Some(InputMode::Alphanumeric)),
             ModeGlyph::Alphanumeric
+        );
+        assert_eq!(
+            glyph(Some(InputMode::HankakuAlnum)),
+            ModeGlyph::Alphanumeric
+        );
+        assert_eq!(glyph(Some(InputMode::Katakana)), ModeGlyph::Katakana);
+        assert_eq!(
+            glyph(Some(InputMode::HankakuKatakana)),
+            ModeGlyph::HankakuKatakana
+        );
+        assert_eq!(
+            glyph(Some(InputMode::ZenkakuAlnum)),
+            ModeGlyph::ZenkakuAlnum
         );
         assert_eq!(glyph(None), ModeGlyph::Hiragana);
     }

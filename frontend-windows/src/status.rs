@@ -53,6 +53,7 @@ pub fn toast_for(event: &EngineEvent) -> Option<String> {
         | EngineEvent::Restored { .. }
         | EngineEvent::UpdatePreedit(_)
         | EngineEvent::UpdateCandidates(_)
+        | EngineEvent::RetroReview(_)
         | EngineEvent::ProcessExited(_)
         | EngineEvent::MinimalSwitchReport { .. }
         | EngineEvent::SpawnRetry { .. }
@@ -191,21 +192,24 @@ pub fn menu_lines(status: &StatusResult) -> Vec<String> {
     lines
 }
 
-/// 言語バー・トレイに出す入力モードの短い表示
+/// 言語バー・トレイに出す入力モードの短い表示（あ / カ / ｶ / Ａ / A。対応表は `mode::MODE_TABLE`）
 pub fn mode_indicator(mode: InputMode) -> &'static str {
-    match mode {
-        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => "あ",
-        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => "A",
-    }
+    crate::mode::row(mode).indicator
 }
 
-/// ツールチップ・アクセシビリティ用のモード名
+/// ツールチップ・アクセシビリティ用のモード名（ひらがな / 全角カタカナ / 半角カタカナ / 全角英数 / 半角英数）
 pub fn mode_name(mode: InputMode) -> &'static str {
-    match mode {
-        InputMode::Hiragana | InputMode::Katakana | InputMode::HankakuKatakana => "ひらがな",
-        InputMode::Alphanumeric | InputMode::ZenkakuAlnum | InputMode::HankakuAlnum => "英数",
-    }
+    crate::mode::row(mode).name
 }
+
+/// メニューに並べるモード（ひらがな / 全角カタカナ / 半角カタカナ / 全角英数 / 半角英数）
+pub const MENU_MODES: [InputMode; 5] = [
+    InputMode::Hiragana,
+    InputMode::Katakana,
+    InputMode::HankakuKatakana,
+    InputMode::ZenkakuAlnum,
+    InputMode::Alphanumeric,
+];
 
 /// 言語バーのボタンのメニューで選べる操作
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +282,9 @@ const ID_VERIFY: u32 = 7;
 const ID_APPLY_UPDATE: u32 = 8;
 const ID_SETTINGS_GUI: u32 = 9;
 const ID_CHECK_UPDATE: u32 = 10;
+const ID_KATAKANA: u32 = 11;
+const ID_HANKAKU_KATAKANA: u32 = 12;
+const ID_ZENKAKU_ALNUM: u32 = 13;
 
 /// 設定画面の実行ファイル名（DLL と同じディレクトリに置く。`install.ps1` の `$PayloadFiles`）
 pub const SETTINGS_GUI_EXE: &str = "nagi-settings.exe";
@@ -288,8 +295,12 @@ pub const CHECK_UPDATE_ARGUMENTS: &str = "--section update --auto-check";
 /// 操作 → メニュー項目の識別子
 pub fn command_id(command: MenuCommand) -> u32 {
     match command {
-        MenuCommand::SetMode(mode) if mode.is_kana() => ID_HIRAGANA,
-        MenuCommand::SetMode(_) => ID_ALPHANUMERIC,
+        MenuCommand::SetMode(InputMode::Hiragana) => ID_HIRAGANA,
+        MenuCommand::SetMode(InputMode::Katakana) => ID_KATAKANA,
+        MenuCommand::SetMode(InputMode::HankakuKatakana) => ID_HANKAKU_KATAKANA,
+        MenuCommand::SetMode(InputMode::ZenkakuAlnum) => ID_ZENKAKU_ALNUM,
+        // 半角英数は `Alphanumeric` と `HankakuAlnum` が同じ表示なので、項目は 1 つ
+        MenuCommand::SetMode(InputMode::Alphanumeric | InputMode::HankakuAlnum) => ID_ALPHANUMERIC,
         MenuCommand::OpenSettingsGui => ID_SETTINGS_GUI,
         MenuCommand::OpenSettings => ID_SETTINGS,
         MenuCommand::OpenSettingsFolder => ID_SETTINGS_FOLDER,
@@ -306,6 +317,9 @@ pub fn command_from_id(id: u32) -> Option<MenuCommand> {
     match id {
         ID_HIRAGANA => Some(MenuCommand::SetMode(InputMode::Hiragana)),
         ID_ALPHANUMERIC => Some(MenuCommand::SetMode(InputMode::Alphanumeric)),
+        ID_KATAKANA => Some(MenuCommand::SetMode(InputMode::Katakana)),
+        ID_HANKAKU_KATAKANA => Some(MenuCommand::SetMode(InputMode::HankakuKatakana)),
+        ID_ZENKAKU_ALNUM => Some(MenuCommand::SetMode(InputMode::ZenkakuAlnum)),
         ID_SETTINGS_GUI => Some(MenuCommand::OpenSettingsGui),
         ID_SETTINGS => Some(MenuCommand::OpenSettings),
         ID_SETTINGS_FOLDER => Some(MenuCommand::OpenSettingsFolder),
@@ -509,17 +523,17 @@ pub fn menu_entries(
     status: Option<&StatusResult>,
     targets: &MenuTargets,
 ) -> Vec<MenuEntry> {
+    // 半角英数は `Alphanumeric` と `HankakuAlnum` のどちらでもチェックする（表示が同じ）
     let mode_item = |target: InputMode| MenuEntry::Command {
         id: command_id(MenuCommand::SetMode(target)),
         label: mode_name(target).to_owned(),
-        checked: mode == Some(target),
+        checked: mode.is_some_and(|m| {
+            command_id(MenuCommand::SetMode(m)) == command_id(MenuCommand::SetMode(target))
+        }),
         enabled: true,
     };
-    let mut entries = vec![
-        mode_item(InputMode::Hiragana),
-        mode_item(InputMode::Alphanumeric),
-        MenuEntry::Separator,
-    ];
+    let mut entries = MENU_MODES.map(mode_item).to_vec();
+    entries.push(MenuEntry::Separator);
     match status {
         Some(s) => entries.extend(menu_lines(s).into_iter().map(MenuEntry::Info)),
         None => entries.push(MenuEntry::Info(UNAVAILABLE.to_owned())),
@@ -848,7 +862,13 @@ mod tests {
     fn mode_labels() {
         assert_eq!(mode_indicator(InputMode::Hiragana), "あ");
         assert_eq!(mode_indicator(InputMode::Alphanumeric), "A");
-        assert_eq!(mode_name(InputMode::Alphanumeric), "英数");
+        assert_eq!(mode_name(InputMode::Alphanumeric), "半角英数");
+        assert_eq!(mode_indicator(InputMode::Katakana), "カ");
+        assert_eq!(mode_indicator(InputMode::HankakuKatakana), "ｶ");
+        assert_eq!(mode_indicator(InputMode::ZenkakuAlnum), "Ａ");
+        assert_eq!(mode_indicator(InputMode::HankakuAlnum), "A");
+        assert_eq!(mode_name(InputMode::HankakuKatakana), "半角カタカナ");
+        assert_eq!(mode_name(InputMode::ZenkakuAlnum), "全角英数");
     }
 
     fn sample_status(config_path: Option<&str>) -> StatusResult {
@@ -869,6 +889,9 @@ mod tests {
     fn menu_ids_round_trip_and_are_unique() {
         let commands = [
             MenuCommand::SetMode(InputMode::Hiragana),
+            MenuCommand::SetMode(InputMode::Katakana),
+            MenuCommand::SetMode(InputMode::HankakuKatakana),
+            MenuCommand::SetMode(InputMode::ZenkakuAlnum),
             MenuCommand::SetMode(InputMode::Alphanumeric),
             MenuCommand::OpenSettingsGui,
             MenuCommand::OpenSettings,
@@ -888,6 +911,11 @@ mod tests {
         assert_eq!(ids.len(), commands.len());
         assert_eq!(command_from_id(0), None);
         assert_eq!(command_from_id(999), None);
+        // 半角英数の 2 つのモードは同じ項目
+        assert_eq!(
+            command_id(MenuCommand::SetMode(InputMode::HankakuAlnum)),
+            command_id(MenuCommand::SetMode(InputMode::Alphanumeric))
+        );
     }
 
     #[test]
@@ -936,11 +964,45 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(checked, ["英数"]);
+        assert_eq!(checked, ["半角英数"]);
+        // 5 つのモード項目が表の順に並ぶ
+        let labels: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Command { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .take(5)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "ひらがな",
+                "全角カタカナ",
+                "半角カタカナ",
+                "全角英数",
+                "半角英数"
+            ]
+        );
+        // 各モードでチェックが 1 つだけ付く（HankakuAlnum は半角英数）
+        for mode in [
+            InputMode::Hiragana,
+            InputMode::Katakana,
+            InputMode::HankakuKatakana,
+            InputMode::ZenkakuAlnum,
+            InputMode::HankakuAlnum,
+        ] {
+            let entries = menu_entries(Some(mode), Some(&status), &all_targets());
+            let n = entries
+                .iter()
+                .filter(|e| matches!(e, MenuEntry::Command { checked: true, label, .. } if label == mode_name(mode)))
+                .count();
+            assert_eq!(n, 1, "{mode:?}");
+        }
         // 末尾の 7 項目は開く操作（順序込み）で、対象があるので全部選べる
         let commands = command_entries(&entries);
         assert_eq!(
-            commands[2..],
+            commands[5..],
             [
                 (MenuCommand::OpenSettingsGui, true),
                 (MenuCommand::CheckUpdate, true),
@@ -978,8 +1040,8 @@ mod tests {
         for st in [Some(sample_status(None)), None] {
             let entries = menu_entries(None, st.as_ref(), &MenuTargets::default());
             let commands = command_entries(&entries);
-            assert!(commands[..2].iter().all(|(_, enabled)| *enabled));
-            assert!(commands[2..].iter().all(|(_, enabled)| !*enabled));
+            assert!(commands[..5].iter().all(|(_, enabled)| *enabled));
+            assert!(commands[5..].iter().all(|(_, enabled)| !*enabled));
             // モード不明ならチェックは付けない
             assert!(
                 !entries

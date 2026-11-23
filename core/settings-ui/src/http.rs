@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+pub mod backup;
 pub mod diag;
 pub mod keymap;
 pub mod userdict;
@@ -29,6 +30,15 @@ pub mod userdict;
 pub const TOKEN_HEADER: &str = "x-nagi-token";
 /// 本文の上限（設定値は小さい）
 pub const MAX_BODY: usize = 64 * 1024;
+
+/// この経路で受ける本文の上限（バイト。辞書の取り込み・バックアップの読み込みだけ大きい）
+pub fn max_body_for(path: &str) -> usize {
+    if backup::is_backup_path(path) {
+        backup::max_body_for(path)
+    } else {
+        userdict::max_body_for(path)
+    }
+}
 
 /// 検査に必要なリクエストの要素（ヘッダー名は小文字で渡す）
 #[derive(Debug, Clone, Default)]
@@ -279,7 +289,7 @@ impl<B: SettingsBackend> App<B> {
         if !is_json {
             return Response::error(415, "Content-Type は application/json にしてください");
         }
-        if req.body.len() > userdict::max_body_for(path) {
+        if req.body.len() > max_body_for(path) {
             return Response::error(413, "リクエストが大きすぎます");
         }
         match path {
@@ -309,6 +319,7 @@ impl<B: SettingsBackend> App<B> {
             },
             p if keymap::is_keymap_path(p) => keymap::handle(&mut self.backend, p, &req.body),
             p if userdict::is_userdict_path(p) => userdict::handle(&mut self.backend, p, &req.body),
+            p if backup::is_backup_path(p) => backup::handle(&mut self.backend, p, &req.body),
             "/api/clear_learning" => match self.backend.clear_learning() {
                 Ok(()) => Response::json(200, &json!({"ok": true})),
                 Err(e) => backend_error(&e),

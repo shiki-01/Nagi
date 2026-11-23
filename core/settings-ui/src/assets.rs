@@ -11,6 +11,8 @@ const APP_JS: &str = include_str!("../assets/app.js");
 const KEYMAP_JS: &str = include_str!("../assets/keymap.js");
 const USERDICT_JS: &str = include_str!("../assets/userdict.js");
 const USERDICT_CSS: &str = include_str!("../assets/userdict.css");
+const BACKUP_JS: &str = include_str!("../assets/backup.js");
+const BACKUP_CSS: &str = include_str!("../assets/backup.css");
 const MOTION_CSS: &str = include_str!("../assets/motion.css");
 const ICON_SVG: &str = include_str!("../assets/icon.svg");
 
@@ -26,7 +28,7 @@ pub struct StaticAsset {
 }
 
 /// 配る静的ファイルの一覧（HTML が参照するものだけ）
-pub const STATIC_ASSETS: [StaticAsset; 7] = [
+pub const STATIC_ASSETS: [StaticAsset; 9] = [
     StaticAsset {
         path: "/app.css",
         content_type: "text/css; charset=utf-8",
@@ -51,6 +53,16 @@ pub const STATIC_ASSETS: [StaticAsset; 7] = [
         path: "/userdict.css",
         content_type: "text/css; charset=utf-8",
         body: USERDICT_CSS,
+    },
+    StaticAsset {
+        path: "/backup.js",
+        content_type: "text/javascript; charset=utf-8",
+        body: BACKUP_JS,
+    },
+    StaticAsset {
+        path: "/backup.css",
+        content_type: "text/css; charset=utf-8",
+        body: BACKUP_CSS,
     },
     StaticAsset {
         path: "/motion.css",

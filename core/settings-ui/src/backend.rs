@@ -220,6 +220,8 @@ impl RpcClient {
 }
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// バックアップの書き出し・適用・復元（学習データなど大きなファイルを扱う）
+const BACKUP_TIMEOUT: Duration = Duration::from_secs(120);
 /// 起動直後の `initialize` は辞書の読み込みを待つことがある
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -522,7 +524,21 @@ impl SettingsBackend for ImserverBackend {
     }
 
     fn call_rpc(&mut self, method: &str, params: Value) -> Result<Value, BackendError> {
-        self.client.request(method, params, REQUEST_TIMEOUT)
+        // バックアップの適用は大きなファイルを書くので、他より長く待つ
+        use nagi_protocol::backup::names as backup;
+        let timeout = if matches!(
+            method,
+            backup::EXPORT_BACKUP
+                | backup::PREVIEW_BACKUP
+                | backup::APPLY_BACKUP
+                | backup::LIST_BACKUPS
+                | backup::RESTORE_BACKUP
+        ) {
+            BACKUP_TIMEOUT
+        } else {
+            REQUEST_TIMEOUT
+        };
+        self.client.request(method, params, timeout)
     }
 }
 

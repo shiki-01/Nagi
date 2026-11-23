@@ -7,7 +7,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
-use nagi_protocol::methods::method;
+use nagi_protocol::methods::{
+    AcceptRetroReviewParams, AcceptRetroReviewResult, RetroReviewParams, method,
+};
 use nagi_protocol::{
     EmptyResult, InitializeParams, InitializeResult, NotifyParams, PROTOCOL_VERSION,
     PerformActionParams, ProcessKeyParams, ProcessKeyResult, ReconvertParams, ReloadConfigResult,
@@ -203,6 +205,8 @@ pub enum EngineEvent {
     UpdatePreedit(UpdatePreeditParams),
     /// 非同期通知 `update_candidates`（古い revision は破棄済み）
     UpdateCandidates(UpdateCandidatesParams),
+    /// 非同期通知 `retro_review`（確定直後の文節の修正候補。古い revision は破棄済み）
+    RetroReview(RetroReviewParams),
     /// `notify`（設定エラー・警告等）
     Notify(NotifyParams),
     /// 起動または初期化に失敗した（再起動は自動で予約される）
@@ -516,6 +520,15 @@ impl EngineSupervisor {
         self.diff(method::RECONVERT, params, &params.session_id, Some(t))
     }
 
+    /// 遡及再評価の修正候補の採用。置換する文字列を返す（`text` が空なら何もしない）
+    pub fn accept_retro_review(
+        &self,
+        params: &AcceptRetroReviewParams,
+    ) -> Result<AcceptRetroReviewResult, ClientError> {
+        self.connected_client()?
+            .request(method::ACCEPT_RETRO_REVIEW, params, None)
+    }
+
     /// 文脈（周辺テキスト・アプリ ID・secure input）を通知する
     pub fn set_context(&self, params: &SetContextParams) -> Result<(), ClientError> {
         self.connected_client()?.notify(method::SET_CONTEXT, params)
@@ -617,7 +630,12 @@ impl Inner {
             client_name: self.config.client_name.clone(),
             client_version: self.config.client_version.clone(),
             os: self.config.os.clone(),
-            capabilities: None,
+            // 拡張入力モード（カタカナ・半角カナ・全角英数・半角英数）の表示とコンパートメントの同期に
+            // 対応している（`mode.rs` の対応表。decisions.md H-140）
+            capabilities: Some(nagi_protocol::ClientCapabilities {
+                extended_input_modes: Some(true),
+                ..Default::default()
+            }),
         };
         let result: InitializeResult = match rpc.request(
             method::INITIALIZE,
@@ -837,6 +855,13 @@ impl Inner {
                     self.emit(EngineEvent::UpdateCandidates(p));
                 }
             }
+            method::RETRO_REVIEW => {
+                if let Ok(p) = serde_json::from_value::<RetroReviewParams>(params)
+                    && self.gate.accept(&p.session_id, p.revision)
+                {
+                    self.emit(EngineEvent::RetroReview(p));
+                }
+            }
             method::NOTIFY => {
                 if let Ok(p) = serde_json::from_value::<NotifyParams>(params) {
                     self.emit(EngineEvent::Notify(p));
@@ -937,6 +962,11 @@ mod tests {
         assert_eq!(p["protocol_version"], 1);
         assert_eq!(p["os"], "windows");
         assert_eq!(p["client_name"], "nagi-windows");
+        // 拡張入力モードに対応していることを宣言する（これだけ）
+        assert_eq!(
+            p["capabilities"],
+            serde_json::json!({"extended_input_modes": true})
+        );
     }
 
     #[test]
@@ -1377,6 +1407,33 @@ mod tests {
             .collect();
         assert_eq!(revs, [3]);
         assert_eq!(count(&log, |e| matches!(e, EngineEvent::Notify(_))), 1);
+    }
+
+    #[test]
+    fn retro_review_is_delivered_and_stale_ones_discarded() {
+        let launcher = MockLauncher::new();
+        launcher.set_configure(|_, _, c| c.set_responder(standard_responder(2)));
+        let (sup, log, _) = simple(&launcher);
+        sup.start().unwrap();
+        sup.process_key(&key_params("s1")).unwrap();
+        let conn = launcher.connections()[0].clone();
+        let retro = |rev: u32| {
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"method\":\"retro_review\",\"params\":{{\"session_id\":\"s1\",\"revision\":{rev},\"original_surface\":\"有り難う\",\"replace_len_utf16\":4,\"candidates\":[{{\"reading\":\"ありがとう\",\"surface\":\"ありがとう\"}}]}}}}"
+            )
+        };
+        conn.receive(&retro(3));
+        conn.receive(&retro(1));
+        let revs: Vec<u32> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::RetroReview(p) => Some(p.revision),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(revs, [3]);
     }
 
     #[test]

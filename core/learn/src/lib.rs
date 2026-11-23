@@ -395,6 +395,18 @@ impl Learner {
         self.dirty = true;
     }
 
+    /// 全行を `rows` で置き換える（バックアップの復元用）。`clear` と同じくファイルの世代が進み、
+    /// 他インスタンスの古い内容は復活しない。同じキーの行は後のものが勝つ。次の `flush` で書かれる。
+    pub fn replace_rows(&mut self, rows: Vec<Row>) {
+        self.clear();
+        for row in rows {
+            self.rows.insert(
+                (row.reading.clone(), row.surface.clone(), row.context_hash),
+                row,
+            );
+        }
+    }
+
     /// 最終使用が `forget_days` 日より前の行を落とす（`forget_days` が 0 なら何もしない）。
     /// 落としたら true。
     pub fn prune(&mut self, now: u64) -> bool {

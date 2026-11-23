@@ -1240,6 +1240,39 @@ impl Runtime {
         self.learner.lock().map_or(0, |l| l.len())
     }
 
+    /// 学習データの全行（バックアップの適用前の退避用）。`(通常の学習, 次語の学習)`
+    pub fn learn_snapshot(&self) -> (Vec<nagi_learn::Row>, Vec<nagi_learn::NextRow>) {
+        let rows = self.learner.lock().map(|l| l.rows()).unwrap_or_default();
+        let next = self
+            .next_learner
+            .lock()
+            .map(|n| n.rows())
+            .unwrap_or_default();
+        (rows, next)
+    }
+
+    /// 学習データを全行置き換えてすぐ保存する（バックアップの適用・復元用）。`next` が `None` なら
+    /// 次語の学習は触らない。保存できなければ `false`（メモリ上は置き換わっている）
+    pub fn learn_replace(
+        &self,
+        rows: Vec<nagi_learn::Row>,
+        next: Option<Vec<nagi_learn::NextRow>>,
+    ) -> bool {
+        if let Ok(mut l) = self.learner.lock() {
+            l.replace_rows(rows);
+        }
+        if let Some(next) = next
+            && let Ok(mut n) = self.next_learner.lock()
+        {
+            n.replace_rows(next);
+        }
+        self.flush_learning(true);
+        let dirty = self.learner.lock().is_ok_and(|l| l.is_dirty())
+            || self.next_learner.lock().is_ok_and(|n| n.is_dirty());
+        // 保存先が無い（テスト・学習ファイル無し）ときは dirty のままになるので、成功として扱う
+        self.learn_path.is_none() || !dirty
+    }
+
     /// 学習ファイルへ書き出す。`force` でなければ前回から 5 分経っている場合だけ
     pub fn flush_learning(&self, force: bool) {
         self.flush_fuzzy_stats(force);

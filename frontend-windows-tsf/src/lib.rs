@@ -21,6 +21,8 @@
 //! - `mode_comp`: 入力モードのコンパートメント（タスクトレイの「あ / A」）/ `langbar`: 言語バーのボタン
 //!   （モード表示・クリックで切り替え・メニュー）/ `reconversion`: `ITfFnReconversion`
 //!   （`Reconvert` と `GetReconversion`）
+//! - `retro_popup`: 確定後の見直し（`retro_review`）の採用で、確定済みテキストを置き換える編集セッション
+//!   （提案の状態・文言・配置は `nagi_windows::retro`、表示は `toast_window` の `show_above`）
 //!
 //! # エンジンの寿命（H-96）
 //! - imserver は、ホストプロセスが最初にフォーカスを受けたとき（または最初のキー）に起動する（Activate では起動しない）
@@ -84,6 +86,8 @@ mod proc_mem;
 mod reconversion;
 #[cfg(windows)]
 mod register;
+#[cfg(windows)]
+mod retro_popup;
 #[cfg(windows)]
 mod text_service;
 #[cfg(windows)]

@@ -1,4 +1,4 @@
-//! 言語バーのボタン（`ITfLangBarItemButton`）。現在の入力モード（あ / A）を表示し、
+//! 言語バーのボタン（`ITfLangBarItemButton`）。現在の入力モード（あ / カ / ｶ / Ａ / A）を表示し、
 //! 左クリックでひらがな ⇄ 英数を切り替え、メニュー（右クリック。`popup_menu` が `OnClick` で出す）に
 //! モード・状態・設定を出す。
 //!
@@ -215,11 +215,13 @@ impl ITfLangBarItemButton_Impl for Button_Impl {
         let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) }.max(16);
         let tone = indicator::tone(self.indicator_style(), system_uses_light_theme());
         let size = size as u32;
+        let glyph = indicator::glyph(self.mode());
         let mask = glyph_gdi::render(status::button_text(self.mode()), size)
             .map(|(hires, side)| {
-                icon::fit_coverage(&hires, side, side, size, icon::fill_ratio(tone))
+                // 全角英数だけ字形を横に広げる（半角の A と見分けるため）
+                icon::fit_glyph(&hires, side, side, size, icon::fill_ratio(tone), glyph)
             })
-            .unwrap_or_else(|| icon::stroke_mask(size, indicator::glyph(self.mode()), tone));
+            .unwrap_or_else(|| icon::stroke_mask(size, glyph, tone));
         let rgba = icon::compose_status(size, tone, &mask);
         make_icon(&rgba, size as i32)
     }

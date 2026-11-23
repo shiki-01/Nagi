@@ -815,14 +815,25 @@ impl Engine {
     }
 
     fn take_session(&mut self, id: &str) -> Session {
-        match self.sessions.remove(id) {
+        let s = match self.sessions.remove(id) {
             Some(s) => s,
             None => {
                 let mut s = self.new_session();
                 s.id = id.to_string();
                 s
             }
-        }
+        };
+        self.announce_session(&s);
+        s
+    }
+
+    /// バックエンドへ、これから処理するセッションの状況（学習を止めるかの判断材料）を伝える
+    fn announce_session(&self, sess: &Session) {
+        self.backend.set_session_context(&CommitContext {
+            session_id: &sess.id,
+            app_id: sess.app_id.as_deref(),
+            secure_input: sess.secure_input,
+        });
     }
 
     /// キー 1 つを処理する
@@ -2399,6 +2410,8 @@ impl Engine {
                 }
             }
         }
+        // app_id・secure_input が変わった後の状況を伝える（続く finish の再計算に効く）
+        self.announce_session(&sess);
         let mut result = None;
         if sess.left_context != old_left
             && matches!(sess.state, State::Composing)

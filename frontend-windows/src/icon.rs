@@ -46,8 +46,61 @@ const SMALL_MAX: u32 = 24;
 pub enum ModeGlyph {
     /// ひらがな（あ）
     Hiragana,
-    /// 英数（A）
+    /// 全角カタカナ（カ）
+    Katakana,
+    /// 半角カタカナ（ｶ。字形は縦長）
+    HankakuKatakana,
+    /// 全角英数（Ａ。半角の A と見分けるため、字形を横に広げて描く）
+    ZenkakuAlnum,
+    /// 半角英数・英数（A）
     Alphanumeric,
+}
+
+impl ModeGlyph {
+    /// 字形を横に広げる倍率。全角の「Ａ」はフォントでも半角の「A」とほぼ同じ形（外接で大きさを揃えると
+    /// 同じ絵になる）なので、横長にして 16px でも見分けがつくようにする。他は 1
+    pub const fn width_stretch(self) -> f32 {
+        match self {
+            ModeGlyph::ZenkakuAlnum => 1.45,
+            _ => 1.0,
+        }
+    }
+}
+
+/// カバレッジマスク（`width` × `height`）を横に `factor` 倍に広げる（線形補間。`factor` が 1 以下なら元のまま）。
+/// 返すのは `(新しいマスク, 新しい幅)`
+pub fn stretch_width(mask: &[u8], width: u32, height: u32, factor: f32) -> (Vec<u8>, u32) {
+    let (w, h) = (width as usize, height as usize);
+    if factor <= 1.0 || mask.len() < w * h || w == 0 {
+        return (mask.to_vec(), width);
+    }
+    let nw = ((w as f32 * factor).round() as usize).max(w);
+    let mut out = vec![0u8; nw * h];
+    for y in 0..h {
+        for x in 0..nw {
+            // 出力画素の中心に対応する元の位置
+            let src = ((x as f32 + 0.5) * w as f32 / nw as f32 - 0.5).clamp(0.0, (w - 1) as f32);
+            let (i0, t) = (src.floor() as usize, src.fract());
+            let i1 = (i0 + 1).min(w - 1);
+            let v = f32::from(mask[y * w + i0]) * (1.0 - t) + f32::from(mask[y * w + i1]) * t;
+            out[y * nw + x] = v.round() as u8;
+        }
+    }
+    (out, nw as u32)
+}
+
+/// フォントで描いた大きなマスク（`width` × `height`）から、`glyph` のモード表示用の `size` × `size` の
+/// マスクを作る（字形ごとの横幅の調整 [`ModeGlyph::width_stretch`] と [`fit_coverage`]）
+pub fn fit_glyph(
+    hires: &[u8],
+    width: u32,
+    height: u32,
+    size: u32,
+    fill: f32,
+    glyph: ModeGlyph,
+) -> Vec<u8> {
+    let (wide, w) = stretch_width(hires, width, height, glyph.width_stretch());
+    fit_coverage(&wide, w, height, size, fill)
 }
 
 /// モード表示つきアイコンの配色
@@ -213,9 +266,14 @@ fn logo_shapes(small: bool, tone: Tone) -> Vec<Shape> {
 fn glyph_strokes(glyph: ModeGlyph, x: f32, y: f32, w: f32, h: f32) -> Vec<Vec<Pt>> {
     let map = |p: Pt| (x + p.0 * w, y + p.1 * h);
     let strokes: Vec<Vec<Pt>> = match glyph {
-        ModeGlyph::Alphanumeric => vec![
+        ModeGlyph::Alphanumeric | ModeGlyph::ZenkakuAlnum => vec![
             vec![(0.06, 1.0), (0.5, 0.0), (0.94, 1.0)],
             vec![(0.24, 0.68), (0.76, 0.68)],
+        ],
+        // カ（半角のｶも同じ筆づかいを細い枠に描く）: 左へ払う縦画と、横画から下へ曲がって払う画
+        ModeGlyph::Katakana | ModeGlyph::HankakuKatakana => vec![
+            vec![(0.40, 0.0), (0.34, 0.50), (0.20, 0.80), (0.06, 1.0)],
+            vec![(0.10, 0.30), (0.90, 0.30), (0.86, 0.72), (0.74, 0.96)],
         ],
         ModeGlyph::Hiragana => {
             // あ: 上の横画・縦画（下で左へ曲がる）・左から出て右へ回り込む大きな曲線の 3 画
@@ -255,7 +313,13 @@ fn glyph_strokes(glyph: ModeGlyph, x: f32, y: f32, w: f32, h: f32) -> Vec<Vec<Pt
 /// 手描きストロークのフォールバック用の図形（白。外接の四角は 1024 座標の (100, 100)〜(900, 900) 付近）。
 /// 線の太さは字形の外接の約 14%（小さい大きさでも潰れない太さ）。位置と大きさは [`fit_coverage`] が決める
 fn stroke_shapes(glyph: ModeGlyph) -> Vec<Shape> {
-    glyph_strokes(glyph, 100.0, 100.0, 800.0, 800.0)
+    // 外接の四角の縦横比: 全角英数は横長（`width_stretch`）、半角カナは縦長
+    let (w, h) = match glyph {
+        ModeGlyph::ZenkakuAlnum => (800.0, 800.0 / glyph.width_stretch()),
+        ModeGlyph::HankakuKatakana => (800.0 * 0.6, 800.0),
+        _ => (800.0, 800.0),
+    };
+    glyph_strokes(glyph, 500.0 - w / 2.0, 500.0 - h / 2.0, w, h)
         .into_iter()
         .map(|pts| Shape::new(pts, 130.0, WHITE, 1.0))
         .collect()
@@ -634,6 +698,64 @@ mod tests {
         }
     }
 
+    const ALL_GLYPHS: [ModeGlyph; 5] = [
+        ModeGlyph::Hiragana,
+        ModeGlyph::Katakana,
+        ModeGlyph::HankakuKatakana,
+        ModeGlyph::ZenkakuAlnum,
+        ModeGlyph::Alphanumeric,
+    ];
+
+    #[test]
+    fn every_pair_of_mode_glyphs_is_distinguishable_at_every_size() {
+        for size in [16u32, 20, 24, 32] {
+            for tone in [Tone::Color, Tone::Mono([0, 0, 0])] {
+                let icons: Vec<_> = ALL_GLYPHS
+                    .iter()
+                    .map(|g| render_status(size, *g, tone))
+                    .collect();
+                for i in 0..icons.len() {
+                    for j in i + 1..icons.len() {
+                        let diff = icons[i]
+                            .chunks_exact(4)
+                            .zip(icons[j].chunks_exact(4))
+                            .filter(|(p, q)| p != q)
+                            .count();
+                        assert!(
+                            diff >= 10,
+                            "{size} {tone:?}: {:?} と {:?} の差が小さい ({diff} 画素)",
+                            ALL_GLYPHS[i],
+                            ALL_GLYPHS[j]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stretch_widens_the_glyph_bounding_box() {
+        let hires = hires_rect(100, 100, 100, 200);
+        let (wide, w) = stretch_width(&hires, 400, 400, 1.5);
+        assert_eq!(w, 600);
+        let (x0, y0, x1, y1) = mask_bbox_wh(&wide, w, 128).expect("字形がある");
+        assert!((x1 - x0).abs_diff(150) <= 3, "幅 {}", x1 - x0);
+        assert_eq!(y1 - y0, 200);
+        // 倍率 1 以下は何もしない
+        assert_eq!(stretch_width(&hires, 400, 400, 1.0), (hires.clone(), 400));
+        // 全角英数だけ字形が横長になる（外接の縦横比）
+        for g in ALL_GLYPHS {
+            let m = stroke_mask(32, g, Tone::Color);
+            let (x0, y0, x1, y1) = mask_bbox(&m, 32, 64).expect("字形がある");
+            let ratio = (x1 - x0) as f32 / (y1 - y0) as f32;
+            match g {
+                ModeGlyph::ZenkakuAlnum => assert!(ratio > 1.1, "{g:?}: {ratio}"),
+                ModeGlyph::HankakuKatakana => assert!(ratio < 0.8, "{g:?}: {ratio}"),
+                _ => assert!((0.8..=1.2).contains(&ratio), "{g:?}: {ratio}"),
+            }
+        }
+    }
+
     #[test]
     fn color_status_icon_keeps_the_logo_tile() {
         let size = 32;
@@ -685,6 +807,22 @@ mod tests {
                 continue;
             }
             let (x, y) = (i as u32 % size, i as u32 / size);
+            b = Some(match b {
+                None => (x, y, x + 1, y + 1),
+                Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+            });
+        }
+        b
+    }
+
+    /// 幅 `width` のマスクの外接
+    fn mask_bbox_wh(mask: &[u8], width: u32, min: u8) -> Option<(u32, u32, u32, u32)> {
+        let mut b: Option<(u32, u32, u32, u32)> = None;
+        for (i, &v) in mask.iter().enumerate() {
+            if v < min {
+                continue;
+            }
+            let (x, y) = (i as u32 % width, i as u32 / width);
             b = Some(match b {
                 None => (x, y, x + 1, y + 1),
                 Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),

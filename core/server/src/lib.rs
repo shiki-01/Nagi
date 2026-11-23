@@ -19,9 +19,11 @@
 //! - [`install_data`] — `imserver --install-data`（辞書・モデルの取得と組み立て。feature `data-install`）
 //! - [`update_check`] — アップデート確認（`config.toml` の `[update] auto_check`）
 //! - [`update_manual`] — 手動の更新確認（`imserver --check-update`。間引きなしの一回限りの動作）
+//! - [`backup_tools`] — 設定・辞書・抑制語・学習の一括バックアップ（書き出し・プレビュー・全か無かの適用・復元）
 //! - [`userdict_tools`] — ユーザー辞書の管理（一覧・登録・編集・削除・書き出し・取り込み）と学習の統計
 //! - [`update_stage`] — Windows の自動更新（`--stage-updates` の取得・保存と `--apply-update-prepare` の再検証）
 
+pub mod backup_tools;
 pub mod calibration;
 pub mod fuzzy;
 pub mod fuzzy_eval;

@@ -151,6 +151,14 @@ impl NextWordLearner {
         self.dirty = true;
     }
 
+    /// 全行を `rows` で置き換える（バックアップの復元用）。世代の扱いは [`crate::Learner::replace_rows`] と同じ。
+    pub fn replace_rows(&mut self, rows: Vec<NextRow>) {
+        self.clear();
+        for row in rows {
+            self.rows.insert((row.prev.clone(), row.next.clone()), row);
+        }
+    }
+
     /// 行数。
     pub fn len(&self) -> usize {
         self.rows.len()

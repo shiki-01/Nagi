@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod backup;
 pub mod jsonrpc;
 pub mod key;
 pub mod methods;
