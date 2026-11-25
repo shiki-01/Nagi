@@ -1,6 +1,7 @@
 //! JSON-RPC サーバー本体。`handle_line` は 1 行の入力に対する出力行を返す形で、
 //! プロセスを起こさずにテストできる。
 
+use crate::app_modes::AppModeObserver;
 use crate::learning::LearningObserver;
 use crate::runtime::Runtime;
 use crate::setup::{Built, Reloadable, engine_config_from, issue_events, load_user_dict};
@@ -128,6 +129,9 @@ impl Server {
         }
         let mut engine = Engine::new(built.pipeline.clone(), config.clone());
         engine.set_commit_observer(Arc::new(LearningObserver::new(built.runtime.clone())));
+        // アプリごとの入力モードの記憶（保存済みを戻し、切り替えを保存先へ通知する）
+        engine.load_app_modes(built.runtime.app_modes_snapshot());
+        engine.set_mode_observer(Arc::new(AppModeObserver::new(built.runtime.clone())));
         Server {
             initial_mode: config.initial_mode,
             engine: Arc::new(Mutex::new(engine)),
@@ -1029,6 +1033,7 @@ impl Server {
             method::CLEAR_LEARNING => {
                 self.require_initialized()?;
                 self.runtime.learn_clear();
+                self.engine_lock().clear_app_modes();
                 to_value(EmptyResult {})
             }
             method::SUPPRESS_CANDIDATE => {

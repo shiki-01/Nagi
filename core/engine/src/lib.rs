@@ -31,4 +31,4 @@ pub use keymap_info::{
     BindingInput, assignable_actions, canonical_key, preset_infos, validate_bindings,
 };
 pub use keys::{KeyParseError, key_from_text, parse_key};
-pub use observer::{CommitContext, CommitObserver, CommittedSegment};
+pub use observer::{CommitContext, CommitObserver, CommittedSegment, ModeObserver};

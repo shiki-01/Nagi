@@ -655,6 +655,12 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
             .as_ref()
             .map(|d| d.join(crate::fuzzy_stats::FILE_NAME)),
     );
+    // アプリごとの入力モードの記憶（`[apps] remember_mode`。アプリの識別子とモードだけ）
+    runtime.set_app_modes_path(
+        user_dir
+            .as_ref()
+            .map(|d| d.join(crate::app_modes::FILE_NAME)),
+    );
     if let Some(ms) = cached_calibration_ms {
         if has_llm {
             // 前回の実測値を即座に反映させる。直後の pipeline.warm_up() が新しい実測値で上書きする

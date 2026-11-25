@@ -4,6 +4,7 @@
 //! JSON-RPC サーバー（[`crate::server::Server`]）が同じ [`Runtime`] を `Arc` で共有する。
 //! 設定の再読み込み・`set_environment`・レイテンシ計測は、すべてここを通して反映される。
 
+use crate::app_modes::AppModeStore;
 use crate::fuzzy::FuzzySettings;
 use crate::fuzzy_stats::FuzzyStats;
 use nagi_config::{Config, ProfileMode, TimeZoneSetting, parse_time_zone};
@@ -17,7 +18,7 @@ use nagi_protocol::methods::{
     InputMethod, MemoryPressureState, NotifyLevel, RetroReviewParams, SetEnvironmentParams,
     StatusResult, ThermalState, UpdateCandidatesParams, UpdatePreeditParams,
 };
-use nagi_protocol::view::CandidateSource;
+use nagi_protocol::view::{CandidateSource, InputMode};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::atomic::{AtomicI32, AtomicU64};
@@ -299,6 +300,12 @@ pub struct Runtime {
     fuzzy_stats_path: Mutex<Option<PathBuf>>,
     /// 採用状況を最後に保存した時刻
     fuzzy_stats_flushed: Mutex<Instant>,
+    /// アプリごとの入力モードの記憶（`[apps] remember_mode`。`<user-dir>/app_modes.tsv`）
+    app_mode_store: Arc<AppModeStore>,
+    /// 記憶の保存先（`<user-dir>/app_modes.tsv`）
+    app_modes_path: Mutex<Option<PathBuf>>,
+    /// 記憶を最後に保存した時刻
+    app_modes_flushed: Mutex<Instant>,
 }
 
 impl Runtime {
@@ -376,6 +383,9 @@ impl Runtime {
             fuzzy_stats: Arc::new(FuzzyStats::new()),
             fuzzy_stats_path: Mutex::new(None),
             fuzzy_stats_flushed: Mutex::new(Instant::now()),
+            app_mode_store: Arc::new(AppModeStore::new()),
+            app_modes_path: Mutex::new(None),
+            app_modes_flushed: Mutex::new(Instant::now()),
         });
         if let Some(e) = next_load_error {
             runtime.push_event(Event {
@@ -1144,6 +1154,8 @@ impl Runtime {
         }
         // 曖昧入力の採用状況も 0 に戻す（ファイルは flush で消える）
         self.fuzzy_stats.clear();
+        // アプリごとのモードの記憶も消す（ファイルは flush で消える）
+        self.app_mode_store.clear();
         self.flush_learning(true);
     }
 
@@ -1235,6 +1247,61 @@ impl Runtime {
         }
     }
 
+    // ---- アプリごとの入力モードの記憶 ----
+
+    /// 保存先を決め、ファイルがあれば読み込む（起動時）
+    pub fn set_app_modes_path(&self, path: Option<PathBuf>) {
+        if let Some(p) = &path {
+            self.app_mode_store.load(p);
+        }
+        if let Ok(mut g) = self.app_modes_path.lock() {
+            *g = path;
+        }
+    }
+
+    /// 保存されている記憶の全件（engine への投入用）
+    pub fn app_modes_snapshot(&self) -> Vec<(String, InputMode)> {
+        self.app_mode_store.snapshot()
+    }
+
+    /// アプリ `app` のモードの記憶を記録する（保存は `flush_learning` のタイミング）
+    pub fn app_mode_record(&self, app: &str, mode: InputMode) {
+        // 学習の停止（設定・停止リストのアプリ）に揃える。secure input は engine 側で通知を止めている
+        if !self.learning_allowed(false, Some(app)) {
+            return;
+        }
+        self.app_mode_store.record(app, mode);
+    }
+
+    /// 記憶をファイルへ書き出す。`force` でなければ前回から 5 分経っている場合だけ
+    fn flush_app_modes(&self, force: bool) {
+        let Some(path) = self.app_modes_path.lock().ok().and_then(|g| g.clone()) else {
+            return;
+        };
+        if !self.app_mode_store.is_dirty() {
+            return;
+        }
+        let due = self
+            .app_modes_flushed
+            .lock()
+            .is_ok_and(|last| force || last.elapsed() >= FLUSH_INTERVAL);
+        if !due {
+            return;
+        }
+        match self.app_mode_store.flush(&path) {
+            Ok(()) => {
+                if let Ok(mut last) = self.app_modes_flushed.lock() {
+                    *last = Instant::now();
+                }
+            }
+            Err(e) => self.push_event(Event {
+                level: NotifyLevel::Warning,
+                code: "app_modes_flush_failed",
+                message: format!("アプリごとの入力モードを保存できませんでした: {e}"),
+            }),
+        }
+    }
+
     /// 学習データの件数
     pub fn learned_entries(&self) -> usize {
         self.learner.lock().map_or(0, |l| l.len())
@@ -1276,6 +1343,7 @@ impl Runtime {
     /// 学習ファイルへ書き出す。`force` でなければ前回から 5 分経っている場合だけ
     pub fn flush_learning(&self, force: bool) {
         self.flush_fuzzy_stats(force);
+        self.flush_app_modes(force);
         let Some(path) = &self.learn_path else {
             return;
         };

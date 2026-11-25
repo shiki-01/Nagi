@@ -4,6 +4,7 @@
 //! 学習の有無・secure input・アプリごとの停止判断は observer 側が行う（エンジンは文脈を渡すだけ）。
 
 use crate::ir::SegmentKind;
+use nagi_protocol::view::InputMode;
 
 /// 確定・削除が起きたセッションの状況
 #[derive(Debug, Clone, Copy)]
@@ -60,4 +61,14 @@ pub trait CommitObserver: Send + Sync {
     fn on_fuzzy_adopted(&self, ctx: &CommitContext<'_>, typed: &str, corrected: &str) {
         let _ = (ctx, typed, corrected);
     }
+}
+
+/// アプリごとのモードの記憶の通知先（永続化など）。
+///
+/// 利用者がモードを切り替えて、アプリごとの記憶（`[apps] remember_mode`）に反映したときに呼ばれる。
+/// `app` は小文字のアプリ識別子。`focus_in` による自動切替は通知しない。secure input 中は通知しない
+/// （エンジンが判断する）。
+pub trait ModeObserver: Send + Sync {
+    /// アプリ `app` のモードを `mode` として覚えた
+    fn on_mode_remembered(&self, app: &str, mode: InputMode);
 }

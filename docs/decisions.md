@@ -1527,7 +1527,7 @@ H-41・H-42 の残件のうち、実機なしで作れるものを実装し、�
 
 - **設定 `[apps]`**（`core/config`、`config/default.toml`、設定 GUI の「アプリごとの設定」）: `code_mode`（既定 `alphanumeric`）/ `chat_mode` / `general_mode`（既定 `keep`。`hiragana` / `alphanumeric` / `keep`）、`remember_mode`（既定 true）、`passthrough`（既定 true）、`passthrough_chars`（既定 `"/$@!:#"`）、`[apps.classes]`（利用者の分類表。パターン = `code` | `chat` | `general`）。同梱の分類表は `nagi_config::DEFAULT_APP_CLASSES`（macOS の bundle id と Windows の実行ファイル名。`com.jetbrains.*` など）。照合は大文字小文字を区別せず、末尾 `*` は前方一致。優先順位は「利用者の表 > 同梱の表」、それぞれ「完全一致 > 前方一致（長いパターン先）」。分類表は GUI には出さない（`config.toml` で編集）
 - **focus_in**: 新しい Action は作らず、`Engine::focus_in` がセッションのアプリ識別子（直前の `set_context` で伝わったもの）からモードを決め、変わるなら入力中の文字列を確定してからモードを切り替え、応答の `mode` で返す。優先順位は「アプリごとの記憶 > 種類ごとの既定 > 変えない」。`app_id` が無い（`set_context` が先に来ていない）ときは変えない
-- **モードの記憶**: 利用者のモード切替（`SetMode` / `ToggleMode`。`process_key` と `perform_action` 経由）をエンジンのメモリに保持する（キーは小文字のアプリ識別子）。**再起動で消える**（永続化は未実装）。`focus_in` による自動切替は記憶しない
+- **モードの記憶**: 利用者のモード切替（`SetMode` / `ToggleMode`。`process_key` と `perform_action` 経由）をエンジンのメモリに保持する（キーは小文字のアプリ識別子）。~~再起動で消える~~ → 2026-11-25 に永続化（H-144）。`focus_in` による自動切替は記憶しない
 - **素通し**: Hiragana モードで未入力（Direct・Composer が空）のとき、対象記号を打つと `Composer::begin_literal_run` で Literal を始め、以降の ASCII は Shift+英字と同じ英字継続（literal_mode）で Literal になる。その語の入力中の Space は変換ではなく**語の確定（`CommitAndPassThrough`）**で、スペース自体はアプリに渡る。Enter は確定、Esc は取り消し。英数モード・入力中の途中・`passthrough = false` では働かない。素通しにできるのは ASCII の記号だけ（`passthrough_chars` の英数字・非 ASCII は無視）。タッチ入力の `insert_reading` も同じ経路を通る
 - **数式の `-`**: 直前（保留なし）が Literal の数字のときの `-` は ASCII `-` のまま（`1-2`・`(1-2)`・`10-3-2`）。それ以外（`ka-` → かー、先頭の `-`、`1ka-` → 1かー）の長音の規則は従来どおり。`merge_math_pieces`（直前の変更。コード内のコメントが「H-49」を指すのはこの件）で `(1-2)` は 1 つの Literal 文節にまとまり、電卓候補が出る
 - **迷った判断**: (1) 分類表の優先順位の解決は設定側（`AppsSection::rules`）で行い、エンジンには優先順に並べた規則だけを渡す（エンジンは設定クレートに依存しない）。(2) 素通しの先頭記号は文字列（`"/$@!:#"`）にした（設定 GUI の Text で編集できるため）。(3) 素通しの Space を「確定してスペースを通す」にした（`/help` のあとのスペースが日本語変換の開始になる不都合を避けるため。スペースで全角英数などの形式候補は出なくなる）
@@ -2614,3 +2614,10 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **範囲**: 右⌘のみ。左⌘（英数）は割り当てない（⌘ の組み合わせとの取り違えを避ける）。ユーザーのキーマップでの上書きは対象外（共通割当のため）。
 - **テスト**: `core/engine/tests/api.rs`（単独タップでかなに切り替わる／他のキー・他の修飾キーを挟むと働かない／押下を見ていない離上は無視）。
 - **未確認（実機）**: macOS の `flagsChanged` で右⌘の離上が `modifiers.meta = false` で届くか（左⌘を押したままの場合など）。押したまま長く保持した場合も離上でひらがなになる（時間制限は設けていない）。
+
+### H-144. アプリごとの入力モードの記憶を再起動後も保持する（2026-11-25、要実機確認）
+
+- **決定**: `<user_dir>/app_modes.tsv`（1 行目 `# nagi app_modes v1`、以降 `アプリ識別子<TAB>モード名`。一時ファイル → 置き換えの原子的書き込み。全件空ならファイルを消す。上限 500 件）。起動時に読み込み、`flush_learning`（5 分毎・終了時などの既存のタイミング）で書き出す。コアは `ModeObserver`（記憶したとき通知）と `Engine::load_app_modes` / `clear_app_modes` を持ち、サーバーの `AppModeStore` が保存を担う。
+- **プライバシー**: 保存するのはアプリ識別子とモード名のみ（入力内容は含まない）。secure input 中は engine が通知しない。`learning.enabled = false` と停止リストのアプリでは記録しない（`learning_allowed`）。「学習データの全削除」（`clear_learning`）で、ファイルとメモリの記憶も消える。
+- **迷った判断**: (1) 設定バックアップ（`backup_tools.rs`）の対象には含めない（項目の拡張が要るため。必要になれば追加）。(2) 上限超過時は識別子順の先頭から落とす（古い順ではない）。(3) `focus_in` による自動切替は従来どおり記憶しない。
+- **未確認**: `flush_learning` がフォーカス喪失・IME 切替時にどの force で呼ばれるか（実機でモード切替の直後に保存されるか）。macOS の `adoptSelectedMode` による意図しない記憶（H-49）は未解決のまま。

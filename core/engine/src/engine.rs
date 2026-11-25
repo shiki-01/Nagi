@@ -14,7 +14,7 @@ use crate::ir::{
 };
 use crate::kana::to_katakana;
 use crate::keymap::{KeyContext, KeyMap};
-use crate::observer::{CommitContext, CommitObserver, CommittedSegment};
+use crate::observer::{CommitContext, CommitObserver, CommittedSegment, ModeObserver};
 use crate::touch;
 use nagi_protocol::key::{KeyEvent, KeyKind, Modifiers, keysym};
 use nagi_protocol::methods::{
@@ -569,6 +569,8 @@ pub struct Engine {
     geometry: Option<Arc<SetLayoutGeometryParams>>,
     /// アプリごとに覚えたモード（キーは小文字のアプリ識別子。`[apps] remember_mode`。再起動で消える）
     app_modes: HashMap<String, InputMode>,
+    /// アプリごとの記憶が変わったときの通知先（永続化。`set_mode_observer`）
+    mode_observer: Option<Arc<dyn ModeObserver>>,
     /// フロントが「読みの接頭辞だけを置き換える候補」への対応を宣言したか（`initialize` の
     /// `capabilities.partial_suggestions`。設定の再読み込みでは変わらない）
     partial_suggestions: bool,
@@ -672,6 +674,7 @@ impl Engine {
             observer: None,
             geometry: None,
             app_modes: HashMap::new(),
+            mode_observer: None,
             partial_suggestions: false,
             extended_input_modes: false,
             live_disabled: AtomicBool::new(false),
@@ -736,6 +739,26 @@ impl Engine {
     /// 確定・学習削除の通知先を設定する（学習など）
     pub fn set_commit_observer(&mut self, observer: Arc<dyn CommitObserver>) {
         self.observer = Some(observer);
+    }
+
+    /// アプリごとのモードの記憶の通知先を設定する（永続化など）
+    pub fn set_mode_observer(&mut self, observer: Arc<dyn ModeObserver>) {
+        self.mode_observer = Some(observer);
+    }
+
+    /// 保存済みのアプリごとのモードを記憶に投入する（起動時。キーは小文字に揃える）。既存の記憶は残す
+    pub fn load_app_modes<I>(&mut self, modes: I)
+    where
+        I: IntoIterator<Item = (String, InputMode)>,
+    {
+        for (app, mode) in modes {
+            self.app_modes.insert(app.to_lowercase(), mode);
+        }
+    }
+
+    /// アプリごとのモードの記憶を全て消す（学習データの全削除など）
+    pub fn clear_app_modes(&mut self) {
+        self.app_modes.clear();
     }
 
     /// 設定を差し替える（設定ファイルの再読み込み）。既存のセッションにも、次の入力から反映される
@@ -1298,7 +1321,14 @@ impl Engine {
             return;
         }
         if let Some(app) = &sess.app_id {
-            self.app_modes.insert(app.to_lowercase(), sess.mode);
+            let key = app.to_lowercase();
+            self.app_modes.insert(key.clone(), sess.mode);
+            // secure input 中（パスワード欄など）は永続化の通知をしない。記憶はメモリ上にだけ残る
+            if !sess.secure_input
+                && let Some(observer) = &self.mode_observer
+            {
+                observer.on_mode_remembered(&key, sess.mode);
+            }
         }
     }
 
