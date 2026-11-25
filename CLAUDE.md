@@ -126,7 +126,7 @@ nagi/
 - ログに入力内容を残さない（デバッグビルドのみopt-inで許可）。**例外**: iOS の TestFlight 配布期間中に限り、診断ログは既定 ON で入力内容を含める（パスワード欄は伏せる）。App Store 配布版は既定 OFF・内容を含めない（`docs/decisions.md` H-22）
 - 学習データはワンコマンドで全削除可能にする
 - クリップボード履歴（iOS）は既定オフ・内容はログに出さない・端末内の App Group のみ・ワンタップで全削除可（`docs/decisions.md` H-69）
-- Apple Developer Program は加入済み（H-15。SideStore は使わない）。macOS 配布は Developer ID 署名 + 公証（`macos-release.yml`。実装済みだが Secrets 未登録のため未実行。`docs/decisions.md` H-37(5)） + インストールスクリプト（`shiki-01.com`）+ ed25519 署名検証付きアップデート
+- Apple Developer Program は加入済み（H-15。SideStore は使わない）。macOS 配布は Developer ID 署名 + 公証（`macos-release.yml`。Secrets 登録済みで 0.1.10 まで公開済み。`docs/decisions.md` H-37(5)） + インストールスクリプト（`shiki-01.com`）+ ed25519 署名検証付きアップデート
 - モバイル: **iOS は TestFlight / App Store（Apple Developer Program 加入済み。H-15）**、Android は APK 直接配布（将来）。どちらも本体アプリでデータ資産を再インストールなしで更新する方針（`docs/mobile-design.md` §6）
 
 ## テスト戦略
