@@ -443,6 +443,8 @@ impl KeyMap {
         // 共通（全文脈・全モード）
         match key.keysym {
             keysym::EISU_TOGGLE => return Some(Action::SetMode(InputMode::Alphanumeric)),
+            // 右⌘の単独タップ（エンジンが `flags_changed` 列から判定して届ける）: かな/英数キーの無い US 配列向け
+            keysym::SUPER_R => return Some(Action::SetMode(InputMode::Hiragana)),
             keysym::HIRAGANA_KATAKANA | keysym::HIRAGANA => {
                 // ひらがなモードの未入力で押したら再変換（macOS 標準と同じく、英数モードからは
                 // 1 回目でひらがなモードになり、2 回目で選択中のテキストを再変換する）

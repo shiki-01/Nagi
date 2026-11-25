@@ -46,6 +46,52 @@ fn flags_changed_never_changes_state() {
     assert_eq!(e.snapshot("s").unwrap(), before);
 }
 
+fn flags(sym: &str, meta: bool) -> nagi_protocol::KeyEvent {
+    let mut key = parse_key("Eisu").unwrap();
+    key.keysym = match sym {
+        "super_r" => nagi_protocol::key::keysym::SUPER_R,
+        _ => nagi_protocol::key::keysym::SHIFT_L,
+    };
+    key.kind = nagi_protocol::KeyKind::FlagsChanged;
+    key.modifiers.meta = meta;
+    key
+}
+
+#[test]
+fn right_command_tap_switches_to_hiragana() {
+    let mut e = engine();
+    press(&mut e, "s", "Eisu");
+    assert_eq!(e.snapshot("s").unwrap().mode, InputMode::Alphanumeric);
+    // 押下だけでは何も起きない
+    let down = e.process_key("s", &flags("super_r", true));
+    assert!(!down.consumed);
+    assert_eq!(e.snapshot("s").unwrap().mode, InputMode::Alphanumeric);
+    // 離すとかなモード。修飾キーの変化そのものは消費しない
+    let up = e.process_key("s", &flags("super_r", false));
+    assert!(!up.consumed);
+    assert_eq!(e.snapshot("s").unwrap().mode, InputMode::Hiragana);
+    assert_eq!(up.mode, Some(InputMode::Hiragana));
+}
+
+#[test]
+fn right_command_with_other_key_is_not_a_tap() {
+    let mut e = engine();
+    press(&mut e, "s", "Eisu");
+    // ⌘C のように他のキーを挟んだら単独タップではない
+    e.process_key("s", &flags("super_r", true));
+    press(&mut e, "s", "Meta+c");
+    e.process_key("s", &flags("super_r", false));
+    assert_eq!(e.snapshot("s").unwrap().mode, InputMode::Alphanumeric);
+    // 他の修飾キーを挟んだ場合も同じ
+    e.process_key("s", &flags("super_r", true));
+    e.process_key("s", &flags("shift_l", true));
+    e.process_key("s", &flags("super_r", false));
+    assert_eq!(e.snapshot("s").unwrap().mode, InputMode::Alphanumeric);
+    // 押下を見ていない離上（フォーカス移動など）は何もしない
+    e.process_key("s", &flags("super_r", false));
+    assert_eq!(e.snapshot("s").unwrap().mode, InputMode::Alphanumeric);
+}
+
 #[test]
 fn sessions_are_isolated_and_can_end() {
     let mut e = engine();

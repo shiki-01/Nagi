@@ -16,7 +16,7 @@ use crate::kana::to_katakana;
 use crate::keymap::{KeyContext, KeyMap};
 use crate::observer::{CommitContext, CommitObserver, CommittedSegment};
 use crate::touch;
-use nagi_protocol::key::{KeyEvent, KeyKind};
+use nagi_protocol::key::{KeyEvent, KeyKind, Modifiers, keysym};
 use nagi_protocol::methods::{
     AcceptRetroReviewResult, FlickDetail, GlideInputParams, KanaKey, KeyGesture, ProcessKeyResult,
     ReadingInput, RestoreSessionParams, RetroReviewCandidate, RetroReviewParams, SetContextParams,
@@ -305,6 +305,8 @@ struct Session {
     pending_reconvert: bool,
     /// 12 キーのトグル入力の途中状態（直前の入力が `Toggle` のタップだったとき）
     touch_toggle: Option<TouchToggle>,
+    /// 右⌘が押され、まだ他のキーが押されていない（単独タップの判定中）
+    rcmd_armed: bool,
     /// 入力中（変換前）の候補。バックグラウンドで作る（`refresh_composing_candidates`）
     composing_cands: Option<ComposingCands>,
     /// 直前のグライド入力で認識した読みの候補。入力中の読みが `reading` と一致する間だけ、
@@ -798,6 +800,7 @@ impl Engine {
             auto_space: false,
             pending_reconvert: false,
             touch_toggle: None,
+            rcmd_armed: false,
             composing_cands: None,
             glide: None,
             suggest_selected: None,
@@ -2597,8 +2600,29 @@ impl Engine {
 
     fn handle_key(&self, sess: &mut Session, key: &KeyEvent, commit: &mut String) -> bool {
         if key.kind == KeyKind::FlagsChanged {
+            // 右⌘の単独タップ（US 配列向けのかな切替）: 右⌘の押下から、他のキー・修飾キーを挟まずに
+            // 離したときだけ、`keysym::SUPER_R` の押下として解決する（⌘C などの組み合わせでは働かない）
+            if key.keysym == keysym::SUPER_R {
+                if key.modifiers.meta {
+                    sess.rcmd_armed = true;
+                    return false;
+                }
+                if std::mem::take(&mut sess.rcmd_armed) {
+                    let tap = KeyEvent {
+                        kind: KeyKind::Down,
+                        modifiers: Modifiers::default(),
+                        text: String::new(),
+                        ..key.clone()
+                    };
+                    self.handle_key(sess, &tap, commit);
+                }
+            } else {
+                sess.rcmd_armed = false;
+            }
+            // 修飾キーの変化そのものはアプリにも渡す
             return false;
         }
+        sess.rcmd_armed = false;
         let ctx = match sess.state {
             State::Direct => KeyContext::Direct,
             State::Composing => KeyContext::Composing,
