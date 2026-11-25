@@ -127,19 +127,7 @@ final class CandidatePanel: NSPanel {
         listView.frame = NSRect(origin: .zero, size: size)
         setContentSize(size)
 
-        var anchor = caret
-        if caret == .zero {
-            // カーソル位置が取れないクライアントではマウス位置で代用する
-            let p = NSEvent.mouseLocation
-            anchor = NSRect(x: p.x, y: p.y, width: 0, height: 0)
-        }
-        var origin = NSPoint(x: anchor.minX, y: anchor.minY - size.height - 2)
-        let screen =
-            NSScreen.screens.first(where: { $0.frame.contains(anchor.origin) }) ?? NSScreen.main
-        if let visible = screen?.visibleFrame {
-            if origin.y < visible.minY { origin.y = anchor.maxY + 2 }
-            origin.x = max(visible.minX, min(origin.x, visible.maxX - size.width))
-        }
+        let origin = PanelPlacement.origin(for: size, below: PanelPlacement.anchor(for: caret))
         setFrameOrigin(origin)
         orderFrontRegardless()
     }

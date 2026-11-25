@@ -18,8 +18,8 @@ final class SettingsWindowController {
         return w
     }()
 
-    init(supervisor: EngineSupervisor) {
-        model = SettingsModel(supervisor: supervisor)
+    init(supervisor: EngineSupervisor, onChange: (@MainActor () -> Void)? = nil) {
+        model = SettingsModel(supervisor: supervisor, onChange: onChange)
     }
 
     /// 表示して前面化し、最新の設定を読み込み直す

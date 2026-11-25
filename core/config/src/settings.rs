@@ -423,6 +423,14 @@ pub fn definitions() -> Vec<SettingDef> {
             SettingKind::Bool,
         ),
         def(
+            "input.show_reading",
+            "入力",
+            "変換した文節の読みを表示",
+            "ライブ変換中や変換中に、かなに変換されなかった文節（漢字やカタカナになった文節）の読みを、未確定文字の下に小さく表示します（例: きょう｜いいてんき）。候補が出ているときは表示しません。macOS で働きます。",
+            SettingKind::Bool,
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
             "input.space_width",
             "入力",
             "未入力のときの Space",
@@ -926,6 +934,7 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "input.romaji_carryover" => Some(Bool(config.input.romaji_carryover)),
         "input.glide" => Some(Bool(config.input.glide)),
         "input.auto_space_alpha" => Some(Bool(config.input.auto_space_alpha)),
+        "input.show_reading" => Some(Bool(config.input.show_reading)),
         "input.space_width" => Some(Text(config.input.space_width.as_str().to_string())),
         "keymap.preset" => Some(Text(if config.keymap.preset == "default" {
             crate::KEYMAP_PRESET_STANDARD.to_string()
@@ -1743,6 +1752,19 @@ mod tests {
         let (c, issues) = crate::parse(&r.source).unwrap();
         assert!(issues.is_empty(), "{issues:?}");
         assert!(c.input.auto_space_alpha);
+    }
+
+    #[test]
+    fn input_show_reading_definition() {
+        let defs = definitions();
+        let d = defs.iter().find(|d| d.key == "input.show_reading").unwrap();
+        assert_eq!(d.platforms, SettingPlatforms::Desktop);
+        assert!(!crate::Config::default().input.show_reading);
+        let r =
+            apply_changes(None, &[set("input.show_reading", SettingValue::Bool(true))]).unwrap();
+        let (c, issues) = crate::parse(&r.source).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(c.input.show_reading);
     }
 
     #[test]

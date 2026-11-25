@@ -13,6 +13,12 @@ public final class NagiIMEContext {
     let panel = CandidatePanel()
     /// 候補パネルを今出している入力欄のセッション ID（メインスレッドからのみ触る）
     var panelOwner: String?
+    /// 変換された文節の読みヒント（設定 `input.show_reading`）。候補パネルとは別のパネル
+    let hintPanel = ReadingHintPanel()
+    /// 読みヒントを今出している入力欄のセッション ID（メインスレッドからのみ触る）
+    var hintOwner: String?
+    /// 読みヒントを出すか（設定 `input.show_reading`。`refreshDisplaySettings` で読み直す）
+    var showReadingHint = false
     let toast = StatusToast()
     /// 同期要求の待ち上限（EngineSupervisor の要求タイムアウト 0.5s より少し長く）
     public var keyTimeout: TimeInterval = 0.6
@@ -43,9 +49,25 @@ public final class NagiIMEContext {
         Task { @MainActor [weak self] in
             guard let self else { return }
             if self.settingsWindow == nil {
-                self.settingsWindow = SettingsWindowController(supervisor: self.supervisor)
+                self.settingsWindow = SettingsWindowController(
+                    supervisor: self.supervisor,
+                    onChange: { [weak self] in self?.refreshDisplaySettings() })
             }
             self.settingsWindow?.show()
+        }
+    }
+
+    /// 表示の設定（読みヒント）をコアから読み直す。起動・再起動・入力の開始・設定の変更のあとに呼ぶ。
+    /// 取得できなければ今の値を保つ
+    func refreshDisplaySettings() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let snapshot = try? await self.supervisor.getSettings() else { return }
+            self.showReadingHint = ReadingHint.isEnabled(in: snapshot)
+            if !self.showReadingHint, self.hintOwner != nil {
+                self.hintOwner = nil
+                self.hintPanel.hide()
+            }
         }
     }
 
@@ -69,6 +91,10 @@ public final class NagiIMEContext {
         if panelOwner == sessionId {
             panelOwner = nil
             panel.hide()
+        }
+        if hintOwner == sessionId {
+            hintOwner = nil
+            hintPanel.hide()
         }
         controllers[sessionId] = nil
         store.remove(sessionId: sessionId)
@@ -97,6 +123,7 @@ public final class NagiIMEContext {
         case .started(let result, _):
             // 起動・再起動のたびにコアのセッションは初期モードから始まる
             initialMode = result.mode
+            refreshDisplaySettings()
             for controller in controllers.values { controller.value?.engineStarted() }
         case .crashed:
             break

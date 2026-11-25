@@ -538,6 +538,8 @@ pub struct InputSection {
     pub glide: bool,
     /// 英語の候補を選んで確定したとき、後ろに半角スペースを足す（続けて句読点を入力すると消える。H-74）。既定: false。
     pub auto_space_alpha: bool,
+    /// 変換中・ライブ変換中に、変換された文節の読みを未確定文字の下に小さく出す（macOS。既定: false）。
+    pub show_reading: bool,
     /// 未入力のときの Space で入れるスペースの幅。Shift+Space は反対の幅。既定: Half。
     pub space_width: SpaceWidth,
     /// 曖昧入力（タイプミス補正の候補）。
@@ -555,6 +557,7 @@ impl Default for InputSection {
             romaji_carryover: true,
             glide: false,
             auto_space_alpha: false,
+            show_reading: false,
             space_width: SpaceWidth::Half,
             fuzzy: FuzzySection::default(),
             auto_english: AutoEnglishSection::default(),
@@ -1548,6 +1551,7 @@ fn get_known_section_keys(section: &str) -> &'static [&'static str] {
             "romaji_carryover",
             "glide",
             "auto_space_alpha",
+            "show_reading",
             "space_width",
             "fuzzy",
             "auto_english",
@@ -2531,6 +2535,7 @@ min_chars = 3
         assert!(d.userdict.enabled && d.snippet.enabled);
         assert_eq!(d.input.dakuten_cycle, DakutenCycle::SmallFirst);
         assert!(d.input.romaji_carryover);
+        assert!(!d.input.show_reading);
         let source = "[userdict]\nenabled = false\n[snippet]\nenabled = false\n[input]\ndakuten_cycle = \"dakuten_first\"\n";
         let (c, issues) = parse(source).expect("parse");
         assert!(issues.is_empty(), "{issues:?}");

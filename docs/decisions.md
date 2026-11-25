@@ -2621,3 +2621,10 @@ H-65 の続き。仕様は `docs/keyboard-style-spec.md`（§7、§9 ②〜④�
 - **プライバシー**: 保存するのはアプリ識別子とモード名のみ（入力内容は含まない）。secure input 中は engine が通知しない。`learning.enabled = false` と停止リストのアプリでは記録しない（`learning_allowed`）。「学習データの全削除」（`clear_learning`）で、ファイルとメモリの記憶も消える。
 - **迷った判断**: (1) 設定バックアップ（`backup_tools.rs`）の対象には含めない（項目の拡張が要るため。必要になれば追加）。(2) 上限超過時は識別子順の先頭から落とす（古い順ではない）。(3) `focus_in` による自動切替は従来どおり記憶しない。
 - **未確認**: `flush_learning` がフォーカス喪失・IME 切替時にどの force で呼ばれるか（実機でモード切替の直後に保存されるか）。macOS の `adoptSelectedMode` による意図しない記憶（H-49）は未解決のまま。
+
+### H-145. macOS: 変換した文節の読みを未確定文字の下に小さく表示する（2026-11-25、ユーザーの「全部推奨」、要実機確認）
+
+- **決定（推奨案）**: (1) 表示する場面: `kind = japanese` かつ `surface != reading` の文節（かなのままの文節は除く）がある間、その読みを `｜` 区切りで 1 行に出す。Direct・未入力・全文節がかなのままのとき、および候補パネルが出ている間は出さない。(2) 位置: 未確定文字の直下の小さなフロートパネル（`ReadingHintPanel`。配置は候補パネルと共通の `PanelPlacement`）。(3) 設定: `input.show_reading`（既定 **false**）。設定画面から切り替える。
+- **設定値の取得**: 起動時・`activateServer`・`reload_config` 成功後・設定画面で保存したとき。バックアップ復元など他の経路で config.toml が変わった場合は、次の `activateServer` まで反映されない。
+- **迷った判断**: 設定の区分は `Desktop`（macOS 専用の区分が無く、追加にはプロトコルの変更が要るため）。Windows の設定画面にも項目が出るが、Windows では何もしない（説明文に「macOS で働きます」と明記）。Windows の描画は未実装。長い読みの切り詰めはしない。
+- **未確認**: Swift はローカルでコンパイルできない（CI `macos-frontend.yml` で確認）。実機での見た目・位置、打鍵ごとの `attributes(forCharacterIndex:)` 呼び出しの応答時間。

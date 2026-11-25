@@ -89,6 +89,8 @@ final class NagiInputController: IMKInputController {
         let id = sessionId
         // secure input / アプリ識別子 / 直前のテキストを先に伝える（学習停止の判断はコア）
         reportContext()
+        // 表示の設定（読みヒント）を読み直す。設定ファイルの変更は入力先の切り替えで反映される
+        context.refreshDisplaySettings()
         // focus_in の応答にモードが含まれるとき（アプリごとの既定・記憶）は、OS 側の入力ソースがまだ
         // 切り替わっていないため、OS の現在値を取り込むと元に戻ってしまう。取り込みを省く
         var coreChoseMode = false
@@ -228,6 +230,7 @@ final class NagiInputController: IMKInputController {
                 message = StatusMessages.unavailable
             }
             context.toast.show(message)
+            context.refreshDisplaySettings()
         }
     }
 
@@ -274,6 +277,7 @@ final class NagiInputController: IMKInputController {
             syncMode(mode)
         }
         if result.reconvert_selection == true { reconvertSelection() }
+        updateReadingHint()
     }
 
     /// コアの要求（かなキー・変換キー）で、選択中の確定済みテキストを再変換する。選択が無ければ何もしない
@@ -312,6 +316,7 @@ final class NagiInputController: IMKInputController {
         guard applied.accept(async: revision) else { return }
         renderPreedit(preedit)
         if lastCandidates != nil { showCandidates(lastCandidates) }
+        updateReadingHint()
     }
 
     /// `update_candidates` 通知。入力中の文字列が無いのに届いた候補（確定・取消のあとに遅れて届いたもの）は表示しない
@@ -322,6 +327,7 @@ final class NagiInputController: IMKInputController {
             return
         }
         showCandidates(CandidatePaging.page(for: candidates))
+        updateReadingHint()
     }
 
     /// 復元失敗・エンジン異常時: 保持している preedit の表示文字列をそのまま確定して状態を捨てる
@@ -434,6 +440,7 @@ final class NagiInputController: IMKInputController {
     private func hideCandidates() {
         lastCandidates = nil
         hidePanelIfOwner()
+        hideReadingHint()
     }
 
     /// 候補パネルは全入力欄で共有しているので、自分が出したものだけを閉じる
@@ -443,6 +450,33 @@ final class NagiInputController: IMKInputController {
         if context.panelOwner == nil || context.panelOwner == sessionId {
             context.panelOwner = nil
             context.panel.hide()
+        }
+    }
+
+    // MARK: 読みヒント（設定 `input.show_reading`）
+
+    /// 読みヒントの表示を、今の状態（設定・入力中の文字列・候補パネルの有無）に合わせる。
+    /// 候補パネルが出ている間（変換中）は、候補バーが読みを示すので出さない
+    private func updateReadingHint() {
+        guard let context, context.showReadingHint, lastCandidates == nil,
+            let preedit = context.store.preedit(for: sessionId), !preedit.text.isEmpty,
+            let text = ReadingHint.text(for: preedit)
+        else {
+            hideReadingHint()
+            return
+        }
+        var rect = NSRect.zero
+        _ = textClient?.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
+        context.hintOwner = sessionId
+        context.hintPanel.show(text: text, near: rect)
+    }
+
+    /// 読みヒントは入力欄ごとに 1 つだけ出すので、自分が出したものだけを閉じる（候補パネルと同じ扱い）
+    private func hideReadingHint() {
+        guard let context else { return }
+        if context.hintOwner == nil || context.hintOwner == sessionId {
+            context.hintOwner = nil
+            context.hintPanel.hide()
         }
     }
 }

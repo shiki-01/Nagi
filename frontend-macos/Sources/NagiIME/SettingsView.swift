@@ -20,12 +20,15 @@ final class SettingsModel: ObservableObject {
     private let supervisor: EngineSupervisor
     private var flushTask: Task<Void, Never>?
     private var inFlight = false
+    /// 変更を保存できたあとに呼ぶ（入力側が表示の設定を読み直すため）
+    private let onChange: (@MainActor () -> Void)?
 
     /// 数値・テキスト入力のデバウンス
     private static let debounce: TimeInterval = 0.5
 
-    init(supervisor: EngineSupervisor) {
+    init(supervisor: EngineSupervisor, onChange: (@MainActor () -> Void)? = nil) {
         self.supervisor = supervisor
+        self.onChange = onChange
     }
 
     /// 設定を読み込み直す
@@ -142,6 +145,7 @@ final class SettingsModel: ObservableObject {
                 let result = try await self.supervisor.updateSettings(changes: changes)
                 self.state.apply(result: result)
                 self.connectionFailed = false
+                self.onChange?()
             } catch {
                 // 送れなかった。表示をコアの現在値に戻すため読み直す
                 self.connectionFailed = true
