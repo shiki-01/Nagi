@@ -120,7 +120,10 @@ fn add_words(builder: &mut LexiconBuilder, data: &[u8], level: u8) {
     // 行は Latin-1 / UTF-8 が混ざりうる。ASCII 小文字だけの語だけを受け付けるので、バイトのまま見る
     for line in data.split(|b| *b == b'\n') {
         if let Ok(word) = std::str::from_utf8(line) {
-            builder.add(&word.trim().to_ascii_lowercase(), level);
+            let word = word.trim();
+            if !builder.add_cased(word, level) {
+                builder.add(&word.to_ascii_lowercase(), level);
+            }
         }
     }
 }
@@ -204,6 +207,11 @@ mod tests {
         assert_eq!(lex.tier("ignored"), None);
         assert_eq!(lex.tier("it's"), None);
         assert_eq!(lex.tier("monday"), Some(35));
+        assert_eq!(
+            lex.case_of("monday"),
+            Some(crate::lexicon::WordCase::Capitalized)
+        );
+        assert_eq!(lex.case_of("the"), Some(crate::lexicon::WordCase::Lower));
         assert_eq!(lex.len(), 3);
     }
 

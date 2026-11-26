@@ -90,6 +90,10 @@ pub mod method {
     pub const UPDATE_CANDIDATES: &str = "update_candidates";
     /// `notify` 通知（C→F）
     pub const NOTIFY: &str = "notify";
+    /// `english_suggest` メソッド（英字入力の予測候補・スペル訂正。H-146）
+    pub const ENGLISH_SUGGEST: &str = "english_suggest";
+    /// `english_commit` メソッド（英字入力で確定した語の学習。H-146）
+    pub const ENGLISH_COMMIT: &str = "english_commit";
 }
 
 /// `initialize` メソッドの要求パラメータ
@@ -1238,4 +1242,86 @@ pub struct ExportKeymapResult {
     /// 利用者の上書き（`keymap.preset` が標準以外ならそれも）を `[keymap.*]` の TOML 断片にしたもの。
     /// 上書きが無ければ空文字列
     pub toml: String,
+}
+
+/// `english_suggest` メソッドの要求パラメータ（英字入力の予測候補・スペル訂正。H-146）。
+///
+/// 英字のレイアウトで打っている途中の語（カーソル直前の、英字・アポストロフィ・ハイフンの並び）を渡す。
+/// 状態は持たない（セッションの preedit とは独立）。語が空なら候補も空
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnglishSuggestParams {
+    /// セッション ID（学習の停止の判断に使う。省略可）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    /// 打っている途中の語（大文字小文字は打ったまま）
+    pub word: String,
+    /// 返す候補の最大件数（打ったままの語を含む。省略時は 6、最大 20）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub limit: Option<u32>,
+}
+
+/// 英字入力の候補の種類
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnglishSuggestionKind {
+    /// 打ったままの語
+    Typed,
+    /// 補完（打った語で始まる語）
+    Completion,
+    /// 訂正（打ち間違いの直し先）
+    Correction,
+}
+
+/// 英字入力の候補 1 件
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnglishSuggestion {
+    /// 表記（打った語の大文字小文字の形を写したもの）
+    pub text: String,
+    /// 種類
+    pub kind: EnglishSuggestionKind,
+}
+
+/// `english_suggest` メソッドの応答
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct EnglishSuggestResult {
+    /// 候補（先頭は打ったままの語。語が空なら空）
+    pub suggestions: Vec<EnglishSuggestion>,
+    /// 自信の高い訂正（自動修正の対象）。適用するかはフロントの設定で決める。無ければ省略
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autocorrect: Option<String>,
+}
+
+/// 英字入力で確定した語の入り方
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EnglishCommitSource {
+    /// 打ったまま確定した（スペース・句読点・改行で語が終わった）
+    #[default]
+    Typed,
+    /// 候補から選んだ
+    Suggestion,
+    /// 自動修正を取り消して、打ったままに戻した
+    Reverted,
+}
+
+/// `english_commit` メソッドの要求パラメータ（英字入力で確定した語の学習）。
+///
+/// 学習は通常の学習と同じ条件（`learning.enabled`・`[input.english] learn`・停止リストのアプリ・
+/// secure input）で止める。パスワード欄では呼ばないこと
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnglishCommitParams {
+    /// セッション ID（学習の停止の判断に使う。省略可）
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    /// 確定した語
+    pub word: String,
+    /// 入り方（省略時は打ったまま）
+    #[serde(default)]
+    pub source: EnglishCommitSource,
 }

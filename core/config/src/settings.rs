@@ -467,6 +467,21 @@ pub fn definitions() -> Vec<SettingDef> {
         )
         .simple(),
         def(
+            "input.english.learn",
+            "入力",
+            "英単語を学習する",
+            "英字で入力して確定した英単語を覚えて、次から補完の先頭に出し、正しい語として訂正の対象から外します（技術用語や固有名詞向け）。学習データの全削除で消えます。学習をオフにしているときは学習しません。",
+            SettingKind::Bool,
+        ),
+        def(
+            "input.english.literal_correction",
+            "入力",
+            "英字の綴りの訂正候補",
+            "英字だけを入力して Space を押したとき、綴りの訂正候補（例: recieve → receive）を候補の後ろに混ぜます。先頭は常に打った通りの綴りで、自動では置き換えません。英数モードの直接入力は対象外です（OS やアプリのスペルチェックが働きます）。",
+            SettingKind::Bool,
+        )
+        .platforms(SettingPlatforms::Desktop),
+        def(
             "input.fuzzy.enabled",
             "入力",
             "タイプミスの補正候補（曖昧入力）",
@@ -944,6 +959,8 @@ fn from_config(config: &Config, key: &str) -> Option<SettingValue> {
         "input.auto_english.mode" => {
             Some(Text(config.input.auto_english.mode.as_str().to_string()))
         }
+        "input.english.learn" => Some(Bool(config.input.english.learn)),
+        "input.english.literal_correction" => Some(Bool(config.input.english.literal_correction)),
         "input.fuzzy.enabled" => Some(Bool(config.input.fuzzy.enabled)),
         "input.fuzzy.strength" => Some(Text(config.input.fuzzy.strength.as_str().to_string())),
         "input.fuzzy.max_candidates" => Some(n(config.input.fuzzy.max_candidates)),
@@ -1752,6 +1769,36 @@ mod tests {
         let (c, issues) = crate::parse(&r.source).unwrap();
         assert!(issues.is_empty(), "{issues:?}");
         assert!(c.input.auto_space_alpha);
+    }
+
+    #[test]
+    fn input_english_definitions() {
+        let defs = definitions();
+        let d = defs
+            .iter()
+            .find(|d| d.key == "input.english.literal_correction")
+            .unwrap();
+        assert_eq!(d.platforms, SettingPlatforms::Desktop);
+        let d = defs
+            .iter()
+            .find(|d| d.key == "input.english.learn")
+            .unwrap();
+        assert_eq!(d.platforms, SettingPlatforms::Both);
+        let c = crate::Config::default();
+        assert!(c.input.english.learn);
+        assert!(!c.input.english.literal_correction);
+        let r = apply_changes(
+            None,
+            &[
+                set("input.english.literal_correction", SettingValue::Bool(true)),
+                set("input.english.learn", SettingValue::Bool(false)),
+            ],
+        )
+        .unwrap();
+        let (c, issues) = crate::parse(&r.source).unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(c.input.english.literal_correction);
+        assert!(!c.input.english.learn);
     }
 
     #[test]

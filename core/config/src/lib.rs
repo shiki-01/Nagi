@@ -546,6 +546,8 @@ pub struct InputSection {
     pub fuzzy: FuzzySection,
     /// 英語の自動判定。
     pub auto_english: AutoEnglishSection,
+    /// 英字入力の予測候補・スペル訂正（H-146）。
+    pub english: EnglishSection,
 }
 
 impl Default for InputSection {
@@ -561,6 +563,31 @@ impl Default for InputSection {
             space_width: SpaceWidth::Half,
             fuzzy: FuzzySection::default(),
             auto_english: AutoEnglishSection::default(),
+            english: EnglishSection::default(),
+        }
+    }
+}
+
+/// 英字入力の予測候補・スペル訂正（`[input.english]`。H-146）。
+///
+/// モバイルの英字レイアウトの候補バー・自動修正のオン/オフはフロントの設定（iOS の設定画面）で決め、
+/// ここは全プラットフォームで共通の学習と、デスクトップの訂正候補だけを持つ。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnglishSection {
+    /// 英字入力で確定した英単語を学習する（補完の先頭に出す・訂正の対象から外す）。既定: true。
+    /// `learning.enabled = false` のときは、この値にかかわらず学習しない
+    pub learn: bool,
+    /// デスクトップ: 英字だけの入力（Literal）で Space を押したとき、綴りの訂正候補を候補の後ろに混ぜる。
+    /// 入力は自動では置き換えない。既定: false
+    pub literal_correction: bool,
+}
+
+impl Default for EnglishSection {
+    fn default() -> Self {
+        EnglishSection {
+            learn: true,
+            literal_correction: false,
         }
     }
 }
@@ -1524,6 +1551,9 @@ const FUZZY_KEYS: &[&str] = &[
 /// `[input.auto_english]` の既知キー。
 const AUTO_ENGLISH_KEYS: &[&str] = &["mode"];
 
+/// `[input.english]` の既知キー。
+const ENGLISH_KEYS: &[&str] = &["learn", "literal_correction"];
+
 /// 各セクションの既知キー。
 fn get_known_section_keys(section: &str) -> &'static [&'static str] {
     match section {
@@ -1555,6 +1585,7 @@ fn get_known_section_keys(section: &str) -> &'static [&'static str] {
             "space_width",
             "fuzzy",
             "auto_english",
+            "english",
         ],
         "ranking" => &["source_order"],
         "learning" => &[
@@ -1639,10 +1670,13 @@ fn find_unknown_keys(table: &toml::Table) -> Vec<String> {
                     }
                 }
             }
-            // 入れ子のテーブル（`[input.fuzzy]` `[input.auto_english]`）
+            // 入れ子のテーブル（`[input.fuzzy]` `[input.auto_english]` `[input.english]`）
             if key == "input" {
-                for (nested, known) in [("fuzzy", FUZZY_KEYS), ("auto_english", AUTO_ENGLISH_KEYS)]
-                {
+                for (nested, known) in [
+                    ("fuzzy", FUZZY_KEYS),
+                    ("auto_english", AUTO_ENGLISH_KEYS),
+                    ("english", ENGLISH_KEYS),
+                ] {
                     if let Some(table) = section.get(nested).and_then(|v| v.as_table()) {
                         for sub in table.keys() {
                             if !known.contains(&sub.as_str()) {

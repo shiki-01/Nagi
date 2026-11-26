@@ -11,6 +11,8 @@ struct CandidateItem: Identifiable {
     var hint: String? = nil
     /// グライド入力（なぞり入力）の候補の「なぞり: かんじ」表示。なぞりの候補でなければ nil
     var glideHint: String? = nil
+    /// 英字入力の予測候補（H-146）のとき、選んだら入れる語（`surface` は表示用で、引用符が付くことがある）
+    var englishText: String? = nil
 }
 
 /// グライド入力の軌跡の描画用の状態。軌跡の更新だけで再描画が起きるよう、`KeyboardModel` とは別の ObservableObject にする
@@ -62,6 +64,16 @@ final class KeyboardModel: ObservableObject {
     @Published var isExpanded = false
     /// 選択中の候補（なければ -1）
     @Published private(set) var selectedCandidate = -1
+    /// 候補バーの候補が英字入力の予測候補か（H-146。展開パネルは使わない）
+    @Published private(set) var isEnglishSuggestions = false
+    /// 英字入力: 自分で入れた文字から追った、カーソル直前のテキストの末尾（ホストの文脈は遅れることがあるため。
+    /// 外部の変更・入力欄の切替のたびにホストの文脈から取り直す。入力内容なのでログには出さない）
+    private var englishBuffer = ""
+    /// 英字入力: 候補を出している語と、その自動修正の対象
+    private var englishWord = ""
+    private var englishAutocorrectTarget: String?
+    /// 英字入力: 直前に適用した自動修正（直後の ⌫ で取り消す）
+    private var englishUndo: EnglishAutocorrectUndo?
     /// 表示中のレイアウト（JSON から読んだもの。`Shared/KeyboardLayout.swift`）
     @Published private(set) var layoutDef: KeyboardLayoutDef {
         didSet {
@@ -626,8 +638,12 @@ final class KeyboardModel: ObservableObject {
         }
         if composesEnglish {
             insertReading(output)
+        } else if englishSuggestActive, EnglishAssistPolicy.isTrigger(output) {
+            insertEnglishDelimiter(output)
         } else {
             hostInsert(output)
+            englishUndo = nil
+            refreshEnglishSuggestions()
         }
         if shiftState == .once { shiftState = .off }
     }
@@ -869,18 +885,35 @@ final class KeyboardModel: ObservableObject {
 
     func space() {
         toggleState = nil
-        if !send("space", { $0.perform(.space) }) { hostInsert(" ") }
+        if !send("space", { $0.perform(.space) }) {
+            if englishSuggestActive {
+                insertEnglishDelimiter(" ")
+            } else {
+                hostInsert(" ")
+            }
+        }
     }
 
     func enter() {
         toggleState = nil
-        if !send("enter", { $0.perform(.enter) }) { hostInsert("\n") }
+        if !send("enter", { $0.perform(.enter) }) {
+            // 改行では直さない（検索欄などで送信になるため）。打った語は学習する
+            if englishSuggestActive { learnEnglishWord(EnglishWord.current(before: englishBuffer), source: .typed) }
+            hostInsert("\n")
+            englishUndo = nil
+            clearEnglishSuggestions()
+        }
     }
 
-    /// ⌫: 入力中ならコアの backspace、未入力ならホストの 1 文字削除（長押しの連打でも 1 回ごとにこれを呼ぶ）
+    /// ⌫: 入力中ならコアの backspace、未入力ならホストの 1 文字削除（長押しの連打でも 1 回ごとにこれを呼ぶ）。
+    /// 英字の自動修正の直後なら、修正を取り消して打った綴りに戻す（H-146）
     func backspace() {
         toggleState = nil
-        if !send("backspace", { $0.perform(.backspace) }) { hostDeleteBackward(1) }
+        if !send("backspace", { $0.perform(.backspace) }) {
+            if revertEnglishAutocorrect() { return }
+            hostDeleteBackward(1)
+            refreshEnglishSuggestions()
+        }
     }
 
     /// ←/→: 変換中は注目文節、変換前の入力中はカーソル、未入力ならホストの入力欄のカーソルを動かす
@@ -966,7 +999,10 @@ final class KeyboardModel: ObservableObject {
         shiftState = .off
         lastShiftTap = nil
         isExpanded = false
+        englishUndo = nil
         DiagLog.log("layout -> \(next.id) mode=\(next.mode.rawValue)")
+        // 英字のレイアウトに入ったら直前の語の候補を出し、ほかのレイアウトでは引っ込める
+        refreshEnglishSuggestions()
         return true
     }
 
@@ -1064,6 +1100,10 @@ final class KeyboardModel: ObservableObject {
     func selectCandidate(_ index: Int) {
         guard let session = session else { return }
         toggleState = nil
+        if isEnglishSuggestions {
+            selectEnglishSuggestion(index)
+            return
+        }
         let converting = isConverting
         // 選ぶ前の注目文節と文節数で判定する（選んだ結果で文節が変わっても、選んだ文節の後ろが残っているかで決める）
         let focusBefore = focusIndex
@@ -1110,6 +1150,9 @@ final class KeyboardModel: ObservableObject {
         scheduleLLMRestore(after: 0.3)
         // 入力欄の種類によるレイアウトの自動選択（割り当ての反映 `applyLayoutAssignment` より後）
         applyInputTraits()
+        englishUndo = nil
+        resyncEnglishBuffer()
+        refreshEnglishSuggestions()
     }
 
     /// ホストアプリでの変更をコアに反映する。`config.toml` の更新時刻が変わっていれば `reload_config`
@@ -1312,6 +1355,12 @@ final class KeyboardModel: ObservableObject {
             DiagLog.log("toggleState dropped by external text change tail=\(logText(String(context.suffix(4)))) last=\(logText(state.last))")
             toggleState = nil
         }
+        // 自分の操作の結果でない変更（カーソル移動・ほかの入力）なら、英字入力の語を取り直す
+        if Date().timeIntervalSince(lastOwnHostOperation) > ownOperationWindow {
+            resyncEnglishBuffer()
+            englishUndo = nil
+            refreshEnglishSuggestions()
+        }
         scheduleContextUpdate(delay: 0.05)
         refreshClipboardState()
         // 履歴ページを開いたまま入力欄がパスワード欄に替わったら、内容を引っ込める
@@ -1334,8 +1383,11 @@ final class KeyboardModel: ObservableObject {
         isConverting = false
         candidates = []
         isNextWordCandidates = false
+        isEnglishSuggestions = false
         selectedCandidate = -1
         isExpanded = false
+        englishUndo = nil
+        resyncEnglishBuffer()
         closeClipboardHistory()
         lastSentContext = nil
         scheduleContextUpdate(delay: 0)
@@ -1417,6 +1469,7 @@ final class KeyboardModel: ObservableObject {
             // 残りの変換中は、直後の showPreedit が新しい変換中として入れる
             lastOwnHostOperation = Date()
             applier.commit(commit)
+            noteEnglishInserted(commit)
             // 確定した文字列を文脈に含めるため、ホストが反映したあとに送る
             scheduleContextUpdate(delay: 0.15)
         }
@@ -1475,6 +1528,8 @@ final class KeyboardModel: ObservableObject {
     }
 
     private func showCandidates(_ view: CandidatesView) {
+        // コアの候補（変換・次語予測）が来たら、英字入力の予測候補は引っ込める
+        isEnglishSuggestions = false
         let kind = classifyCandidates(view, hasPreedit: hasPreedit)
         if kind == .hidden {
             // visible = false（次語候補が入力の開始などで消える）も、候補なしと同じに片付ける
@@ -1504,6 +1559,7 @@ final class KeyboardModel: ObservableObject {
         lastOwnHostOperation = Date()
         DiagLog.log(log ? "host insertText \(logText(text))" : "host insertText (内容は記録しない)")
         host?.hostInsertText(text)
+        noteEnglishInserted(text)
     }
 
     private func hostDeleteBackward(_ count: Int) {
@@ -1512,6 +1568,7 @@ final class KeyboardModel: ObservableObject {
         lastOwnHostOperation = Date()
         DiagLog.log("host deleteBackward x\(count)")
         for _ in 0..<count { host?.hostDeleteBackward() }
+        englishBuffer = String(englishBuffer.dropLast(count))
     }
 
     /// ログに出す操作名。パスワード欄などでは、押したキーが分かる（かな 12 キーの行・方向など）ので伏せる
@@ -1523,5 +1580,130 @@ final class KeyboardModel: ObservableObject {
     /// ログ用の文字列。パスワード欄などでは内容を伏せる
     private func logText(_ text: String) -> String {
         DiagLog.quote(text, redact: host?.hostIsSecure() ?? false)
+    }
+}
+
+// MARK: - 英字入力の予測候補・スペル訂正（H-146）
+
+extension KeyboardModel {
+    /// 英字入力の予測候補を出す状況か（英字のレイアウト・入力中の文字列なし・パスワード欄でない・設定オン）
+    var englishSuggestActive: Bool {
+        session != nil && EnglishAssistPolicy.shouldSuggest(
+            mode: layoutDef.mode, setting: ios.englishSuggest, isSecure: host?.hostIsSecure() ?? false,
+            hasPreedit: hasPreedit
+        )
+    }
+
+    /// 自動修正してよい状況か（候補を出す状況で、設定オン・入力欄が断っていない・URL やメールの欄でない）
+    private var englishAutocorrectActive: Bool {
+        EnglishAssistPolicy.shouldAutocorrect(
+            suggest: englishSuggestActive, setting: ios.englishAutocorrect,
+            hostDisabled: host?.hostAutocorrectionDisabled() ?? false, keyboardType: host?.hostKeyboardType()
+        )
+    }
+
+    /// 自分で入れた文字を、追っている末尾のテキストに足す（長くなりすぎないよう末尾だけ残す）
+    func noteEnglishInserted(_ text: String) {
+        englishBuffer = String((englishBuffer + text).suffix(64))
+    }
+
+    /// 追っている末尾のテキストを、ホストの文脈から取り直す（取れなければ空）
+    func resyncEnglishBuffer() {
+        englishBuffer = String((host?.hostContextBeforeInput() ?? "").suffix(64))
+    }
+
+    /// カーソル直前の語の候補を取り直して候補バーに出す。出す状況でなければ引っ込める
+    func refreshEnglishSuggestions() {
+        guard englishSuggestActive, let session = session else {
+            clearEnglishSuggestions()
+            return
+        }
+        let word = EnglishWord.current(before: englishBuffer)
+        guard !word.isEmpty, let result = session.englishSuggest(word) else {
+            clearEnglishSuggestions()
+            return
+        }
+        englishWord = word
+        englishAutocorrectTarget = englishAutocorrectActive ? result.autocorrect : nil
+        // 打ったままの語しか無ければ、候補バーの代わりにツールバーを出す
+        guard result.suggestions.count > 1 else {
+            clearEnglishSuggestions()
+            return
+        }
+        let target = englishAutocorrectTarget
+        candidates = result.suggestions.enumerated().map { index, s in
+            // 直す対象があるときは、打ったままの語を引用符で囲んで「このまま」と分かるようにする
+            let display = (s.kind == .typed && target != nil) ? "“\(s.text)”" : s.text
+            return CandidateItem(id: index, surface: display, covers: nil, englishText: s.text)
+        }
+        isEnglishSuggestions = true
+        isNextWordCandidates = false
+        isExpanded = false
+        // 自動修正の対象（スペースで入る語）を選択中の色で示す
+        selectedCandidate = target.flatMap { t in result.suggestions.firstIndex { $0.text == t } } ?? -1
+    }
+
+    /// 英字入力の予測候補を引っ込める（コアの候補は触らない）
+    func clearEnglishSuggestions() {
+        englishAutocorrectTarget = nil
+        englishWord = ""
+        guard isEnglishSuggestions else { return }
+        isEnglishSuggestions = false
+        candidates = []
+        selectedCandidate = -1
+        isExpanded = false
+    }
+
+    /// 語の区切り（スペース・句読点）を入れる。直前の語に自動修正の対象があれば、先に直す
+    func insertEnglishDelimiter(_ delimiter: String) {
+        let word = EnglishWord.current(before: englishBuffer)
+        englishUndo = nil
+        if !word.isEmpty, word == englishWord, let target = englishAutocorrectTarget, target != word,
+           englishAutocorrectActive {
+            hostDeleteBackward(word.count)
+            hostInsert(target + delimiter)
+            englishUndo = EnglishAutocorrectUndo(original: word, replacement: target, trailing: delimiter)
+            DiagLog.log("english autocorrect applied")
+            learnEnglishWord(target, source: .typed)
+        } else {
+            hostInsert(delimiter)
+            learnEnglishWord(word, source: .typed)
+        }
+        clearEnglishSuggestions()
+    }
+
+    /// 直前の自動修正を取り消す（⌫）。取り消したら `true`
+    func revertEnglishAutocorrect() -> Bool {
+        guard let undo = englishUndo else { return false }
+        englishUndo = nil
+        guard englishSuggestActive, undo.matches(context: englishBuffer) else { return false }
+        let edit = undo.revert
+        hostDeleteBackward(edit.delete)
+        hostInsert(edit.insert)
+        DiagLog.log("english autocorrect reverted")
+        // 打った綴りを正しい語として覚える（次からは直さない）
+        learnEnglishWord(undo.original, source: .reverted)
+        refreshEnglishSuggestions()
+        return true
+    }
+
+    /// 英字入力の候補を選ぶ: 打っている途中の語を候補に置き換えて、後ろにスペースを入れる
+    func selectEnglishSuggestion(_ index: Int) {
+        guard candidates.indices.contains(index), let text = candidates[index].englishText else { return }
+        let word = EnglishWord.current(before: englishBuffer)
+        let nextIsSpace = host?.hostContextAfterInput()?.first == " "
+        let edit = EnglishSelection.edit(word: word, suggestion: text, nextIsSpace: nextIsSpace)
+        DiagLog.log("english select index=\(index)")
+        englishUndo = nil
+        if edit.delete > 0 { hostDeleteBackward(edit.delete) }
+        hostInsert(edit.insert)
+        learnEnglishWord(text, source: .suggestion)
+        clearEnglishSuggestions()
+    }
+
+    /// 確定した語を学習する（英字入力の候補を出す状況のときだけ。パスワード欄では呼ばれない）
+    func learnEnglishWord(_ word: String, source: EnglishCommitSource) {
+        guard !word.isEmpty, englishSuggestActive, let session = session else { return }
+        session.englishCommit(word, source: source)
     }
 }

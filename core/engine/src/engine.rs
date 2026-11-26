@@ -862,6 +862,13 @@ impl Engine {
         });
     }
 
+    /// セッションの学習の判断材料 `(アプリの識別子, secure input か)`。未知のセッションは `(None, false)`
+    pub fn session_privacy(&self, session_id: &str) -> (Option<String>, bool) {
+        self.sessions
+            .get(session_id)
+            .map_or((None, false), |s| (s.app_id.clone(), s.secure_input))
+    }
+
     /// キー 1 つを処理する
     pub fn process_key(&mut self, session_id: &str, key: &KeyEvent) -> ProcessKeyResult {
         let mut sess = self.take_session(session_id);

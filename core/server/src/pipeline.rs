@@ -1367,24 +1367,32 @@ impl ConversionBackend for Pipeline {
     fn literal_candidates(&self, text: &str, limit: usize) -> Vec<BackendCandidate> {
         let eff = self.runtime.effective();
         let excluded = excluded_rewriters(&eff);
-        // 全角/半角の「形式の変換」は末尾。辞書・LLM・学習は通さない（Literal に漢字が混ざらないように）
-        self.rewriter
-            .candidates_forms_last(text, &excluded)
-            .into_iter()
-            .fold(Vec::<String>::new(), |mut acc, s| {
-                if !acc.contains(&s) {
-                    acc.push(s);
+        let mut out: Vec<BackendCandidate> = Vec::new();
+        // 英字だけの語の綴りの訂正候補（`input.english.literal_correction`。H-146）。先頭（元の表記）は
+        // engine が置くので、訂正はその次から。自動では置き換えない
+        if nagi_english::assist::is_word(text) && self.runtime.english_literal_correction() {
+            for item in self.runtime.english_suggest(text, 6).items {
+                if item.kind == nagi_english::ItemKind::Correction && item.text != text {
+                    out.push(BackendCandidate {
+                        surface: item.text,
+                        sources: vec![CandidateSource::Fuzzy],
+                        reading: None,
+                    });
                 }
-                acc
-            })
-            .into_iter()
-            .take(limit)
-            .map(|surface| BackendCandidate {
-                surface,
-                sources: vec![CandidateSource::Rewriter],
-                reading: None,
-            })
-            .collect()
+            }
+        }
+        // 全角/半角の「形式の変換」は末尾。辞書・LLM・学習は通さない（Literal に漢字が混ざらないように）
+        for surface in self.rewriter.candidates_forms_last(text, &excluded) {
+            if !out.iter().any(|c| c.surface == surface) {
+                out.push(BackendCandidate {
+                    surface,
+                    sources: vec![CandidateSource::Rewriter],
+                    reading: None,
+                });
+            }
+        }
+        out.truncate(limit);
+        out
     }
 
     fn english_level(&self, raw: &str, reading: &str) -> nagi_english::Level {
@@ -1734,7 +1742,7 @@ pub fn default_sync_budget() -> Duration {
 }
 
 /// 綴りの「もしかして」の置換の重み: QWERTY で隣り合うキーは打ち間違えやすいので安くする
-fn qwerty_substitute(typed: u8, intended: u8) -> f32 {
+pub(crate) fn qwerty_substitute(typed: u8, intended: u8) -> f32 {
     static ADJACENCY: std::sync::OnceLock<nagi_fuzzy::Adjacency> = std::sync::OnceLock::new();
     let adjacency = ADJACENCY.get_or_init(nagi_fuzzy::Adjacency::qwerty);
     if adjacency.is_adjacent(char::from(typed), char::from(intended)) {

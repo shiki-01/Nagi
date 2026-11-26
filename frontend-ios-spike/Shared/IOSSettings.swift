@@ -183,6 +183,14 @@ struct NagiIOSSettings: Codable, Equatable {
             description: "かなと英字のキーボードを切り替えても、入力中の文字列を確定せずに続けます（英字は入力中の文字列に入ります）。オフにすると切り替えるときに確定します。パスワード欄では常に確定します。",
             kind: .bool, isSimple: false, defaultValue: .bool(false)),
         NagiIOSSettingDef(
+            key: Key.englishSuggest, group: "入力", label: "英字入力の予測候補",
+            description: "英字のキーボードで打っている英単語の続き（補完）と、打ち間違いの直し先を候補バーに出します。候補を選ぶと語を置き換えて、後ろにスペースを入れます。パスワード欄では出しません。",
+            kind: .bool, isSimple: true, defaultValue: .bool(true)),
+        NagiIOSSettingDef(
+            key: Key.englishAutocorrect, group: "入力", label: "英字の自動修正",
+            description: "英字のキーボードで、はっきりした打ち間違い（recieve → receive、i → I など）を、スペースや句読点を入れたときに直します。直した直後に ⌫ を押すと元の綴りに戻り、その綴りを覚えて次からは直しません。URL・メールアドレスの欄や、自動修正を断っている入力欄では直しません。「英字入力の予測候補」がオフのときは働きません。",
+            kind: .bool, isSimple: true, defaultValue: .bool(true)),
+        NagiIOSSettingDef(
             key: Key.flickSensitivity, group: "入力", label: "フリック感度",
             description: "値が大きいほど、短い移動でフリックと判定します。",
             kind: .float(min: 0.5, max: 2.0, step: 0.1), isSimple: true, defaultValue: .number(1.0)),
@@ -346,6 +354,8 @@ struct NagiIOSSettings: Codable, Equatable {
         static let composeNumbers = "input.compose_numbers"
         static let keepPreeditOnSymbols = "input.keep_preedit_on_symbols"
         static let keepPreeditOnEnglish = "input.keep_preedit_on_english"
+        static let englishSuggest = "input.english_suggest"
+        static let englishAutocorrect = "input.english_autocorrect"
         static let flickSensitivity = "flick.sensitivity"
         static let flickThresholdPt = "flick.threshold_pt"
         static let flickPopup = "flick.popup"
@@ -443,6 +453,8 @@ struct NagiIOSSettings: Codable, Equatable {
     var keepPreeditOnSymbols: Bool { bool(Key.keepPreeditOnSymbols) }
     /// かな ⇄ 英字の切替で入力中の文字列を保つか
     var keepPreeditOnEnglish: Bool { bool(Key.keepPreeditOnEnglish) }
+    var englishSuggest: Bool { bool(Key.englishSuggest) }
+    var englishAutocorrect: Bool { bool(Key.englishAutocorrect) }
     var flickPopup: Bool { bool(Key.flickPopup) }
     /// フリックキーの上下左右に、フリック先の文字を小さく表示するか
     var flickHints: Bool { bool(Key.flickHints) }

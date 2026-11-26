@@ -1,0 +1,76 @@
+# Nagi 英字入力の修正表（打った語 → 決まった直し先）の同梱リスト。
+# 英字入力の予測候補・スペル訂正（docs/decisions.md H-146）が読む。打った語（大文字小文字を区別しない）が
+# 左の列に一致すれば、編集距離の探索を通さず右の列を直し先にする（モバイルの自動修正の対象にもなる）。
+# 右の列に大文字を含む語（I・Monday など）は、補完の候補もこの表記で出す。バイナリに include_str! で同梱する。
+#
+# 形式: 打った語<TAB>直し先[<TAB>備考]（UTF-8、改行 LF）
+#   - `#` で始まる行、空行は無視する
+#   - 打った語は英小文字（とアポストロフィ）。直し先は英字・アポストロフィ・ハイフン
+#   - 内容は自作（外部のリストの転載はしない）
+#
+# 方針:
+#   - 打った語がそれ自体で正しい英単語になるもの（id → I'd、were → we're、its → it's、ill → I'll、
+#     well → we'll、hell → he'll、shed → she'd など）は載せない（正しく打った語を壊さないため）
+#   - 一人称の I と、アポストロフィの抜けた短縮形、固有の大文字表記（曜日・月・言語名）に絞る
+
+i	I
+im	I'm
+ive	I've
+dont	don't
+doesnt	doesn't
+didnt	didn't
+cant	can't
+couldnt	couldn't
+wouldnt	wouldn't
+shouldnt	shouldn't
+wont	won't	名詞 wont（習慣）は稀なので載せる
+isnt	isn't
+arent	aren't
+wasnt	wasn't
+werent	weren't
+hasnt	hasn't
+havent	haven't
+hadnt	hadn't
+mustnt	mustn't
+neednt	needn't
+youre	you're
+youve	you've
+youll	you'll
+youd	you'd
+theyre	they're
+theyve	they've
+theyll	they'll
+theyd	they'd
+weve	we've
+thats	that's
+whats	what's
+wheres	where's
+whos	who's
+hows	how's
+theres	there's
+heres	here's
+shes	she's
+hes	he's
+monday	Monday
+tuesday	Tuesday
+wednesday	Wednesday
+thursday	Thursday
+friday	Friday
+saturday	Saturday
+sunday	Sunday
+january	January
+february	February
+april	April
+june	June
+july	July
+august	August
+september	September
+october	October
+november	November
+december	December
+english	English
+japanese	Japanese
+japan	Japan
+tokyo	Tokyo
+osaka	Osaka
+kyoto	Kyoto

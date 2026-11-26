@@ -330,4 +330,57 @@ final class ThemeTests: XCTestCase {
         XCTAssertFalse(keep(.kana, .emoji))
         XCTAssertFalse(keep(.alpha, .emoji))
     }
+
+    // MARK: - 英字入力の予測候補・スペル訂正（H-146）
+
+    func testEnglishWordExtraction() {
+        XCTAssertEqual(EnglishWord.current(before: "I recieve"), "recieve")
+        XCTAssertEqual(EnglishWord.current(before: "hello "), "")
+        XCTAssertEqual(EnglishWord.current(before: "don't"), "don't")
+        XCTAssertEqual(EnglishWord.current(before: "don’t"), "don't")
+        XCTAssertEqual(EnglishWord.current(before: "'quote"), "quote")
+        XCTAssertEqual(EnglishWord.current(before: "state-of-the-art"), "state-of-the-art")
+        XCTAssertEqual(EnglishWord.current(before: "end-"), "")
+        XCTAssertEqual(EnglishWord.current(before: "abc123def"), "")
+        XCTAssertEqual(EnglishWord.current(before: "今日はmeeting"), "meeting")
+        XCTAssertEqual(EnglishWord.current(before: ""), "")
+        XCTAssertEqual(EnglishWord.current(before: String(repeating: "a", count: 40)), "")
+    }
+
+    func testEnglishAssistPolicy() {
+        XCTAssertTrue(EnglishAssistPolicy.shouldSuggest(mode: .alpha, setting: true, isSecure: false, hasPreedit: false))
+        XCTAssertFalse(EnglishAssistPolicy.shouldSuggest(mode: .kana, setting: true, isSecure: false, hasPreedit: false))
+        XCTAssertFalse(EnglishAssistPolicy.shouldSuggest(mode: .alpha, setting: false, isSecure: false, hasPreedit: false))
+        XCTAssertFalse(EnglishAssistPolicy.shouldSuggest(mode: .alpha, setting: true, isSecure: true, hasPreedit: false))
+        XCTAssertFalse(EnglishAssistPolicy.shouldSuggest(mode: .alpha, setting: true, isSecure: false, hasPreedit: true))
+
+        XCTAssertTrue(EnglishAssistPolicy.shouldAutocorrect(suggest: true, setting: true, hostDisabled: false, keyboardType: .default))
+        XCTAssertTrue(EnglishAssistPolicy.shouldAutocorrect(suggest: true, setting: true, hostDisabled: false, keyboardType: nil))
+        XCTAssertFalse(EnglishAssistPolicy.shouldAutocorrect(suggest: true, setting: true, hostDisabled: true, keyboardType: .default))
+        XCTAssertFalse(EnglishAssistPolicy.shouldAutocorrect(suggest: true, setting: true, hostDisabled: false, keyboardType: .URL))
+        XCTAssertFalse(EnglishAssistPolicy.shouldAutocorrect(suggest: true, setting: true, hostDisabled: false, keyboardType: .emailAddress))
+        XCTAssertFalse(EnglishAssistPolicy.shouldAutocorrect(suggest: false, setting: true, hostDisabled: false, keyboardType: .default))
+        XCTAssertFalse(EnglishAssistPolicy.shouldAutocorrect(suggest: true, setting: false, hostDisabled: false, keyboardType: .default))
+
+        XCTAssertTrue(EnglishAssistPolicy.isTrigger(" "))
+        XCTAssertTrue(EnglishAssistPolicy.isTrigger("."))
+        XCTAssertFalse(EnglishAssistPolicy.isTrigger("a"))
+        XCTAssertFalse(EnglishAssistPolicy.isTrigger("'"))
+    }
+
+    func testEnglishAutocorrectUndo() {
+        let undo = EnglishAutocorrectUndo(original: "recieve", replacement: "receive", trailing: " ")
+        XCTAssertTrue(undo.matches(context: "I receive "))
+        XCTAssertFalse(undo.matches(context: "I receive x"))
+        XCTAssertFalse(undo.matches(context: nil))
+        XCTAssertEqual(undo.revert.delete, 8)
+        XCTAssertEqual(undo.revert.insert, "recieve")
+    }
+
+    func testEnglishSelectionEdit() {
+        let e = EnglishSelection.edit(word: "recie", suggestion: "receive", nextIsSpace: false)
+        XCTAssertEqual(e.delete, 5)
+        XCTAssertEqual(e.insert, "receive ")
+        XCTAssertEqual(EnglishSelection.edit(word: "", suggestion: "the", nextIsSpace: true).insert, "the")
+    }
 }

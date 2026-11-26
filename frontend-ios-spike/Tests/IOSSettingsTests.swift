@@ -35,6 +35,8 @@ final class IOSSettingsTests: XCTestCase {
         XCTAssertTrue(s.composeNumbers)
         XCTAssertTrue(s.keepPreeditOnSymbols)
         XCTAssertFalse(s.keepPreeditOnEnglish)
+        XCTAssertTrue(s.englishSuggest)
+        XCTAssertTrue(s.englishAutocorrect)
         XCTAssertEqual(s.flickThresholdPoints, 14, accuracy: 1e-9)
         XCTAssertEqual(s.heightScale, 1.0, accuracy: 1e-9)
         XCTAssertEqual(s.schema, NagiIOSSettings.currentSchema)

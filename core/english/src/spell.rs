@@ -82,9 +82,20 @@ pub fn suggest(
     costs: &SpellCosts<'_>,
     limit: usize,
 ) -> Vec<Suggestion> {
+    suggest_from(lexicon, word, costs, limit, MIN_SPELL_LEN)
+}
+
+/// [`suggest`] の最小の文字数を指定する版（英字入力の訂正は 3 文字の語も対象にする。`teh` → `the`）
+pub fn suggest_from(
+    lexicon: &Lexicon,
+    word: &str,
+    costs: &SpellCosts<'_>,
+    limit: usize,
+    min_len: usize,
+) -> Vec<Suggestion> {
     let len = word.len();
     if limit == 0
-        || !(MIN_SPELL_LEN..=MAX_SPELL_LEN).contains(&len)
+        || !(min_len.max(1)..=MAX_SPELL_LEN).contains(&len)
         || !word.bytes().all(|b| b.is_ascii_lowercase())
         || lexicon.tier(word).is_some()
     {

@@ -655,6 +655,12 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
             .as_ref()
             .map(|d| d.join(crate::fuzzy_stats::FILE_NAME)),
     );
+    // 英字入力で学習した英単語（`[input.english] learn`。H-146）
+    runtime.set_english_words_path(
+        user_dir
+            .as_ref()
+            .map(|d| d.join(crate::english_words::FILE_NAME)),
+    );
     // アプリごとの入力モードの記憶（`[apps] remember_mode`。アプリの識別子とモードだけ）
     runtime.set_app_modes_path(
         user_dir
@@ -788,7 +794,9 @@ pub fn build_with_loader(options: &ServerOptions, loader: Option<ModelLoader>) -
     match load_english_lexicon(options.data_dir.as_deref()) {
         Some(Ok(lexicon)) => {
             notes.push(format!("英語の語彙: OK ({} words)", lexicon.len()));
-            pipeline.set_english_lexicon(Some(Arc::new(lexicon)));
+            let lexicon = Arc::new(lexicon);
+            runtime.set_english_lexicon(Some(lexicon.clone()));
+            pipeline.set_english_lexicon(Some(lexicon));
         }
         Some(Err(e)) => notes.push(format!("{e}（英語の自動判定は特徴量のみで動作します）")),
         None => notes.push(

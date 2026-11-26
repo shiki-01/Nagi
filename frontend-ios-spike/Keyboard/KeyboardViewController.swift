@@ -374,6 +374,10 @@ class KeyboardViewController: UIInputViewController, KeyboardHost {
         textDocumentProxy.returnKeyType
     }
 
+    func hostAutocorrectionDisabled() -> Bool {
+        textDocumentProxy.autocorrectionType == .no
+    }
+
     func hostHasFullAccess() -> Bool {
         hasFullAccess
     }

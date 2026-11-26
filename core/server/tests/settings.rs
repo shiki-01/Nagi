@@ -91,7 +91,8 @@ fn get_settings_returns_defaults_and_not_explicit() {
         true
     );
     // タッチ入力のみの項目（濁点の循環順・タッチ座標の利用・グライド入力）は iOS、
-    // Windows の項目（タスクバーのアイコン・変換 UI）と macOS の読みヒント（input.show_reading）は
+    // Windows の項目（タスクバーのアイコン・変換 UI）・macOS の読みヒント（input.show_reading）・英字の
+    // 訂正候補（input.english.literal_correction）は
     // デスクトップ、それ以外は両方
     assert!(items.iter().all(|i| {
         let expected = if i["key"] == "input.dakuten_cycle"
@@ -100,6 +101,7 @@ fn get_settings_returns_defaults_and_not_explicit() {
         {
             "ios"
         } else if i["key"] == "input.show_reading"
+            || i["key"] == "input.english.literal_correction"
             || i["key"].as_str().is_some_and(|k| k.starts_with("windows."))
         {
             "desktop"

@@ -22,7 +22,9 @@ use nagi_protocol::methods::{
     UpdatePreeditParams, UserDictFormat, ValidateKeymapParams, method,
 };
 use nagi_protocol::methods::{
-    EditKeymapResult, ExportKeymapResult, ResetKeymapParams, SetKeymapParams,
+    EditKeymapResult, EnglishCommitParams, EnglishCommitSource, EnglishSuggestParams,
+    EnglishSuggestResult, EnglishSuggestion, EnglishSuggestionKind, ExportKeymapResult,
+    ResetKeymapParams, SetKeymapParams,
 };
 use nagi_protocol::settings::{UpdateSettingsParams, UpdateSettingsResult};
 use nagi_protocol::view::InputMode;
@@ -1128,6 +1130,31 @@ impl Server {
                 self.require_initialized()?;
                 to_value(self.reload_all())
             }
+            method::ENGLISH_SUGGEST => {
+                self.require_initialized()?;
+                let p: EnglishSuggestParams = params(req)?;
+                let limit = p.limit.map_or(6, |n| n.clamp(1, 20) as usize);
+                let assist = self.runtime.english_suggest(&p.word, limit);
+                to_value(english_suggest_result(assist))
+            }
+            method::ENGLISH_COMMIT => {
+                self.require_initialized()?;
+                let p: EnglishCommitParams = params(req)?;
+                let (app_id, secure) = match &p.session_id {
+                    Some(id) => self.engine_lock().session_privacy(id),
+                    None => (None, false),
+                };
+                let source = match p.source {
+                    EnglishCommitSource::Typed => crate::english_words::CommitSource::Typed,
+                    EnglishCommitSource::Suggestion => {
+                        crate::english_words::CommitSource::Suggestion
+                    }
+                    EnglishCommitSource::Reverted => crate::english_words::CommitSource::Reverted,
+                };
+                self.runtime
+                    .english_commit(&p.word, source, secure, app_id.as_deref());
+                to_value(EmptyResult {})
+            }
             method::SELECT_CANDIDATE => {
                 self.require_initialized()?;
                 let p: SelectCandidateParams = params(req)?;
@@ -1239,6 +1266,25 @@ impl Server {
             drop(handle);
         }
         result
+    }
+}
+
+/// 英字入力の候補をプロトコルの応答に直す
+fn english_suggest_result(assist: nagi_english::Assist) -> EnglishSuggestResult {
+    EnglishSuggestResult {
+        suggestions: assist
+            .items
+            .into_iter()
+            .map(|i| EnglishSuggestion {
+                text: i.text,
+                kind: match i.kind {
+                    nagi_english::ItemKind::Typed => EnglishSuggestionKind::Typed,
+                    nagi_english::ItemKind::Completion => EnglishSuggestionKind::Completion,
+                    nagi_english::ItemKind::Correction => EnglishSuggestionKind::Correction,
+                },
+            })
+            .collect(),
+        autocorrect: assist.autocorrect,
     }
 }
 

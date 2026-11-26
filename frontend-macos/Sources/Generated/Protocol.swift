@@ -621,6 +621,90 @@ public struct EmptyResult: Codable {
 	public init() {}
 }
 
+/// 英字入力で確定した語の入り方
+public enum EnglishCommitSource: String, Codable {
+	/// 打ったまま確定した（スペース・句読点・改行で語が終わった）
+	case typed
+	/// 候補から選んだ
+	case suggestion
+	/// 自動修正を取り消して、打ったままに戻した
+	case reverted
+}
+
+/// `english_commit` メソッドの要求パラメータ（英字入力で確定した語の学習）。
+/// 
+/// 学習は通常の学習と同じ条件（`learning.enabled`・`[input.english] learn`・停止リストのアプリ・
+/// secure input）で止める。パスワード欄では呼ばないこと
+public struct EnglishCommitParams: Codable {
+	/// セッション ID（学習の停止の判断に使う。省略可）
+	public let session_id: String?
+	/// 確定した語
+	public let word: String
+	/// 入り方（省略時は打ったまま）
+	public let source: EnglishCommitSource?
+
+	public init(session_id: String?, word: String, source: EnglishCommitSource?) {
+		self.session_id = session_id
+		self.word = word
+		self.source = source
+	}
+}
+
+/// `english_suggest` メソッドの要求パラメータ（英字入力の予測候補・スペル訂正。H-146）。
+/// 
+/// 英字のレイアウトで打っている途中の語（カーソル直前の、英字・アポストロフィ・ハイフンの並び）を渡す。
+/// 状態は持たない（セッションの preedit とは独立）。語が空なら候補も空
+public struct EnglishSuggestParams: Codable {
+	/// セッション ID（学習の停止の判断に使う。省略可）
+	public let session_id: String?
+	/// 打っている途中の語（大文字小文字は打ったまま）
+	public let word: String
+	/// 返す候補の最大件数（打ったままの語を含む。省略時は 6、最大 20）
+	public let limit: UInt32?
+
+	public init(session_id: String?, word: String, limit: UInt32?) {
+		self.session_id = session_id
+		self.word = word
+		self.limit = limit
+	}
+}
+
+/// 英字入力の候補の種類
+public enum EnglishSuggestionKind: String, Codable {
+	/// 打ったままの語
+	case typed
+	/// 補完（打った語で始まる語）
+	case completion
+	/// 訂正（打ち間違いの直し先）
+	case correction
+}
+
+/// 英字入力の候補 1 件
+public struct EnglishSuggestion: Codable {
+	/// 表記（打った語の大文字小文字の形を写したもの）
+	public let text: String
+	/// 種類
+	public let kind: EnglishSuggestionKind
+
+	public init(text: String, kind: EnglishSuggestionKind) {
+		self.text = text
+		self.kind = kind
+	}
+}
+
+/// `english_suggest` メソッドの応答
+public struct EnglishSuggestResult: Codable {
+	/// 候補（先頭は打ったままの語。語が空なら空）
+	public let suggestions: [EnglishSuggestion]
+	/// 自信の高い訂正（自動修正の対象）。適用するかはフロントの設定で決める。無ければ省略
+	public let autocorrect: String?
+
+	public init(suggestions: [EnglishSuggestion], autocorrect: String?) {
+		self.suggestions = suggestions
+		self.autocorrect = autocorrect
+	}
+}
+
 /// `export_backup` の要求パラメータ
 public struct ExportBackupParams: Codable {
 	/// 含める項目

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // スペースキーのスワイプ・⌫のスワイプの判定ロジック（UI に依存しない純粋な処理。Tests/TouchLogicTests.swift でテストする）
 
@@ -457,5 +458,101 @@ struct GlideStrokeTracker {
         trail.append(sample)
         lastTrail = sample
         if trail.count > GlideGesture.maxTrailPoints { trail.removeFirst(trail.count - GlideGesture.maxTrailPoints) }
+    }
+}
+
+// MARK: - 英字入力の予測候補・スペル訂正（H-146）
+
+/// 英字入力の予測候補・自動修正を働かせるかの判定（純粋関数。単体テストの対象）。
+/// 判断はキーボード側（入力欄の種類・設定）で、候補の中身はコア（`english_suggest`）が決める
+enum EnglishAssistPolicy {
+    /// 候補バーに英語の候補を出すか。英字のレイアウトで、入力中の文字列（かなの composing）が無く、
+    /// パスワード欄でないとき
+    static func shouldSuggest(mode: LayoutMode, setting: Bool, isSecure: Bool, hasPreedit: Bool) -> Bool {
+        setting && mode == .alpha && !isSecure && !hasPreedit
+    }
+
+    /// 自動修正してよいか。候補を出す条件に加え、設定がオンで、入力欄が自動修正を断っておらず
+    /// （`autocorrectionType == .no`）、URL・メールアドレス・ユーザー名などの欄でないとき
+    static func shouldAutocorrect(
+        suggest: Bool, setting: Bool, hostDisabled: Bool, keyboardType: UIKeyboardType?
+    ) -> Bool {
+        guard suggest, setting, !hostDisabled else { return false }
+        switch keyboardType {
+        case .URL, .emailAddress, .webSearch, .twitter, .asciiCapableNumberPad, .numberPad, .phonePad,
+             .namePhonePad, .decimalPad, .numbersAndPunctuation:
+            return false
+        default:
+            return true
+        }
+    }
+
+    /// 自動修正の契機になる文字（語の区切り）。スペースと句読点
+    static func isTrigger(_ text: String) -> Bool {
+        [" ", ".", ",", "!", "?", ";", ":"].contains(text)
+    }
+}
+
+/// カーソル直前の英単語（英字・アポストロフィ・ハイフンの並び）の切り出し（純粋関数）
+enum EnglishWord {
+    /// 語の最大の長さ（これより長い並びは語として扱わない）
+    static let maxLength = 32
+
+    static func isWordChar(_ c: Character) -> Bool {
+        (c.isASCII && c.isLetter) || c == "'" || c == "’" || c == "-"
+    }
+
+    /// `context`（カーソル直前のテキスト）の末尾の語。末尾が英字でなければ空（`end-`・`don'` は空）。
+    /// 先頭のアポストロフィとハイフンは語に含めない（`'hello` → `hello`）。数字が直前に付いている並び
+    /// （`abc123def` の `def`）は語として扱わない。日本語の直後の英字（`今日はmeeting`）は語として扱う
+    static func current(before context: String) -> String {
+        var chars: [Character] = []
+        var index = context.endIndex
+        while index > context.startIndex {
+            let prev = context.index(before: index)
+            let c = context[prev]
+            guard isWordChar(c) else {
+                if c.isASCII && c.isNumber { return "" }
+                break
+            }
+            chars.append(c)
+            if chars.count > maxLength { return "" }
+            index = prev
+        }
+        guard let last = chars.first, last.isLetter else { return "" }
+        var word = String(chars.reversed())
+        while let f = word.first, !f.isLetter { word.removeFirst() }
+        return word.replacingOccurrences(of: "’", with: "'")
+    }
+}
+
+/// 直前に適用した自動修正（⌫ ですぐ取り消せるように覚えておく）
+struct EnglishAutocorrectUndo: Equatable {
+    /// 打った語
+    let original: String
+    /// 直した語
+    let replacement: String
+    /// 直した語の後ろに入れた区切り（スペース・句読点）
+    let trailing: String
+
+    /// カーソル直前が「直した語 + 区切り」のままか（ほかの操作が挟まっていないか）
+    func matches(context: String?) -> Bool {
+        guard let context else { return false }
+        return context.hasSuffix(replacement + trailing)
+    }
+
+    /// 取り消しで消す文字数（直した語と区切り）と、代わりに入れる文字列（打った語。区切りは入れない）
+    var revert: (delete: Int, insert: String) {
+        ((replacement + trailing).count, original)
+    }
+}
+
+/// 候補を選んだときのホストへの操作（純粋関数）: 打っている途中の語を消して、候補とスペースを入れる
+enum EnglishSelection {
+    /// - word: カーソル直前の語（`EnglishWord.current`）
+    /// - suggestion: 選んだ候補
+    /// - nextIsSpace: カーソル直後がすでにスペースか（重ねて入れない）
+    static func edit(word: String, suggestion: String, nextIsSpace: Bool) -> (delete: Int, insert: String) {
+        (word.count, suggestion + (nextIsSpace ? "" : " "))
     }
 }

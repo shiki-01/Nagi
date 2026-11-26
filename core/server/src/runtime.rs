@@ -5,6 +5,7 @@
 //! 設定の再読み込み・`set_environment`・レイテンシ計測は、すべてここを通して反映される。
 
 use crate::app_modes::AppModeStore;
+use crate::english_words::{CommitSource, EnglishWordStore};
 use crate::fuzzy::FuzzySettings;
 use crate::fuzzy_stats::FuzzyStats;
 use nagi_config::{Config, ProfileMode, TimeZoneSetting, parse_time_zone};
@@ -145,6 +146,10 @@ pub struct Tunables {
     pub loanword_enabled: bool,
     /// `input.fuzzy.*`（曖昧入力）
     pub fuzzy: FuzzySettings,
+    /// `input.english.learn`（英字入力で確定した英単語の学習）
+    pub english_learn: bool,
+    /// `input.english.literal_correction`（デスクトップの英字の訂正候補）
+    pub english_literal_correction: bool,
 }
 
 /// 出所名（`ranking.source_order` の要素）を出所に直す
@@ -212,6 +217,8 @@ impl Tunables {
             time_zone: parse_time_zone(&config.convert.time_zone).unwrap_or(TimeZoneSetting::Auto),
             loanword_enabled: config.convert.loanword.enabled,
             fuzzy: FuzzySettings::from_config(&config.input.fuzzy),
+            english_learn: config.input.english.learn,
+            english_literal_correction: config.input.english.literal_correction,
         }
     }
 }
@@ -306,6 +313,14 @@ pub struct Runtime {
     app_modes_path: Mutex<Option<PathBuf>>,
     /// 記憶を最後に保存した時刻
     app_modes_flushed: Mutex<Instant>,
+    /// 英字入力で学習した英単語（`<user-dir>/english_words.tsv`。H-146）
+    english_words: Arc<EnglishWordStore>,
+    /// 英単語の学習の保存先
+    english_words_path: Mutex<Option<PathBuf>>,
+    /// 英単語の学習を最後に保存した時刻
+    english_words_flushed: Mutex<Instant>,
+    /// 英単語の語彙（英字入力の候補用。`<data_dir>/english/words.fst`）
+    english_lexicon: RwLock<Option<Arc<nagi_english::Lexicon>>>,
 }
 
 impl Runtime {
@@ -386,6 +401,10 @@ impl Runtime {
             app_mode_store: Arc::new(AppModeStore::new()),
             app_modes_path: Mutex::new(None),
             app_modes_flushed: Mutex::new(Instant::now()),
+            english_words: Arc::new(EnglishWordStore::new()),
+            english_words_path: Mutex::new(None),
+            english_words_flushed: Mutex::new(Instant::now()),
+            english_lexicon: RwLock::new(None),
         });
         if let Some(e) = next_load_error {
             runtime.push_event(Event {
@@ -1156,6 +1175,8 @@ impl Runtime {
         self.fuzzy_stats.clear();
         // アプリごとのモードの記憶も消す（ファイルは flush で消える）
         self.app_mode_store.clear();
+        // 英字入力で学習した英単語も消す
+        self.english_words.clear();
         self.flush_learning(true);
     }
 
@@ -1243,6 +1264,104 @@ impl Runtime {
                 level: NotifyLevel::Warning,
                 code: "fuzzy_stats_flush_failed",
                 message: format!("曖昧入力の採用状況を保存できませんでした: {e}"),
+            }),
+        }
+    }
+
+    // ---- 英字入力の予測候補・スペル訂正（H-146） ----
+
+    /// 英単語の学習の保存先を決め、ファイルがあれば読み込む（起動時）
+    pub fn set_english_words_path(&self, path: Option<PathBuf>) {
+        if let Some(p) = &path {
+            self.english_words.load(p);
+        }
+        if let Ok(mut g) = self.english_words_path.lock() {
+            *g = path;
+        }
+    }
+
+    /// 英字入力の候補に使う英単語の語彙
+    pub fn set_english_lexicon(&self, lexicon: Option<Arc<nagi_english::Lexicon>>) {
+        if let Ok(mut g) = self.english_lexicon.write() {
+            *g = lexicon;
+        }
+    }
+
+    /// デスクトップの英字の訂正候補を出すか（`input.english.literal_correction`）
+    pub fn english_literal_correction(&self) -> bool {
+        self.tunables
+            .read()
+            .is_ok_and(|t| t.english_literal_correction)
+    }
+
+    /// 学習した英単語の件数
+    pub fn english_words_len(&self) -> usize {
+        self.english_words.len()
+    }
+
+    /// 英字入力の候補（補完・訂正・自動修正の対象）
+    pub fn english_suggest(&self, word: &str, limit: usize) -> nagi_english::Assist {
+        let lexicon = self.english_lexicon.read().ok().and_then(|g| g.clone());
+        let costs = nagi_english::SpellCosts {
+            substitute: &crate::pipeline::qwerty_substitute,
+            ..nagi_english::SpellCosts::default()
+        };
+        nagi_english::Assistant {
+            lexicon: lexicon.as_deref(),
+            fixes: nagi_english::Fixes::builtin(),
+            learned: self.english_words.as_ref(),
+            costs: &costs,
+        }
+        .assist(word, limit)
+    }
+
+    /// 英字入力で確定した語を学習する。学習の停止（設定・`input.english.learn`・停止リストのアプリ・
+    /// secure input）のときは何もしない。記録したら `true`
+    pub fn english_commit(
+        &self,
+        word: &str,
+        source: CommitSource,
+        secure_input: bool,
+        app_id: Option<&str>,
+    ) -> bool {
+        let enabled = self.tunables.read().is_ok_and(|t| t.english_learn);
+        if !enabled || !self.learning_allowed(secure_input, app_id) {
+            return false;
+        }
+        self.english_words.record(word, source);
+        true
+    }
+
+    /// 学習した英単語を忘れる
+    pub fn english_forget(&self, word: &str) {
+        self.english_words.forget(word);
+    }
+
+    /// 英単語の学習をファイルへ書き出す。`force` でなければ前回から 5 分経っている場合だけ
+    fn flush_english_words(&self, force: bool) {
+        let Some(path) = self.english_words_path.lock().ok().and_then(|g| g.clone()) else {
+            return;
+        };
+        if !self.english_words.is_dirty() {
+            return;
+        }
+        let due = self
+            .english_words_flushed
+            .lock()
+            .is_ok_and(|last| force || last.elapsed() >= FLUSH_INTERVAL);
+        if !due {
+            return;
+        }
+        match self.english_words.flush(&path) {
+            Ok(()) => {
+                if let Ok(mut last) = self.english_words_flushed.lock() {
+                    *last = Instant::now();
+                }
+            }
+            Err(e) => self.push_event(Event {
+                level: NotifyLevel::Warning,
+                code: "english_words_flush_failed",
+                message: format!("学習した英単語を保存できませんでした: {e}"),
             }),
         }
     }
@@ -1344,6 +1463,7 @@ impl Runtime {
     pub fn flush_learning(&self, force: bool) {
         self.flush_fuzzy_stats(force);
         self.flush_app_modes(force);
+        self.flush_english_words(force);
         let Some(path) = &self.learn_path else {
             return;
         };

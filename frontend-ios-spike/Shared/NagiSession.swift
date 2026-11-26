@@ -179,6 +179,18 @@ final class NagiSession {
         request("select_candidate", SelectCandidateParams(session_id: sessionId, index: UInt32(index)))
     }
 
+    /// 英字入力の予測候補・スペル訂正（H-146）。`word` はカーソル直前の英単語（空なら空の結果）
+    func englishSuggest(_ word: String, limit: Int = 6) -> EnglishSuggestResult? {
+        request("english_suggest", EnglishSuggestParams(
+            session_id: sessionId, word: word, limit: UInt32(limit)))
+    }
+
+    /// 英字入力で確定した語を学習する（パスワード欄では呼ばないこと。コアも secure input では記録しない）
+    func englishCommit(_ word: String, source: EnglishCommitSource) {
+        let _: EmptyResult? = request("english_commit", EnglishCommitParams(
+            session_id: sessionId, word: word, source: source))
+    }
+
     /// 直前のテキスト（カーソル手前）を LLM の文脈として渡す。`before` が nil なら文脈を渡さない。
     /// `secure` のときコアは文脈を消し、学習・ログを止める
     func setContext(before: String?, secure: Bool) {

@@ -1240,7 +1240,8 @@ private struct CandidateBar: View {
                 }
                 // 次語予測は展開パネルを使わない（候補数が少なく、選ぶとそのまま挿入される）。
                 // 押せる範囲は矢印だけでなく、候補バーの高さいっぱい
-                if !model.candidates.isEmpty && !model.isNextWordCandidates {
+                // 英字入力の予測候補（H-146）も、件数が少ないので展開パネルを使わない
+                if !model.candidates.isEmpty && !model.isNextWordCandidates && !model.isEnglishSuggestions {
                     ExpandToggle(expanded: model.isExpanded) { model.isExpanded.toggle() }
                 }
             }

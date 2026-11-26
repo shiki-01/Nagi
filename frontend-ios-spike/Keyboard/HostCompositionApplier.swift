@@ -28,6 +28,8 @@ protocol KeyboardHost: AnyObject {
     func hostReturnKeyType() -> UIReturnKeyType?
     /// フルアクセス（`hasFullAccess`）が有効か。クリップボードを読めるかの前提
     func hostHasFullAccess() -> Bool
+    /// 入力欄が自動修正を断っているか（`autocorrectionType == .no`。英字の自動修正を止める。H-146）
+    func hostAutocorrectionDisabled() -> Bool
 }
 
 extension KeyboardHost {
@@ -36,6 +38,7 @@ extension KeyboardHost {
     func hostKeyboardType() -> UIKeyboardType? { nil }
     func hostReturnKeyType() -> UIReturnKeyType? { nil }
     func hostHasFullAccess() -> Bool { false }
+    func hostAutocorrectionDisabled() -> Bool { false }
 }
 
 /// 変換中の文字列（マーク）と確定の手順をホストへ適用する。
