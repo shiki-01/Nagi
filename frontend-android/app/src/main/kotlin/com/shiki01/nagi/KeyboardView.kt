@@ -272,6 +272,16 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
         return l.mode
     }
 
+    /**
+     * 表示中のレイアウトが英字（[LayoutMode.ALPHA]）か（英字入力の予測候補を出す判定。H-146）。
+     * JSON のレイアウトを読めない組み込みの表示では、英字モードの QWERTY のときだけ true
+     */
+    fun isAlphaLayout(): Boolean {
+        val l = current
+        if (l != null) return l.mode == LayoutMode.ALPHA
+        return !kanaMode && BuiltinLayouts.kindFor(explicitId, kanaMode, prefs.layout == "flick") == BuiltinLayouts.Kind.QWERTY
+    }
+
     /** 入力欄の指定による改行キーの文字（検索・送信など）。null でレイアウトのまま */
     fun setEnterLabel(label: String?) {
         if (enterOverride == label) return
@@ -1593,8 +1603,9 @@ internal class KeyboardView(context: Context, private val listener: KeyboardList
             }
         }
         renderPinned(pinned)
-        // 次語候補は件数が少なく、選ぶとそのまま挿入されるので展開しない
-        expandBtn.visibility = if (candItems.size > 1 && !nextWord) View.VISIBLE else View.GONE
+        // 次語候補・英字入力の候補は件数が少なく、選ぶとそのまま挿入されるので展開しない
+        val english = bar.kind == CandidateKind.ENGLISH
+        expandBtn.visibility = if (candItems.size > 1 && !nextWord && !english) View.VISIBLE else View.GONE
         expandBtn.contentDescription = if (gridPanel != null) "全候補を閉じる" else "全候補を開く"
         renderToolbar()
     }

@@ -12,6 +12,7 @@ import org.json.JSONObject
 import java.util.TimeZone
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * コアとの JSON-RPC 接続。コアの呼び出しはすべて専用の 1 スレッドで直列に行い（`nagi_handle_line` と
@@ -187,6 +188,41 @@ internal class NagiEngine(context: Context) {
     fun selectCandidate(index: Int, done: (EngineResult?) -> Unit) {
         callKey("select_candidate", session().put("index", index), done)
     }
+
+    /** 英字入力の候補の要求の通し番号（メインスレッドで増やす）。後から要求した・取り消したら古い結果は捨てる */
+    private val englishSeq = AtomicInteger(0)
+
+    /**
+     * 英字入力の予測候補・スペル訂正（`english_suggest`。H-146）。[word] はカーソル直前の英単語。
+     * 結果（失敗は null）をメインスレッドで返す。あとから別の要求を送った、または [cancelEnglishSuggest] したときは
+     * 古い結果を返さない（[done] を呼ばない）
+     */
+    fun englishSuggest(word: String, limit: Int, done: (EnglishSuggestResult?) -> Unit) {
+        val seq = englishSeq.incrementAndGet()
+        exec.execute {
+            // 速く打ったときに古い要求を溜めない: 後の要求が来ていれば、コアを呼ばずに捨てる
+            if (seq != englishSeq.get()) return@execute
+            if (!ensureStarted()) {
+                main.post { if (seq == englishSeq.get()) done(null) }
+                return@execute
+            }
+            val (result, notes) = rpc("english_suggest", session().put("word", word).put("limit", limit))
+            val parsed = Protocol.parseEnglishSuggest(result)
+            main.post {
+                if (seq == englishSeq.get()) done(parsed)
+                notes.forEach { dispatch(it) }
+            }
+        }
+    }
+
+    /** 送った英字入力の候補の要求の結果を捨てる（候補を引っ込めたあとに古い結果が出ないように） */
+    fun cancelEnglishSuggest() {
+        englishSeq.incrementAndGet()
+    }
+
+    /** 英字入力で確定した語の学習（`english_commit`）。[source] は `typed` / `suggestion` / `reverted` */
+    fun englishCommit(word: String, source: String) =
+        call("english_commit", session().put("word", word).put("source", source))
 
     fun reset(done: ((JSONObject?) -> Unit)? = null) = call("reset", session(), done)
 

@@ -132,4 +132,41 @@ class ProtocolTest {
         assertEquals(4, m.revision)
         assertTrue(m.consumed)
     }
+
+    @Test
+    fun 英字入力の候補を読む() {
+        val o = JSONObject(
+            """
+            {"suggestions":[
+               {"text":"recieve","kind":"typed"},
+               {"text":"receive","kind":"correction"},
+               {"text":"recieved","kind":"completion"},
+               {"text":"x","kind":"future"},
+               {"text":"","kind":"completion"}],
+             "autocorrect":"receive"}
+            """.trimIndent(),
+        )
+        val r = Protocol.parseEnglishSuggest(o)!!
+        assertEquals(
+            listOf(
+                EnglishSuggestion("recieve", EnglishSuggestionKind.TYPED),
+                EnglishSuggestion("receive", EnglishSuggestionKind.CORRECTION),
+                EnglishSuggestion("recieved", EnglishSuggestionKind.COMPLETION),
+                // 知らない種類は UNKNOWN、表記が空の候補は捨てる
+                EnglishSuggestion("x", EnglishSuggestionKind.UNKNOWN),
+            ),
+            r.suggestions,
+        )
+        assertEquals("receive", r.autocorrect)
+    }
+
+    @Test
+    fun 英字入力の候補の自動修正の対象が無いときと空の結果() {
+        val r = Protocol.parseEnglishSuggest(JSONObject("""{"suggestions":[{"text":"hello","kind":"typed"}]}"""))!!
+        assertEquals(1, r.suggestions.size)
+        assertNull(r.autocorrect)
+        assertNull(Protocol.parseEnglishSuggest(JSONObject("""{"suggestions":[],"autocorrect":null}"""))!!.autocorrect)
+        assertTrue(Protocol.parseEnglishSuggest(JSONObject("{}"))!!.suggestions.isEmpty())
+        assertNull(Protocol.parseEnglishSuggest(null))
+    }
 }

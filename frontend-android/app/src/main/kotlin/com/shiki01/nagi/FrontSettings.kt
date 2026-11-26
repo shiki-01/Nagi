@@ -76,6 +76,8 @@ internal object FrontKeys {
     const val COMPOSE_NUMBERS = "input.compose_numbers"
     const val KEEP_PREEDIT_ON_SYMBOLS = "input.keep_preedit_on_symbols"
     const val KEEP_PREEDIT_ON_ENGLISH = "input.keep_preedit_on_english"
+    const val ENGLISH_SUGGEST = "input.english_suggest"
+    const val ENGLISH_AUTOCORRECT = "input.english_autocorrect"
     const val FLICK_SENSITIVITY = "flick.sensitivity"
     const val FLICK_THRESHOLD = "flick.threshold_pt"
     const val FLICK_POPUP = "flick.popup"
@@ -224,6 +226,19 @@ internal object FrontSettings {
             "かなと英字のキーボードを切り替えても、入力中の文字列を確定せずに続けます（英字は入力中の文字列に入ります）。" +
                 "オフにすると切り替えるときに確定します。パスワード欄では常に確定します。",
             detail = true, default = K.KEEP_PREEDIT_ON_ENGLISH,
+        ),
+        toggle(
+            FrontKeys.ENGLISH_SUGGEST, "入力", "英字入力の予測候補",
+            "英字のキーボードで打っている英単語の続き（補完）と、打ち間違いの直し先を候補バーに出します。" +
+                "候補を選ぶと語を置き換えて、後ろにスペースを入れます。パスワード欄では出しません。",
+            detail = false, default = K.ENGLISH_SUGGEST,
+        ),
+        toggle(
+            FrontKeys.ENGLISH_AUTOCORRECT, "入力", "英字の自動修正",
+            "英字のキーボードで、はっきりした打ち間違い（recieve → receive、i → I など）を、スペースや句読点を入れたときに直します。" +
+                "直した直後に ⌫ を押すと元の綴りに戻り、その綴りを覚えて次からは直しません。" +
+                "URL・メールアドレスの欄や、候補を断っている入力欄では直しません。「英字入力の予測候補」がオフのときは働きません。",
+            detail = false, default = K.ENGLISH_AUTOCORRECT,
         ),
         slider(
             FrontKeys.FLICK_SENSITIVITY, "入力", "フリック感度",

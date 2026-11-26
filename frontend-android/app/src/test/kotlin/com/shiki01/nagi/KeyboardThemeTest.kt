@@ -82,7 +82,7 @@ class KeyboardThemeTest {
             ResetKeys.HAPTIC, ResetKeys.KEY_SOUND, ResetKeys.ONE_HANDED, ResetKeys.ONE_HANDED_WIDTH,
             ResetKeys.HEIGHT_SCALE, ResetKeys.HEIGHT_SCALE_LANDSCAPE, ResetKeys.AUTO_CHECK_UPDATES,
             ResetKeys.FLICK_HINTS, ResetKeys.FLICK_LONG_PRESS, ResetKeys.COMPOSE_NUMBERS, ResetKeys.KEEP_PREEDIT_ON_SYMBOLS,
-            ResetKeys.KEEP_PREEDIT_ON_ENGLISH, ResetKeys.LAYOUT_BY_FIELD,
+            ResetKeys.KEEP_PREEDIT_ON_ENGLISH, ResetKeys.ENGLISH_SUGGEST, ResetKeys.ENGLISH_AUTOCORRECT, ResetKeys.LAYOUT_BY_FIELD,
         )
         for (g in groups) assertTrue(g.toString(), ResetKeys.ALL.containsAll(g))
     }

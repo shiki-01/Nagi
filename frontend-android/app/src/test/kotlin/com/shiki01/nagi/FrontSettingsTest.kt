@@ -102,7 +102,8 @@ class FrontSettingsTest {
             .map { it.def.key }.toSet()
         assertEquals(
             setOf(
-                FrontKeys.TOGGLE_INPUT, FrontKeys.FLICK_SENSITIVITY, FrontKeys.FLICK_POPUP, FrontKeys.FLICK_HINTS,
+                FrontKeys.TOGGLE_INPUT, FrontKeys.ENGLISH_SUGGEST, FrontKeys.ENGLISH_AUTOCORRECT,
+                FrontKeys.FLICK_SENSITIVITY, FrontKeys.FLICK_POPUP, FrontKeys.FLICK_HINTS,
                 FrontKeys.HEIGHT, FrontKeys.ONE_HANDED, FrontKeys.HAPTIC, FrontKeys.SOUND, FrontKeys.THEME, FrontKeys.ACCENT,
                 FrontKeys.LAYOUT_KANA, FrontKeys.LAYOUT_ALPHA, FrontKeys.LEARNING_CLEAR, FrontKeys.UPDATE_AUTO_CHECK,
                 FrontKeys.UPDATE_OPEN, FrontKeys.CLIPBOARD_ENABLED, FrontKeys.CLIPBOARD_RETENTION, FrontKeys.CLIPBOARD_CLEAR,
@@ -130,7 +131,8 @@ class FrontSettingsTest {
             listOf(
                 "input.punctuation", "input.shift_letter",
                 FrontKeys.TOGGLE_INPUT, FrontKeys.COMPOSE_NUMBERS, FrontKeys.KEEP_PREEDIT_ON_SYMBOLS,
-                FrontKeys.KEEP_PREEDIT_ON_ENGLISH, FrontKeys.FLICK_SENSITIVITY, FrontKeys.FLICK_THRESHOLD, FrontKeys.FLICK_POPUP,
+                FrontKeys.KEEP_PREEDIT_ON_ENGLISH, FrontKeys.ENGLISH_SUGGEST, FrontKeys.ENGLISH_AUTOCORRECT,
+                FrontKeys.FLICK_SENSITIVITY, FrontKeys.FLICK_THRESHOLD, FrontKeys.FLICK_POPUP,
                 FrontKeys.FLICK_HINTS, FrontKeys.FLICK_LONG_PRESS, FrontKeys.KEY_REPEAT_DELAY, FrontKeys.KEY_REPEAT,
                 FrontKeys.SPACE_SWIPE, FrontKeys.SPACE_SWIPE_STEP, FrontKeys.SPACE_SWIPE_ACCEL,
                 FrontKeys.SPACE_SWIPE_ACCEL_STRENGTH, FrontKeys.BACKSPACE_SWIPE,
@@ -308,6 +310,8 @@ class FrontSettingsTest {
         assertTrue(d(FrontKeys.COMPOSE_NUMBERS).defaultBool)
         assertTrue(d(FrontKeys.KEEP_PREEDIT_ON_SYMBOLS).defaultBool)
         assertFalse(d(FrontKeys.KEEP_PREEDIT_ON_ENGLISH).defaultBool)
+        assertTrue(d(FrontKeys.ENGLISH_SUGGEST).defaultBool)
+        assertTrue(d(FrontKeys.ENGLISH_AUTOCORRECT).defaultBool)
         assertTrue(d(FrontKeys.FLICK_HINTS).defaultBool)
         assertTrue(d(FrontKeys.LAYOUT_BY_FIELD).defaultBool)
         assertEquals("flick-kana", d(FrontKeys.LAYOUT_KANA).defaultChoice)

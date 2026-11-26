@@ -69,6 +69,25 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var restartTask: Runnable? = null
 
+    // ---- 英字入力の予測候補・スペル訂正（H-146） ----
+
+    /** カーソル直前のテキスト（自分で入れた・消した文字で更新し、ほかの変更のあとは入力欄から取り直す。末尾 64 文字） */
+    private var englishBuffer = ""
+
+    /** 候補を求めた語（自動修正は、区切りを入れる時点の語がこれと同じときだけ） */
+    private var englishWord = ""
+    private var englishAutocorrectTarget: String? = null
+
+    /** 直前の自動修正（直後の ⌫ で取り消す） */
+    private var englishUndo: EnglishAutocorrectUndo? = null
+
+    /** 候補バーに出している英字入力の候補（null は出していない）と、選んだら入れる語（表示は引用符が付くことがある） */
+    private var englishBar: CandidateBar? = null
+    private var englishTexts: List<String> = emptyList()
+
+    /** 自分で入力欄を変えた時刻（[onUpdateSelection] で、自分の操作の結果でない変更を見分ける） */
+    private var lastOwnEditAt = 0L
+
     override fun onCreate() {
         super.onCreate()
         engine = NagiRuntime.get(this)
@@ -125,6 +144,8 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         startClipboardWatch()
         // 同じ入力欄への再表示（restarting）では、利用者が選んだレイアウトを変えない
         if (!restarting) applyFieldLayout(info)
+        // 開いたレイアウト（入力欄の種類による自動選択のあと）で、直前の語の候補を出すか決める
+        refreshEnglishSuggestions()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -228,6 +249,14 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         engine.setContext(secure, before)
         engine.setEnvironment()
         engine.focusIn()
+        // 英字入力の候補は新しい欄で取り直す（候補バーは下の updateKeyboard で空にする）
+        engine.cancelEnglishSuggest()
+        englishBar = null
+        englishTexts = emptyList()
+        englishWord = ""
+        englishAutocorrectTarget = null
+        englishUndo = null
+        resyncEnglishBuffer()
         updateKeyboard(null)
     }
 
@@ -258,49 +287,83 @@ class NagiImeService : InputMethodService(), KeyboardListener {
             engine.reset()
             updateKeyboard(null)
         }
+        // 自分の操作の結果でない変更（カーソル移動・アプリによる書き換え）なら、英字入力の語を取り直す
+        // （英字入力の候補を出す状況でなければ読まない。英字のレイアウトに切り替えたときに取り直す）
+        if (!composing && SystemClock.uptimeMillis() - lastOwnEditAt > OWN_EDIT_WINDOW_MS) {
+            englishUndo = null
+            if (newSelStart == newSelEnd && englishSuggestActive()) {
+                resyncEnglishBuffer()
+                refreshEnglishSuggestions()
+            } else {
+                // 範囲を選んでいるときは候補を出さない
+                clearEnglishSuggestions()
+            }
+        }
     }
 
     // ---- KeyboardListener ----
 
     override fun onLetter(text: String) {
-        val ic = currentInputConnection ?: return
+        if (currentInputConnection == null) return
         if (!viaCore()) {
-            ic.commitText(text, 1)
+            typeHostText(text)
             return
         }
         // コアが使えないときは、押した文字をそのまま入れる（入力を失わない）
-        engine.insertText(text) { r -> apply(r) { currentInputConnection?.commitText(text, 1) } }
+        engine.insertText(text) { r -> apply(r) { commitHost(text) } }
     }
 
     override fun onSpace() {
         if (!viaCore()) {
-            currentInputConnection?.commitText(" ", 1)
+            if (englishSuggestActive()) insertEnglishDelimiter(" ") else commitHost(" ")
             return
         }
-        engine.action("space") { r -> apply(r) { currentInputConnection?.commitText(" ", 1) } }
+        engine.action("space") { r -> apply(r) { commitHost(" ") } }
     }
 
     override fun onEnter() {
         if (!viaCore()) {
-            sendEnter()
+            hostEnter()
             return
         }
-        engine.action("enter") { r -> apply(r) { sendEnter() } }
+        engine.action("enter") { r -> apply(r) { hostEnter() } }
     }
 
     override fun onBackspace() {
         if (!viaCore()) {
-            sendDelete()
+            hostBackspace()
             return
         }
-        engine.action("backspace") { r -> apply(r) { sendDelete() } }
+        engine.action("backspace") { r -> apply(r) { hostBackspace() } }
+    }
+
+    /** 改行（コアを通さないとき）。改行では直さない（検索欄などで送信になるため）。打った語は学習する */
+    private fun hostEnter() {
+        if (englishSuggestActive()) learnEnglishWord(EnglishWord.current(englishBuffer), SOURCE_TYPED)
+        englishUndo = null
+        clearEnglishSuggestions()
+        sendEnter()
+        // 送信で欄が空になることもあるが、改行の後ろから新しい語が始まる点は同じ（語の切り出しは改行で止まる）
+        englishBuffer = EnglishBuffer.append(englishBuffer, "\n")
+    }
+
+    /** 入力欄の 1 文字削除（コアを通さないとき）。英字の自動修正の直後なら、修正を取り消して打った綴りに戻す */
+    private fun hostBackspace() {
+        if (revertEnglishAutocorrect()) return
+        sendDelete()
+        // 追っている末尾（64 文字）を消し切ったら、手前の文字を入力欄から取り直す
+        if (englishBuffer.isEmpty() && englishSuggestActive()) resyncEnglishBuffer()
+        refreshEnglishSuggestions()
     }
 
     override fun onToggleMode() {
         val from = if (kana) LayoutMode.KANA else LayoutMode.ALPHA
         val to = if (kana) LayoutMode.ALPHA else LayoutMode.KANA
         // 入力中の文字を（設定に従って）確定してから切り替える
-        switchThen(from, to) { switchMode() }
+        switchThen(from, to) {
+            switchMode()
+            onEnglishLayoutChanged()
+        }
     }
 
     /** かな入力の流れ、または設定 `keep_preedit_on_english` で英字キーも入力中の文字列に続けるときは true */
@@ -332,20 +395,27 @@ class NagiImeService : InputMethodService(), KeyboardListener {
 
     override fun onLayoutSwitch(from: String, to: String, block: () -> Unit) {
         // 知らない種類は「かな」でも「英字」でもないものとして、常に確定する側（CUSTOM）に倒す
-        switchThen(LayoutMode.fromJson(from) ?: LayoutMode.CUSTOM, LayoutMode.fromJson(to) ?: LayoutMode.CUSTOM, block)
+        switchThen(LayoutMode.fromJson(from) ?: LayoutMode.CUSTOM, LayoutMode.fromJson(to) ?: LayoutMode.CUSTOM) {
+            block()
+            onEnglishLayoutChanged()
+        }
     }
 
     override fun onNumberText(text: String) {
         val compose = NumberCompose.shouldCompose(KeyboardPrefs.composeNumbers(this), secure, kana, composing)
         if (compose) {
             // コアの入力中の文字列に入れる（電卓・日付の候補が出る）。コアが使えないときはそのまま入れる
-            engine.insertText(text) { r -> apply(r) { currentInputConnection?.commitText(text, 1) } }
+            engine.insertText(text) { r -> apply(r) { commitHost(text) } }
         } else {
-            currentInputConnection?.commitText(text, 1)
+            typeHostText(text)
         }
     }
 
     override fun onCandidate(index: Int) {
+        if (englishBar != null) {
+            selectEnglishSuggestion(index)
+            return
+        }
         engine.selectCandidate(index) { r -> apply(r, null) }
     }
 
@@ -368,6 +438,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     override fun onArrow(left: Boolean) {
         val dir = if (left) "left" else "right"
         val code = if (left) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+        englishUndo = null
         when {
             !viaCore() -> sendDownUpKeyEvents(code)
             focusIndex >= 0 -> engine.action("move_focus", dir) { r -> apply(r, null) }
@@ -386,11 +457,14 @@ class NagiImeService : InputMethodService(), KeyboardListener {
     override fun onOpenNumbers() {
         // 入力中の文字を（設定に従って）確定してから数字・記号の画面を開く
         val from = if (kana) LayoutMode.KANA else LayoutMode.ALPHA
-        switchThen(from, LayoutMode.NUMBER) { keyboard?.showNumbers() }
+        switchThen(from, LayoutMode.NUMBER) {
+            keyboard?.showNumbers()
+            onEnglishLayoutChanged()
+        }
     }
 
     override fun onDirectText(text: String) {
-        currentInputConnection?.commitText(text, 1)
+        typeHostText(text)
     }
 
     override fun onFocusSegment(index: Int) {
@@ -446,13 +520,13 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         if (clip.itemCount == 0) return
         val text = clip.getItemAt(0).coerceToText(this)?.toString()
         if (text.isNullOrEmpty()) return
-        onCommitThen { currentInputConnection?.commitText(text, 1) }
+        onCommitThen { typeHostText(text) }
     }
 
     override fun onClipboardInsert(text: String) {
         // パスワード欄では履歴を使わない（ページの状態が古くても入れない）。内容はログに出さない
         if (secure || text.isEmpty()) return
-        onCommitThen { currentInputConnection?.commitText(text, 1) }
+        onCommitThen { typeHostText(text) }
     }
 
     override fun isSecureInput(): Boolean = secure
@@ -468,7 +542,13 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         val ic = currentInputConnection ?: return
         val before = ic.getTextBeforeCursor(WORD_CONTEXT_UNITS, 0) ?: return
         val n = WordBoundary.deleteLength(before)
-        if (n > 0) ic.deleteSurroundingText(n, 0)
+        if (n > 0) {
+            ic.deleteSurroundingText(n, 0)
+            englishUndo = null
+            englishBuffer = EnglishBuffer.drop(englishBuffer, n)
+            lastOwnEditAt = SystemClock.uptimeMillis()
+            refreshEnglishSuggestions()
+        }
     }
 
     override fun onBackspaceWord() {
@@ -494,6 +574,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         val dir = if (left) "left" else "right"
         val code = if (left) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
         val n = abs(steps)
+        englishUndo = null
         // 加速オン（touch.space_swipe_accel）のときは 1 回の上限を緩める（高速スライドで切り捨てて指の位置とずれないように）
         val accel = KeyboardPrefs.spaceSwipeAccel(this)
         val coreMax = if (accel) CORE_CURSOR_MAX_ACCEL else CORE_CURSOR_MAX
@@ -519,7 +600,7 @@ class NagiImeService : InputMethodService(), KeyboardListener {
             engine.insertText(text) { r -> apply(r) { currentInputConnection?.commitText(text, 1) } }
         } else {
             for (i in 0 until n) sendDelete()
-            currentInputConnection?.commitText(text, 1)
+            typeHostText(text)
         }
     }
 
@@ -667,9 +748,15 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         val ic = currentInputConnection ?: return
         ic.beginBatchEdit()
         try {
-            if (r.deleteBefore > 0) ic.deleteSurroundingText(r.deleteBefore, 0)
+            if (r.deleteBefore > 0) {
+                ic.deleteSurroundingText(r.deleteBefore, 0)
+                englishBuffer = EnglishBuffer.drop(englishBuffer, r.deleteBefore)
+                lastOwnEditAt = SystemClock.uptimeMillis()
+            }
             if (r.commit != null) {
                 ic.commitText(r.commit, 1)
+                englishBuffer = EnglishBuffer.append(englishBuffer, r.commit)
+                lastOwnEditAt = SystemClock.uptimeMillis()
                 // 確定した時点で入力中の文字は無くなる（続きの preedit は下で入れ直す）
                 composing = false
             }
@@ -741,8 +828,14 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         if (r?.candidates != null) lastCandidates = r.candidates
         if (!composing) lastCandidates = if (r?.candidates?.visible == true) r.candidates else lastCandidates
         // 次語候補（入力中の読みが無い状態で届く学習候補）は見た目を分け、パスワード欄では出さない
-        val bar = CandidateKinds.buildBar(lastCandidates, composing, secure)
-        val items: List<String> = bar.items
+        // 英字入力の候補を出しているときは、コアの候補が届くまでそのまま出す（届いたらコアの候補に替える）
+        if (englishBar != null && (r?.candidates != null || composing)) {
+            englishBar = null
+            englishTexts = emptyList()
+        }
+        val bar = englishBar ?: CandidateKinds.buildBar(lastCandidates, composing, secure)
+        // 物理キーボードの簡易表示は英字入力の候補を出さない
+        val items: List<String> = if (englishBar != null) emptyList() else bar.items
         val selected = bar.selected
         // 変換中（注目文節がある）ときだけ文節列を出す
         val segs: List<String> =
@@ -781,6 +874,198 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         val ic = currentInputConnection ?: return
         ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
         ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL))
+        englishBuffer = EnglishBuffer.dropOne(englishBuffer)
+        lastOwnEditAt = SystemClock.uptimeMillis()
+    }
+
+    /** 文字をそのまま入力欄に入れる（コアを通さない）。カーソル直前のテキストの追跡も更新する */
+    private fun commitHost(text: String) {
+        val ic = currentInputConnection ?: return
+        ic.commitText(text, 1)
+        englishBuffer = EnglishBuffer.append(englishBuffer, text)
+        lastOwnEditAt = SystemClock.uptimeMillis()
+    }
+
+    /**
+     * コアを通さずに入れる文字（英字・数字・記号の画面のキー、貼り付けなど）。英字入力の候補を出す状況で
+     * 語の区切り（スペース・句読点）なら自動修正を試し、それ以外は入れたあと直前の語の候補を取り直す
+     */
+    private fun typeHostText(text: String) {
+        if (englishSuggestActive() && EnglishAssistPolicy.isTrigger(text)) {
+            insertEnglishDelimiter(text)
+            return
+        }
+        commitHost(text)
+        englishUndo = null
+        refreshEnglishSuggestions()
+    }
+
+    // ---- 英字入力の予測候補・スペル訂正（H-146） ----
+
+    /**
+     * 英字入力の予測候補を出す状況か（英字のレイアウト・入力中の文字列なし・パスワード欄でない・設定オン・
+     * ソフトキーボードを出している）。物理キーボードの英数入力（OS 任せ）には出さない
+     */
+    private fun englishSuggestActive(): Boolean {
+        val kb = keyboard ?: return false
+        if (!onEvaluateInputViewShown()) return false
+        return EnglishAssistPolicy.shouldSuggest(kb.isAlphaLayout(), KeyboardPrefs.englishSuggest(this), secure, composing)
+    }
+
+    /** 自動修正してよい状況か（候補を出す状況で、設定オン・入力欄が候補を断っていない・URL やメールの欄でない） */
+    private fun englishAutocorrectActive(): Boolean = EnglishAssistPolicy.shouldAutocorrect(
+        englishSuggestActive(),
+        KeyboardPrefs.englishAutocorrect(this),
+        currentInputEditorInfo?.inputType ?: 0,
+    )
+
+    /** 追っているカーソル直前のテキストを、入力欄から取り直す（パスワード欄では読まない。取れなければ空） */
+    private fun resyncEnglishBuffer() {
+        englishBuffer = if (secure) {
+            ""
+        } else {
+            EnglishBuffer.append("", currentInputConnection?.getTextBeforeCursor(EnglishBuffer.MAX_LENGTH, 0)?.toString() ?: "")
+        }
+    }
+
+    /**
+     * 入力欄を書き換える直前に、カーソル直前のテキストを入力欄から取り直す（追跡がずれていても、別の文字を消さない）。
+     * 取れないアプリでは追跡しているテキストのまま
+     */
+    private fun syncEnglishBufferForEdit(): String {
+        if (!secure) {
+            currentInputConnection?.getTextBeforeCursor(EnglishBuffer.MAX_LENGTH, 0)?.let {
+                englishBuffer = EnglishBuffer.append("", it.toString())
+            }
+        }
+        return englishBuffer
+    }
+
+    /** レイアウトが替わった: 自動修正の取り消しを忘れ、英字のレイアウトなら直前の語の候補を出す（ほかでは引っ込める） */
+    private fun onEnglishLayoutChanged() {
+        englishUndo = null
+        if (englishSuggestActive()) resyncEnglishBuffer()
+        refreshEnglishSuggestions()
+    }
+
+    /** カーソル直前の語の候補を取り直して候補バーに出す。出す状況でなければ引っ込める */
+    private fun refreshEnglishSuggestions() {
+        if (!englishSuggestActive()) {
+            clearEnglishSuggestions()
+            return
+        }
+        val word = EnglishWord.current(englishBuffer)
+        if (word.isEmpty()) {
+            clearEnglishSuggestions()
+            return
+        }
+        engine.englishSuggest(word, ENGLISH_SUGGEST_LIMIT) { result ->
+            // 待つ間に状況や語が変わっていたら使わない（新しい要求の結果か、引っ込めたままにする）
+            if (!englishSuggestActive() || EnglishWord.current(englishBuffer) != word) return@englishSuggest
+            if (result == null) {
+                clearEnglishSuggestions()
+                return@englishSuggest
+            }
+            englishWord = word
+            englishAutocorrectTarget = if (englishAutocorrectActive()) result.autocorrect else null
+            // 打ったままの語しか無ければ、候補バーの代わりにツールバーを出す
+            val bar = EnglishBar.build(result, englishAutocorrectTarget)
+            if (bar == null) {
+                clearEnglishSuggestions()
+                return@englishSuggest
+            }
+            englishBar = bar
+            englishTexts = result.suggestions.map { it.text }
+            keyboard?.setCandidates(bar)
+        }
+    }
+
+    /** 英字入力の候補を引っ込める（コアの候補は触らない）。送った要求の結果も捨てる */
+    private fun clearEnglishSuggestions() {
+        engine.cancelEnglishSuggest()
+        englishAutocorrectTarget = null
+        englishWord = ""
+        if (englishBar == null) return
+        englishBar = null
+        englishTexts = emptyList()
+        keyboard?.setCandidates(CandidateBar.EMPTY)
+    }
+
+    /** 語の区切り（スペース・句読点）を入れる。直前の語に自動修正の対象があれば、先に直す */
+    private fun insertEnglishDelimiter(delimiter: String) {
+        val ic = currentInputConnection ?: return
+        val word = EnglishWord.current(syncEnglishBufferForEdit())
+        val target = englishAutocorrectTarget
+        englishUndo = null
+        if (word.isNotEmpty() && word == englishWord && target != null && target != word && englishAutocorrectActive()) {
+            ic.beginBatchEdit()
+            try {
+                ic.deleteSurroundingText(word.length, 0)
+                ic.commitText(target + delimiter, 1)
+            } finally {
+                ic.endBatchEdit()
+            }
+            englishBuffer = EnglishBuffer.append(EnglishBuffer.drop(englishBuffer, word.length), target + delimiter)
+            lastOwnEditAt = SystemClock.uptimeMillis()
+            englishUndo = EnglishAutocorrectUndo(word, target, delimiter)
+            DiagLog.event(this, "english", "autocorrect applied")
+            learnEnglishWord(target, SOURCE_TYPED)
+        } else {
+            commitHost(delimiter)
+            learnEnglishWord(word, SOURCE_TYPED)
+        }
+        clearEnglishSuggestions()
+    }
+
+    /** 直前の自動修正を取り消す（⌫）。取り消したら true */
+    private fun revertEnglishAutocorrect(): Boolean {
+        val undo = englishUndo ?: return false
+        englishUndo = null
+        if (!englishSuggestActive()) return false
+        val ic = currentInputConnection ?: return false
+        if (!undo.matches(syncEnglishBufferForEdit())) return false
+        val (delete, insert) = undo.revert
+        ic.beginBatchEdit()
+        try {
+            ic.deleteSurroundingText(delete, 0)
+            ic.commitText(insert, 1)
+        } finally {
+            ic.endBatchEdit()
+        }
+        englishBuffer = EnglishBuffer.append(EnglishBuffer.drop(englishBuffer, delete), insert)
+        lastOwnEditAt = SystemClock.uptimeMillis()
+        DiagLog.event(this, "english", "autocorrect reverted")
+        // 打った綴りを正しい語として覚える（次からは直さない）
+        learnEnglishWord(undo.original, SOURCE_REVERTED)
+        refreshEnglishSuggestions()
+        return true
+    }
+
+    /** 英字入力の候補を選ぶ: 打っている途中の語を候補に置き換えて、後ろにスペースを入れる */
+    private fun selectEnglishSuggestion(index: Int) {
+        val text = englishTexts.getOrNull(index) ?: return
+        val ic = currentInputConnection ?: return
+        val word = EnglishWord.current(syncEnglishBufferForEdit())
+        val nextIsSpace = !secure && ic.getTextAfterCursor(1, 0)?.toString() == " "
+        val (delete, insert) = EnglishSelection.edit(word, text, nextIsSpace)
+        englishUndo = null
+        ic.beginBatchEdit()
+        try {
+            if (delete > 0) ic.deleteSurroundingText(delete, 0)
+            ic.commitText(insert, 1)
+        } finally {
+            ic.endBatchEdit()
+        }
+        englishBuffer = EnglishBuffer.append(EnglishBuffer.drop(englishBuffer, delete), insert)
+        lastOwnEditAt = SystemClock.uptimeMillis()
+        learnEnglishWord(text, SOURCE_SUGGESTION)
+        clearEnglishSuggestions()
+    }
+
+    /** 確定した語を学習する（英字入力の候補を出す状況のときだけ。パスワード欄では呼ばれない） */
+    private fun learnEnglishWord(word: String, source: String) {
+        if (word.isEmpty() || !englishSuggestActive()) return
+        engine.englishCommit(word, source)
     }
 
     /** パスワード欄・シークレットモード（学習停止の要求）なら true */
@@ -817,5 +1102,16 @@ class NagiImeService : InputMethodService(), KeyboardListener {
         /** 加速オン（`touch.space_swipe_accel`）のときの上限。高速スライドで切り捨てない */
         private const val CORE_CURSOR_MAX_ACCEL = 200
         private const val HOST_CURSOR_MAX_ACCEL = 256
+
+        /** 英字入力の候補の最大件数（打ったままの語を含む。iOS と同じ 6） */
+        private const val ENGLISH_SUGGEST_LIMIT = 6
+
+        /** 自分で入力欄を変えてから、選択の変化の通知を自分の操作の結果とみなす時間（iOS と同じ 0.5 秒） */
+        private const val OWN_EDIT_WINDOW_MS = 500L
+
+        /** `english_commit` の source */
+        private const val SOURCE_TYPED = "typed"
+        private const val SOURCE_SUGGESTION = "suggestion"
+        private const val SOURCE_REVERTED = "reverted"
     }
 }

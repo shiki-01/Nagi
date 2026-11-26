@@ -12,6 +12,9 @@ internal enum class CandidateKind {
 
     /** 確定直後の次語候補（入力中の読みが無い状態で届く。選ぶとそのまま挿入される） */
     NEXT_WORD,
+
+    /** 英字入力の予測候補・スペル訂正（H-146。フロントが `english_suggest` で取る。展開・固定表示はしない） */
+    ENGLISH,
 }
 
 /**

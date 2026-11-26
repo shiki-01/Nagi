@@ -23,6 +23,10 @@ internal object KeyboardDefaults {
     const val COMPOSE_NUMBERS = true
     const val KEEP_PREEDIT_ON_SYMBOLS = true
     const val KEEP_PREEDIT_ON_ENGLISH = false
+
+    // 英字入力の予測候補・自動修正（H-146。iOS の input.english_suggest / input.english_autocorrect に揃える）
+    const val ENGLISH_SUGGEST = true
+    const val ENGLISH_AUTOCORRECT = true
     const val FLICK_LONG_PRESS_MS = 350
     const val FLICK_LONG_PRESS_MIN = 150
     const val FLICK_LONG_PRESS_MAX = 1000
@@ -81,6 +85,8 @@ internal object PrefKeys {
     const val COMPOSE_NUMBERS = "compose_numbers"
     const val KEEP_PREEDIT_ON_SYMBOLS = "keep_preedit_on_symbols"
     const val KEEP_PREEDIT_ON_ENGLISH = "keep_preedit_on_english"
+    const val ENGLISH_SUGGEST = "english_suggest"
+    const val ENGLISH_AUTOCORRECT = "english_autocorrect"
     const val TOGGLE_INPUT = "toggle_input"
     const val FLICK_THRESHOLD_DP = "flick_threshold_dp"
     const val FLICK_POPUP = "flick_popup"
@@ -132,6 +138,8 @@ internal object ResetKeys {
     val COMPOSE_NUMBERS = listOf(PrefKeys.COMPOSE_NUMBERS)
     val KEEP_PREEDIT_ON_SYMBOLS = listOf(PrefKeys.KEEP_PREEDIT_ON_SYMBOLS)
     val KEEP_PREEDIT_ON_ENGLISH = listOf(PrefKeys.KEEP_PREEDIT_ON_ENGLISH)
+    val ENGLISH_SUGGEST = listOf(PrefKeys.ENGLISH_SUGGEST)
+    val ENGLISH_AUTOCORRECT = listOf(PrefKeys.ENGLISH_AUTOCORRECT)
     val FLICK_LONG_PRESS = listOf(PrefKeys.FLICK_LONG_PRESS_MS)
     val SPACE_SWIPE = listOf(PrefKeys.SPACE_SWIPE)
     val SPACE_SWIPE_STEP = listOf(PrefKeys.SPACE_SWIPE_STEP_DP)
@@ -166,7 +174,7 @@ internal object ResetKeys {
             SPACE_SWIPE + SPACE_SWIPE_STEP + SPACE_SWIPE_ACCEL + SPACE_SWIPE_ACCEL_STRENGTH + BACKSPACE_SWIPE + KEY_REPEAT_DELAY + KEY_REPEAT + THEME + ACCENT +
             KEY_SPACING + KEY_CORNER + HAPTIC + KEY_SOUND + ONE_HANDED + ONE_HANDED_WIDTH + HEIGHT_SCALE +
             HEIGHT_SCALE_LANDSCAPE + AUTO_CHECK_UPDATES + COMPOSE_NUMBERS + KEEP_PREEDIT_ON_SYMBOLS +
-            KEEP_PREEDIT_ON_ENGLISH + FLICK_HINTS + FLICK_LONG_PRESS + LAYOUT_BY_FIELD + TOOLBAR_ITEMS + PASTE_BUTTON +
+            KEEP_PREEDIT_ON_ENGLISH + ENGLISH_SUGGEST + ENGLISH_AUTOCORRECT + FLICK_HINTS + FLICK_LONG_PRESS + LAYOUT_BY_FIELD + TOOLBAR_ITEMS + PASTE_BUTTON +
             CLIPBOARD_ENABLED + CLIPBOARD_RETENTION + CLIPBOARD_MAX_ITEMS + CLIPBOARD_TYPES + CLIPBOARD_PREVIEW_CHARS
         ).distinct()
 }
@@ -338,6 +346,17 @@ internal object KeyboardPrefs {
         sp(ctx).getBoolean(PrefKeys.KEEP_PREEDIT_ON_ENGLISH, KeyboardDefaults.KEEP_PREEDIT_ON_ENGLISH)
 
     fun setKeepPreeditOnEnglish(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.KEEP_PREEDIT_ON_ENGLISH, v).apply()
+
+    /** 英字のキーボードで英単語の補完・訂正を候補バーに出す。iOS の `input.english_suggest`（H-146） */
+    fun englishSuggest(ctx: Context): Boolean = sp(ctx).getBoolean(PrefKeys.ENGLISH_SUGGEST, KeyboardDefaults.ENGLISH_SUGGEST)
+
+    fun setEnglishSuggest(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.ENGLISH_SUGGEST, v).apply()
+
+    /** 英字の打ち間違いをスペース・句読点で直す（[englishSuggest] がオンのときだけ働く）。iOS の `input.english_autocorrect` */
+    fun englishAutocorrect(ctx: Context): Boolean =
+        sp(ctx).getBoolean(PrefKeys.ENGLISH_AUTOCORRECT, KeyboardDefaults.ENGLISH_AUTOCORRECT)
+
+    fun setEnglishAutocorrect(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(PrefKeys.ENGLISH_AUTOCORRECT, v).apply()
 
     /** レイアウトの保存・削除・割り当てのたびに増える番号（キーボードが組み立て直すかの判定とキャッシュ破棄に使う） */
     fun layoutsRevision(ctx: Context): Long = sp(ctx).getLong("layouts_rev", 0L)

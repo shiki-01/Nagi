@@ -139,6 +139,14 @@ internal class FrontSettingRows(private val ctx: Context, private val host: Host
             { KeyboardPrefs.keepPreeditOnEnglish(ctx) }, { KeyboardPrefs.setKeepPreeditOnEnglish(ctx, it) },
             resetKeys(ResetKeys.KEEP_PREEDIT_ON_ENGLISH),
         )
+        FrontKeys.ENGLISH_SUGGEST -> BoolAccess(
+            { KeyboardPrefs.englishSuggest(ctx) }, { KeyboardPrefs.setEnglishSuggest(ctx, it) },
+            resetKeys(ResetKeys.ENGLISH_SUGGEST),
+        )
+        FrontKeys.ENGLISH_AUTOCORRECT -> BoolAccess(
+            { KeyboardPrefs.englishAutocorrect(ctx) }, { KeyboardPrefs.setEnglishAutocorrect(ctx, it) },
+            resetKeys(ResetKeys.ENGLISH_AUTOCORRECT),
+        )
         FrontKeys.FLICK_POPUP -> BoolAccess(
             { KeyboardPrefs.flickPopup(ctx) }, { KeyboardPrefs.setFlickPopup(ctx, it) }, resetKeys(ResetKeys.FLICK_POPUP),
         )

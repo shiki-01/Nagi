@@ -97,7 +97,49 @@ internal data class EngineResult(
     )
 }
 
+/** 英字入力の候補の種類（コアの `EnglishSuggestionKind`）。知らない値は [UNKNOWN] */
+internal enum class EnglishSuggestionKind(val json: String) {
+    /** 打ったままの語 */
+    TYPED("typed"),
+
+    /** 補完（打った語で始まる語） */
+    COMPLETION("completion"),
+
+    /** 訂正（打ち間違いの直し先） */
+    CORRECTION("correction"),
+    UNKNOWN("?"),
+    ;
+
+    companion object {
+        fun fromJson(s: String?): EnglishSuggestionKind = values().firstOrNull { it.json == s } ?: UNKNOWN
+    }
+}
+
+/** 英字入力の候補 1 件（H-146） */
+internal data class EnglishSuggestion(val text: String, val kind: EnglishSuggestionKind)
+
+/** `english_suggest` の応答。[suggestions] の先頭は打ったままの語、[autocorrect] は自動修正の対象（無ければ null） */
+internal data class EnglishSuggestResult(
+    val suggestions: List<EnglishSuggestion>,
+    val autocorrect: String?,
+)
+
 internal object Protocol {
+    /** `english_suggest` の応答を読む。`result` が null（エラー応答）なら null。表記が空の候補は捨てる */
+    fun parseEnglishSuggest(o: JSONObject?): EnglishSuggestResult? {
+        if (o == null) return null
+        val arr = o.optJSONArray("suggestions") ?: JSONArray()
+        val list = ArrayList<EnglishSuggestion>(arr.length())
+        for (i in 0 until arr.length()) {
+            val s = arr.optJSONObject(i) ?: continue
+            val text = s.optString("text", "")
+            if (text.isEmpty()) continue
+            list.add(EnglishSuggestion(text, EnglishSuggestionKind.fromJson(s.optString("kind", null))))
+        }
+        val ac = if (o.has("autocorrect") && !o.isNull("autocorrect")) o.optString("autocorrect").takeIf { it.isNotEmpty() } else null
+        return EnglishSuggestResult(list, ac)
+    }
+
     fun parsePreedit(o: JSONObject?): Preedit? {
         if (o == null) return null
         val text = o.optString("text", "")
